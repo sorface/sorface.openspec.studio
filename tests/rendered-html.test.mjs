@@ -48,15 +48,30 @@ test("покрывает навигацию по Store и подключённы
   }
 });
 
-test("покрывает режимы Markdown, черновик и безопасную запись", async () => {
+test("покрывает визуальное Markdown-редактирование, черновик и безопасную запись", async () => {
   const html = await (await render()).text();
-  assert.match(html, /aria-label="Markdown редактор"/);
+  assert.match(html, /aria-label="Визуальный Markdown-редактор"/);
+  assert.match(html, /Подготавливаем визуальный редактор/);
   assert.match(html, />Edit</);
   assert.match(html, />Preview</);
   assert.match(html, />Split</);
   assert.match(html, /Черновик сохранён/);
   assert.match(html, /Записать в файл/);
   assert.match(html, /Scope: Store only/);
+});
+
+test("визуальный редактор сохраняет Markdown как исходный формат", async () => {
+  const [editor, packageJson] = await Promise.all([
+    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(packageJson, /"@milkdown\/crepe"/);
+  assert.match(editor, /listener\.markdownUpdated/);
+  assert.match(editor, /onChangeRef\.current\(nextMarkdown\)/);
+  assert.match(editor, /\[Crepe\.Feature\.TopBar\]: true/);
+  assert.match(editor, /\[Crepe\.Feature\.Table\]|Crepe\.Feature\.TopBar/);
+  assert.match(editor, /editor\.destroy/);
 });
 
 test("покрывает AI-инструкции, context review и diff-ready flow", async () => {
@@ -107,13 +122,14 @@ test("использует самостоятельную реализацию �
 });
 
 test("сохраняет feature-first архитектуру и тонкий route entry point", async () => {
-  const [page, workspace, editor, assistant, model, uiPrimitive] = await Promise.all([
+  const [page, workspace, editor, assistant, model, uiPrimitive, richEditor] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/AiAssistantPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/ui/IconButton.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /OpenSpecWorkspace/);
@@ -126,4 +142,5 @@ test("сохраняет feature-first архитектуру и тонкий ro
   assert.match(assistant, /interface AiAssistantPanelProps/);
   assert.match(model, /export type ViewMode/);
   assert.match(uiPrimitive, /ButtonHTMLAttributes/);
+  assert.match(richEditor, /interface RichMarkdownEditorProps/);
 });

@@ -1,5 +1,5 @@
-import type { ChangeEvent } from "react";
 import { IconButton } from "@/components/ui/IconButton";
+import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
 import { files } from "@/features/workspace/model/workspace-data";
 import type { ViewMode } from "@/features/workspace/model/workspace-types";
 
@@ -9,7 +9,7 @@ interface MarkdownEditorProps {
   markdown: string;
   viewMode: ViewMode;
   onBlur: () => void;
-  onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
+  onChange: (markdown: string) => void;
   onViewModeChange: (mode: ViewMode) => void;
   onWrite: () => void;
 }
@@ -39,10 +39,12 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
 
       <div className={`document-view ${viewMode}`}>
         {viewMode !== "preview" && (
-          <div className="code-editor">
-            <div className="line-numbers">{lines.map((_, index) => <span key={index}>{index + 1}</span>)}</div>
-            <textarea aria-label="Markdown редактор" value={markdown} onChange={onChange} onBlur={onBlur} spellCheck={false} />
-          </div>
+          <RichMarkdownEditor
+            documentId={activeFile}
+            markdown={markdown}
+            onChange={onChange}
+            onBlur={onBlur}
+          />
         )}
         {viewMode !== "edit" && (
           <article className="preview-pane">

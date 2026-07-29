@@ -1,11 +1,14 @@
 import { IconButton } from "@/components/ui/IconButton";
 import { LogoMark } from "@/components/ui/LogoMark";
+import { useSystemStatus } from "@/features/system/hooks/useSystemStatus";
 
 interface WorkspaceHeaderProps {
   draftSaved: boolean;
 }
 
 export function WorkspaceHeader({ draftSaved }: WorkspaceHeaderProps) {
+  const serverStatus = useSystemStatus();
+
   return (
     <header className="topbar">
       <div className="brand">
@@ -25,6 +28,9 @@ export function WorkspaceHeader({ draftSaved }: WorkspaceHeaderProps) {
         <span className="divider" />
         <span className="store-id">Store <b>platform-core</b></span>
         <span className="sync-status">↻</span>
+        <span className={`server-status ${serverStatus}`}>
+          <i /> {serverStatus === "ready" ? "Локальный server" : serverStatus === "checking" ? "Подключение…" : "Демо-режим"}
+        </span>
         <span className="saved-state"><i /> {draftSaved ? "Черновик сохранён" : "Есть изменения"}</span>
       </div>
 

@@ -64,8 +64,8 @@ export function OpenSpecWorkspace() {
           markdown={markdown}
           viewMode={viewMode}
           onBlur={saveDraft}
-          onChange={(event) => {
-            setMarkdown(event.target.value);
+          onChange={(nextMarkdown) => {
+            setMarkdown(nextMarkdown);
             setDraftSaved(false);
           }}
           onViewModeChange={setViewMode}

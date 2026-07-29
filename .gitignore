@@ -40,3 +40,8 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/bin/
+/release/
+*.tsbuildinfo
+/backend/internal/web/dist/*
+!/backend/internal/web/dist/index.html
