@@ -93,15 +93,37 @@ test("сохраняет доступные имена у интерактивн
 });
 
 test("использует самостоятельную реализацию без Untitled UI runtime-зависимости", async () => {
-  const [packageJson, page, css] = await Promise.all([
+  const [packageJson, workspace, css] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   assert.doesNotMatch(packageJson, /untitledui|react-aria|lucide/i);
-  assert.doesNotMatch(page, /from ["'][^"']*untitled/i);
+  assert.doesNotMatch(workspace, /from ["'][^"']*untitled/i);
   assert.match(css, /--green:/);
   assert.match(css, /\.segmented/);
   assert.match(css, /\.toast/);
+});
+
+test("сохраняет feature-first архитектуру и тонкий route entry point", async () => {
+  const [page, workspace, editor, assistant, model, uiPrimitive] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/AiAssistantPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/ui/IconButton.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /OpenSpecWorkspace/);
+  assert.ok(page.split("\n").length <= 8, "route entry point должен оставаться тонким");
+  assert.match(workspace, /WorkspaceHeader/);
+  assert.match(workspace, /WorkspaceSidebar/);
+  assert.match(workspace, /MarkdownEditor/);
+  assert.match(workspace, /AiAssistantPanel/);
+  assert.match(editor, /interface MarkdownEditorProps/);
+  assert.match(assistant, /interface AiAssistantPanelProps/);
+  assert.match(model, /export type ViewMode/);
+  assert.match(uiPrimitive, /ButtonHTMLAttributes/);
 });
