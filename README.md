@@ -46,6 +46,30 @@ git push origin v0.1.0
 `SHA256SUMS`. Повторный ручной запуск для существующего тега обновляет assets
 того же Release.
 
+## Разработка через OpenSpec
+
+Baseline продукта хранится в `openspec/specs/` как набор независимых
+capabilities. Перед изменением поведения создаётся OpenSpec change с proposal,
+delta specs, design и tasks. Код изменяется только после проверки этих
+артефактов.
+
+Обычный цикл работы с Codex:
+
+1. Попросить `$openspec-propose` подготовить change и описать требуемое
+   поведение.
+2. Проверить proposal, delta specs, design и tasks в
+   `openspec/changes/<change-name>/`.
+3. Запустить `$openspec-apply-change` для реализации утверждённых задач.
+4. Выполнить `npm run check`; команда включает strict validation всех baseline
+   specs.
+5. После завершения использовать `$openspec-archive-change`, чтобы
+   синхронизировать change с baseline и перенести его в архив.
+
+Основные правила проекта, технологический контекст и ограничения безопасности
+зафиксированы в `openspec/config.yaml`. Версия OpenSpec CLI закреплена в
+devDependencies, поэтому отдельная глобальная установка для разработки из
+исходников не обязательна.
+
 ## Архитектура
 
 Проект построен по feature-first принципу: бизнес-функции сгруппированы по
