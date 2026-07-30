@@ -1,13 +1,16 @@
 import { IconButton } from "@/components/ui/IconButton";
 import { files } from "@/features/workspace/model/workspace-data";
+import { RepositoriesPanel } from "@/features/repositories/components/RepositoriesPanel";
+import type { RepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 
 interface WorkspaceSidebarProps {
   activeFile: string;
   onFileSelect: (fileId: string) => void;
   onClose: () => void;
+  repositories: RepositoriesController;
 }
 
-export function WorkspaceSidebar({ activeFile, onFileSelect, onClose }: WorkspaceSidebarProps) {
+export function WorkspaceSidebar({ activeFile, onFileSelect, onClose, repositories }: WorkspaceSidebarProps) {
   return (
     <aside className="sidebar">
       <div className="sidebar-heading">
@@ -15,7 +18,7 @@ export function WorkspaceSidebar({ activeFile, onFileSelect, onClose }: Workspac
         <IconButton label="Свернуть панель" onClick={onClose}>‹</IconButton>
       </div>
       <button className="nav-item"><span>⌂</span> Рабочее пространство</button>
-      <button className="nav-item"><span>▱</span> Репозитории <small>3</small></button>
+      <button className="nav-item"><span>▱</span> Репозитории <small>{repositories.repositories.length}</small></button>
       <button className="nav-item"><span>⌁</span> Git <b>4</b></button>
 
       <div className="sidebar-heading files-heading">
@@ -40,11 +43,7 @@ export function WorkspaceSidebar({ activeFile, onFileSelect, onClose }: Workspac
         <button className="tree-row root archive"><span>›</span><b>□</b> archive <small>18</small></button>
       </div>
 
-      <div className="repo-summary">
-        <div className="sidebar-heading"><span>КОНТЕКСТ</span><button>Управлять</button></div>
-        <div className="repo-row"><i className="repo-icon">◆</i><span><b>platform-api</b><small>main · чисто</small></span><em /></div>
-        <div className="repo-row"><i className="repo-icon">◆</i><span><b>platform-web</b><small>feature/sso · чисто</small></span><em /></div>
-      </div>
+      <RepositoriesPanel controller={repositories} />
     </aside>
   );
 }

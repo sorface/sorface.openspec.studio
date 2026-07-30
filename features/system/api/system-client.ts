@@ -1,12 +1,14 @@
-import type { HealthResponse } from "@/features/system/model/system-types";
+import { apiRequest } from "@/features/api/api-client";
+import type { HealthResponse, SessionResponse, SystemCapabilities } from "@/features/system/model/system-types";
 
 export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
-  const response = await fetch("/api/v1/system/health", {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(`Health request failed with status ${response.status}`);
-  }
-  return response.json() as Promise<HealthResponse>;
+  return apiRequest<HealthResponse>("/api/v1/system/health", { signal });
+}
+
+export async function getSession(signal?: AbortSignal): Promise<SessionResponse> {
+  return apiRequest<SessionResponse>("/api/v1/system/session", { signal });
+}
+
+export async function getCapabilities(signal?: AbortSignal): Promise<SystemCapabilities> {
+  return apiRequest<SystemCapabilities>("/api/v1/system/capabilities", { signal });
 }

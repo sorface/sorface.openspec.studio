@@ -1,6 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
+import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
+import { useAiOperationsController } from "@/features/ai-operations/hooks/useAiOperationsController";
 import { AiAssistantPanel } from "./AiAssistantPanel";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { WorkspaceFooter } from "./WorkspaceFooter";
@@ -10,6 +13,13 @@ import { initialMarkdown } from "@/features/workspace/model/workspace-data";
 import type { AssistantMode, ViewMode } from "@/features/workspace/model/workspace-types";
 
 export function OpenSpecWorkspace() {
+  const projects = useProjectsController();
+  const repositories = useRepositoriesController(projects.activeProject?.id);
+  const configuredProvider = projects.activeProject?.defaultAiProvider ?? "codex";
+  const ai = useAiOperationsController(projects.activeProject?.id, configuredProvider, projects.activeProject?.defaultModel ?? undefined);
+  const providerAvailable = projects.capabilities?.tools.some((tool) =>
+    tool.name === configuredProvider.toLowerCase() && tool.available && tool.supported !== false && tool.nonInteractive !== false,
+  ) ?? false;
   const [activeFile, setActiveFile] = useState("proposal");
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
   const [markdown, setMarkdown] = useState(initialMarkdown);
@@ -18,7 +28,7 @@ export function OpenSpecWorkspace() {
   const [rightOpen, setRightOpen] = useState(true);
   const [assistantMode, setAssistantMode] = useState<AssistantMode>("assistant");
   const [prompt, setPrompt] = useState("");
-  const [messages, setMessages] = useState<string[]>([]);
+  const [messages] = useState<string[]>([]);
   const [toast, setToast] = useState("");
 
   const lines = useMemo(() => markdown.split("\n"), [markdown]);
@@ -34,28 +44,20 @@ export function OpenSpecWorkspace() {
   };
 
   const writeFile = () => {
-    setDraftSaved(true);
-    notify("Черновик записан в working tree");
+    notify("API записи Markdown пока не реализован");
   };
 
   const sendPrompt = () => {
     if (!prompt.trim()) return;
-    setMessages((current) => [...current, prompt.trim()]);
-    setPrompt("");
-    window.setTimeout(() => {
-      setMessages((current) => [
-        ...current,
-        "Я уточнил критерии безопасности и подготовил предложение. Изменения доступны для review.",
-      ]);
-    }, 450);
+    void ai.send(prompt).then(() => setPrompt("")).catch(() => undefined);
   };
 
   return (
     <main className="app-shell">
-      <WorkspaceHeader draftSaved={draftSaved} />
+      <WorkspaceHeader draftSaved={draftSaved} projects={projects} />
 
       <section className={`workspace ${leftOpen ? "" : "left-collapsed"} ${rightOpen ? "" : "right-collapsed"}`}>
-        <WorkspaceSidebar activeFile={activeFile} onFileSelect={setActiveFile} onClose={() => setLeftOpen(false)} />
+        <WorkspaceSidebar activeFile={activeFile} onFileSelect={setActiveFile} onClose={() => setLeftOpen(false)} repositories={repositories} />
         {!leftOpen && <button className="open-panel left" onClick={() => setLeftOpen(true)}>›</button>}
 
         <MarkdownEditor
@@ -80,6 +82,8 @@ export function OpenSpecWorkspace() {
           onModeChange={setAssistantMode}
           onPromptChange={setPrompt}
           onSend={sendPrompt}
+          ai={ai}
+          providerAvailable={providerAvailable}
         />
         {!rightOpen && <button className="open-panel right" onClick={() => setRightOpen(true)}>‹</button>}
       </section>

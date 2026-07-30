@@ -12,27 +12,38 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
+	aiservice "github.com/sorface/openspec-studio/backend/internal/ai"
 	"github.com/sorface/openspec-studio/backend/internal/project"
+	"github.com/sorface/openspec-studio/backend/internal/repository"
 	"github.com/sorface/openspec-studio/backend/internal/tools"
 )
 
 type Server struct {
-	address      string
-	csrfToken    string
-	projects     *project.Service
-	static       http.Handler
-	logger       *slog.Logger
-	capabilities func(context.Context) tools.Capabilities
+	address              string
+	csrfToken            string
+	projects             *project.Service
+	static               http.Handler
+	logger               *slog.Logger
+	capabilities         func(context.Context) tools.Capabilities
+	repositories         *repository.Service
+	aiOperations         *aiservice.Service
+	ssePollInterval      time.Duration
+	sseHeartbeatInterval time.Duration
 }
 
 type Options struct {
-	Address      string
-	Projects     *project.Service
-	Static       http.Handler
-	Logger       *slog.Logger
-	Capabilities func(context.Context) tools.Capabilities
+	Address              string
+	Projects             *project.Service
+	Static               http.Handler
+	Logger               *slog.Logger
+	Capabilities         func(context.Context) tools.Capabilities
+	Repositories         *repository.Service
+	AIOperations         *aiservice.Service
+	SSEPollInterval      time.Duration
+	SSEHeartbeatInterval time.Duration
 }
 
 func New(options Options) *Server {
@@ -42,13 +53,25 @@ func New(options Options) *Server {
 	if options.Capabilities == nil {
 		options.Capabilities = tools.Detect
 	}
+	pollInterval := options.SSEPollInterval
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+	heartbeatInterval := options.SSEHeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 15 * time.Second
+	}
 	return &Server{
-		address:      options.Address,
-		csrfToken:    randomToken(),
-		projects:     options.Projects,
-		static:       options.Static,
-		logger:       options.Logger,
-		capabilities: options.Capabilities,
+		address:              options.Address,
+		csrfToken:            randomToken(),
+		projects:             options.Projects,
+		static:               options.Static,
+		logger:               options.Logger,
+		capabilities:         options.Capabilities,
+		repositories:         options.Repositories,
+		aiOperations:         options.AIOperations,
+		ssePollInterval:      pollInterval,
+		sseHeartbeatInterval: heartbeatInterval,
 	}
 }
 
@@ -62,8 +85,223 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{projectId}", server.getProject)
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}", server.updateProject)
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}", server.deleteProject)
+	if server.repositories != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/repositories", server.listRepositories)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/repository-clones", server.createRepositoryClone)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/repository-clones/{operationId}", server.getRepositoryClone)
+		mux.HandleFunc("DELETE /api/v1/projects/{projectId}/repository-clones/{operationId}", server.cancelRepositoryClone)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/repository-clones/{operationId}/events", server.repositoryCloneEvents)
+	}
+	if server.aiOperations != nil {
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/ai/context-manifests", server.createAIContextManifest)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/ai/operations", server.createAIOperation)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/ai/operations/{operationId}", server.getAIOperation)
+		mux.HandleFunc("DELETE /api/v1/projects/{projectId}/ai/operations/{operationId}", server.cancelAIOperation)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/ai/operations/{operationId}/events", server.aiOperationEvents)
+	}
 	mux.Handle("/", server.static)
 	return server.withRecovery(server.withSecurity(server.withCorrelationID(mux)))
+}
+
+func (server *Server) createAIContextManifest(response http.ResponseWriter, request *http.Request) {
+	var input aiservice.ManifestRequest
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	manifest, err := server.aiOperations.BuildManifest(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleAIError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, manifest)
+}
+
+func (server *Server) createAIOperation(response http.ResponseWriter, request *http.Request) {
+	var input aiservice.CreateInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	input.CorrelationID = correlationID(request)
+	item, err := server.aiOperations.Start(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleAIError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, item)
+}
+
+func (server *Server) getAIOperation(response http.ResponseWriter, request *http.Request) {
+	item, err := server.aiOperations.Get(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+	if err != nil {
+		server.handleAIError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) cancelAIOperation(response http.ResponseWriter, request *http.Request) {
+	item, err := server.aiOperations.Cancel(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+	if err != nil {
+		server.handleAIError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) aiOperationEvents(response http.ResponseWriter, request *http.Request) {
+	after, _ := strconv.ParseInt(request.Header.Get("Last-Event-ID"), 10, 64)
+	response.Header().Set("Content-Type", "text/event-stream")
+	response.Header().Set("Cache-Control", "no-cache")
+	flusher, ok := response.(http.Flusher)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(server.ssePollInterval)
+	heartbeat := time.NewTicker(server.sseHeartbeatInterval)
+	defer ticker.Stop()
+	defer heartbeat.Stop()
+	for {
+		events, err := server.aiOperations.Events(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"), after)
+		if err != nil {
+			return
+		}
+		for _, event := range events {
+			fmt.Fprintf(response, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, event.Payload)
+			after = event.Sequence
+			flusher.Flush()
+		}
+		item, err := server.aiOperations.Get(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+		if err != nil || item.Status.Terminal() {
+			return
+		}
+		select {
+		case <-request.Context().Done():
+			return
+		case <-ticker.C:
+		case <-heartbeat.C:
+			fmt.Fprint(response, ": heartbeat\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func (server *Server) handleAIError(response http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, project.ErrNotFound):
+		server.writeError(response, request, http.StatusNotFound, "PROJECT_NOT_FOUND", "Проект или операция не найдены", nil)
+	case errors.Is(err, aiservice.ErrProviderUnavailable):
+		server.writeError(response, request, http.StatusConflict, "AI_PROVIDER_UNAVAILABLE", "Agent CLI недоступен", nil)
+	case errors.Is(err, aiservice.ErrProviderUnsupported):
+		server.writeError(response, request, http.StatusBadRequest, "AI_PROVIDER_UNSUPPORTED", "Agent CLI не поддерживает безопасный режим", nil)
+	case errors.Is(err, aiservice.ErrOperationConflict):
+		server.writeError(response, request, http.StatusConflict, "AI_OPERATION_CONFLICT", "AI-операция уже выполняется", nil)
+	case errors.Is(err, aiservice.ErrContextStale):
+		server.writeError(response, request, http.StatusConflict, "AI_CONTEXT_STALE", "Контекст изменился, проверьте его повторно", nil)
+	case errors.Is(err, aiservice.ErrInvalidContext):
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_AI_CONTEXT", "Контекст не разрешён", nil)
+	default:
+		server.writeError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "AI-операция не выполнена", nil)
+	}
+}
+
+func (server *Server) listRepositories(response http.ResponseWriter, request *http.Request) {
+	items, err := server.repositories.List(request.Context(), request.PathValue("projectId"))
+	if err != nil {
+		server.handleRepositoryError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"items": items})
+}
+
+func (server *Server) createRepositoryClone(response http.ResponseWriter, request *http.Request) {
+	var input repository.CloneInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	input.CorrelationID = correlationID(request)
+	item, err := server.repositories.StartClone(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleRepositoryError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, item)
+}
+
+func (server *Server) getRepositoryClone(response http.ResponseWriter, request *http.Request) {
+	item, err := server.repositories.Get(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+	if err != nil {
+		server.handleRepositoryError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) cancelRepositoryClone(response http.ResponseWriter, request *http.Request) {
+	item, err := server.repositories.Cancel(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+	if err != nil {
+		server.handleRepositoryError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) repositoryCloneEvents(response http.ResponseWriter, request *http.Request) {
+	after, _ := strconv.ParseInt(request.Header.Get("Last-Event-ID"), 10, 64)
+	response.Header().Set("Content-Type", "text/event-stream")
+	response.Header().Set("Cache-Control", "no-cache")
+	response.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := response.(http.Flusher)
+	if !ok {
+		server.writeError(response, request, http.StatusInternalServerError, "SSE_UNAVAILABLE", "SSE недоступен", nil)
+		return
+	}
+	ticker := time.NewTicker(server.ssePollInterval)
+	heartbeat := time.NewTicker(server.sseHeartbeatInterval)
+	defer ticker.Stop()
+	defer heartbeat.Stop()
+	for {
+		events, err := server.repositories.Events(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"), after)
+		if err != nil {
+			return
+		}
+		for _, event := range events {
+			fmt.Fprintf(response, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, event.Payload)
+			after = event.Sequence
+			flusher.Flush()
+		}
+		item, err := server.repositories.Get(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+		if err != nil || item.Status.Terminal() {
+			return
+		}
+		select {
+		case <-request.Context().Done():
+			return
+		case <-ticker.C:
+		case <-heartbeat.C:
+			fmt.Fprint(response, ": heartbeat\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func (server *Server) handleRepositoryError(response http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, project.ErrNotFound):
+		server.writeError(response, request, http.StatusNotFound, "PROJECT_NOT_FOUND", "Проект или операция не найдены", nil)
+	case errors.Is(err, repository.ErrInvalidGitURL):
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_GIT_URL", "Некорректный Git URL", nil)
+	case errors.Is(err, repository.ErrTargetNotEmpty):
+		server.writeError(response, request, http.StatusConflict, "CLONE_TARGET_NOT_EMPTY", "Целевой каталог не пуст", nil)
+	case errors.Is(err, repository.ErrPathOutsideScope):
+		server.writeError(response, request, http.StatusBadRequest, "PATH_OUTSIDE_SCOPE", "Целевой путь не разрешён", nil)
+	case errors.Is(err, repository.ErrOperationConflict):
+		server.writeError(response, request, http.StatusConflict, "REPOSITORY_CLONE_CONFLICT", "Клонирование уже выполняется", nil)
+	default:
+		server.writeError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Операция с репозиторием не выполнена", nil)
+	}
 }
 
 func (server *Server) Listen(ctx context.Context) (string, error) {

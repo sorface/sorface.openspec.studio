@@ -42,6 +42,37 @@ button { color: inherit; }
 .project-switcher b { font-size: 13px; font-weight: 650; }
 .project-switcher em { font-size: 16px; font-style: normal; color: #7f8a86; }
 .project-avatar { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; color: white; background: linear-gradient(140deg,#303d39,#65746f); font-size: 12px; font-weight: 700; }
+.project-switcher-wrap { position: relative; min-width: 246px; }
+.project-popover { position: absolute; top: 48px; left: 0; z-index: 30; width: 330px; max-height: min(520px, calc(100vh - 80px)); overflow: auto; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 18px 50px rgba(20,40,32,.18); }
+.project-popover-heading { min-height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 5px 6px; border-bottom: 1px solid var(--soft-line); }
+.project-popover-heading b { font-size: 12px; }
+.project-popover-heading button { width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: #69746f; cursor: pointer; }
+.project-popover-heading button:hover { background: #eef2f0; }
+.project-state { margin: 8px 3px; padding: 12px; border-radius: 7px; background: #f5f7f6; color: #68736f; font-size: 10.5px; line-height: 1.5; }
+.project-state.error { color: #913f37; background: #fff4f2; }
+.project-state p { margin: 0 0 7px; }
+.project-state small { display: block; margin-bottom: 7px; overflow-wrap: anywhere; }
+.project-state button { min-height: 28px; border: 1px solid #d6c0bc; border-radius: 6px; background: #fff; cursor: pointer; }
+.project-option { position: relative; width: 100%; min-height: 50px; margin-top: 4px; padding: 6px 32px 6px 42px; display: grid; grid-template-columns: 1fr; text-align: left; border: 1px solid transparent; border-radius: 7px; background: transparent; cursor: pointer; }
+.project-option:hover, .project-option.active { border-color: #cfe0d8; background: #f3f8f6; }
+.project-option > span { position: absolute; left: 8px; top: 10px; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 6px; background: #dfe9e4; color: #315e4c; font-size: 10px; font-weight: 700; }
+.project-option b { overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; }
+.project-option small { overflow: hidden; text-overflow: ellipsis; color: #89938f; font-size: 9px; }
+.project-option em { position: absolute; right: 10px; top: 17px; color: var(--green); font-style: normal; }
+.project-actions { display: flex; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--soft-line); }
+.project-actions button { min-height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #52605a; font-size: 9.5px; cursor: pointer; }
+.project-actions button:disabled { opacity: .45; cursor: default; }
+.project-actions .danger { margin-left: auto; color: #a34238; }
+.project-form { display: flex; flex-direction: column; gap: 10px; }
+.project-form > p { margin: 4px; color: #596660; font-size: 10.5px; line-height: 1.55; }
+.project-form label { display: flex; flex-direction: column; gap: 5px; color: #68736f; font-size: 9.5px; }
+.project-form input { width: 100%; height: 34px; padding: 0 9px; border: 1px solid #cad4d0; border-radius: 6px; outline: none; color: #35423d; }
+.project-form input:focus { border-color: #78a38f; box-shadow: 0 0 0 2px rgba(15,112,80,.08); }
+.form-error { padding: 8px; border-radius: 6px; background: #fff1ef; color: #963f36; font-size: 9.5px; }
+.form-error small { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+.primary-submit, .danger-submit { min-height: 34px; border: 0; border-radius: 7px; color: #fff; background: var(--green); font-size: 10px; font-weight: 650; cursor: pointer; }
+.danger-submit { background: #a54238; }
+.primary-submit:disabled, .danger-submit:disabled { opacity: .55; cursor: default; }
 
 .workspace-status { flex: 1; min-width: 260px; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--muted); font-size: 11px; }
 .branch-chip { display: flex; align-items: center; gap: 6px; color: #34423d; font-family: var(--font-code); }
@@ -59,6 +90,7 @@ button { color: inherit; }
 .top-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 280px; }
 .provider-button { display: flex; align-items: center; gap: 6px; height: 34px; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 0 9px; font-size: 11px; cursor: pointer; box-shadow: 0 1px 2px rgba(20,40,32,.03); }
 .provider-button small { color: #7e8885; border-left: 1px solid var(--line); padding-left: 7px; }
+.provider-button:disabled { color: #8f9895; background: #f5f7f6; cursor: default; }
 .provider-icon { color: #111; font-size: 14px; }
 .icon-button { min-width: 30px; height: 30px; display: inline-grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #65716d; cursor: pointer; font-size: 15px; }
 .icon-button:hover { background: #eef2f0; color: var(--ink); }
@@ -104,6 +136,17 @@ button { color: inherit; }
 .repo-row b { font-size: 10.5px; font-weight: 620; }
 .repo-row small { color: #8a9490; font-size: 9px; }
 .repo-row > em { width: 6px; height: 6px; border-radius: 50%; background: #26a473; }
+.repo-row > em.unavailable { background: #b7bfbc; }
+.repo-empty { margin: 4px 14px 10px; color: #919a97; font-size: 9px; }
+.clone-form { margin: 0 9px 8px; padding: 9px; display: grid; gap: 7px; border: 1px solid var(--line); border-radius: 7px; background: #fff; }
+.clone-form label { display: grid; gap: 3px; color: #74807b; font-size: 8.5px; }
+.clone-form input { width: 100%; height: 28px; padding: 0 7px; border: 1px solid #ced7d3; border-radius: 5px; font-size: 9px; }
+.clone-form button, .repo-progress button, .repo-error button { min-height: 27px; border: 0; border-radius: 5px; background: var(--green); color: #fff; font-size: 9px; cursor: pointer; }
+.repo-progress, .repo-error { margin: 0 9px 8px; padding: 8px; display: flex; align-items: center; gap: 7px; border-radius: 6px; background: #edf6f2; color: #496158; font-size: 9px; }
+.repo-progress span { flex: 1; }
+.repo-progress button, .repo-error button { padding: 0 7px; background: #fff; color: #586660; border: 1px solid #cad5d0; }
+.repo-error { display: grid; background: #fff2f0; color: #983f36; }
+.repo-error small { overflow-wrap: anywhere; }
 
 .editor-area { min-width: 0; min-height: 0; display: grid; grid-template-rows: 47px 1fr 30px; background: #fff; }
 .editor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 11px 0 18px; border-bottom: 1px solid var(--line); }
@@ -188,6 +231,15 @@ button { color: inherit; }
 .context-file b { flex: 1; font-size: 10px; font-weight: 560; }
 .context-file button { border: 0; background: transparent; color: #9aa29f; cursor: pointer; }
 .add-context { width: 100%; height: 34px; margin-top: 15px; border: 1px dashed #bdc9c4; border-radius: 7px; background: transparent; color: var(--green); font-size: 10px; cursor: pointer; }
+.ai-operation-status { margin: 10px 0; padding: 9px; display: flex; align-items: center; justify-content: space-between; border-radius: 7px; background: #eaf4ef; color: #35604f; font-size: 10px; }
+.ai-operation-status button { border: 1px solid #bfd0c8; border-radius: 5px; background: #fff; color: #52645c; font-size: 9px; cursor: pointer; }
+.ai-result { margin-top: 12px; padding: 10px; border: 1px solid #cfe0d8; border-radius: 8px; background: #fff; font-size: 10px; }
+.ai-result p { line-height: 1.5; color: #46564f; }
+.ai-result summary { cursor: pointer; color: var(--green); }
+.ai-result pre { max-height: 180px; overflow: auto; white-space: pre-wrap; font: 9px var(--font-code); }
+.context-file small { color: #8d9793; font-size: 8px; }
+.context-file.excluded { opacity: .58; text-decoration: line-through; }
+.context-limits { margin-top: 10px !important; font-family: var(--font-code); font-size: 8px !important; }
 
 .open-panel { position: absolute; top: 54px; z-index: 4; width: 24px; height: 42px; border: 1px solid var(--line); background: #fff; color: #61706a; cursor: pointer; }
 .open-panel.left { left: 0; border-radius: 0 7px 7px 0; }

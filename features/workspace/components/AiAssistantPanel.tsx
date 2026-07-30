@@ -1,6 +1,7 @@
 import type { KeyboardEvent } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import type { AssistantMode } from "@/features/workspace/model/workspace-types";
+import type { AiOperationsController } from "@/features/ai-operations/hooks/useAiOperationsController";
 
 interface AiAssistantPanelProps {
   assistantMode: AssistantMode;
@@ -10,10 +11,13 @@ interface AiAssistantPanelProps {
   onModeChange: (mode: AssistantMode) => void;
   onPromptChange: (prompt: string) => void;
   onSend: () => void;
+  ai: AiOperationsController;
+  providerAvailable: boolean;
 }
 
 export function AiAssistantPanel(props: AiAssistantPanelProps) {
-  const { assistantMode, messages, prompt, onClose, onModeChange, onPromptChange, onSend } = props;
+  const { assistantMode, messages, prompt, onClose, onModeChange, onPromptChange, onSend, ai, providerAvailable } = props;
+  const running = ai.operation && ["queued", "running", "validating"].includes(ai.operation.status);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -46,13 +50,22 @@ export function AiAssistantPanel(props: AiAssistantPanelProps) {
             {messages.map((message, index) => (
               <div key={`${message}-${index}`} className={index % 2 === 0 ? "chat-message user" : "chat-message ai"}>{message}</div>
             ))}
+            {running && <div className="ai-operation-status">{ai.operation?.status === "validating" ? "Проверка результата…" : "Agent CLI выполняет задачу…"} <button onClick={() => void ai.cancel()}>Отменить</button></div>}
+            {ai.error && <div className="form-error" role="alert">{ai.error.message}{ai.error.correlationId && <small>Correlation ID: {ai.error.correlationId}</small>}</div>}
+            {ai.result && (
+              <div className="ai-result">
+                <span className="eyebrow">AWAITING REVIEW</span>
+                <p>{ai.result.finalResponse}</p>
+                {ai.result.files.map((file) => <details key={file.path}><summary>{file.path}</summary><pre>{file.after}</pre></details>)}
+              </div>
+            )}
           </div>
           <div className="prompt-box">
             <textarea aria-label="Инструкция для AI" placeholder="Опишите, что нужно изменить..." value={prompt} onChange={(event) => onPromptChange(event.target.value)} onKeyDown={handleKeyDown} />
             <div className="prompt-tools">
               <button title="Добавить контекст">⌕ <span>Контекст</span></button>
               <button title="Прикрепить файл">⌁</button>
-              <button className="send" onClick={onSend} disabled={!prompt.trim()}>↑</button>
+              <button className="send" onClick={onSend} disabled={!prompt.trim() || !ai.manifest || !!running || !providerAvailable}>↑</button>
             </div>
             <small><i /> AI может изменять только OpenSpec Store</small>
           </div>
@@ -60,12 +73,13 @@ export function AiAssistantPanel(props: AiAssistantPanelProps) {
       ) : (
         <div className="context-panel">
           <span className="eyebrow">В ЗАПРОСЕ</span>
-          <h3>4 файла · 18,6 KB</h3>
-          <p>Проверьте итоговый набор до запуска AI.</p>
-          {["proposal.md", "LoginService.ts", "oidc.config.ts", "auth.spec.ts"].map((name, index) => (
-            <div className="context-file" key={name}><span>{index ? "◇" : "◆"}</span><b>{name}</b><button>×</button></div>
+          <h3>{ai.manifest ? `${ai.manifest.entries.filter((entry) => entry.included).length} включено · ${ai.manifest.entries.filter((entry) => !entry.included).length} исключено` : "Контекст не проверен"}</h3>
+          <p>Backend проверит пути, секреты, размер и контрольные суммы до запуска AI.</p>
+          {ai.manifest?.entries.map((entry, index) => (
+            <div className={`context-file ${entry.included ? "" : "excluded"}`} key={`${entry.source}:${entry.path}`}><span>{index ? "◇" : "◆"}</span><b>{entry.path}</b><small>{entry.reason}</small></div>
           ))}
-          <button className="add-context">＋ Добавить файл</button>
+          {ai.manifest && <p className="context-limits">До {ai.manifest.limits.maxFiles} файлов · {Math.round(ai.manifest.limits.maxTotalBytes / 1024 / 1024)} MiB</p>}
+          <button className="add-context" disabled={ai.pending} onClick={() => void ai.reviewContext()}>{ai.pending ? "Проверка…" : "✓ Проверить контекст"}</button>
         </div>
       )}
     </aside>

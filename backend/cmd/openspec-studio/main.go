@@ -9,10 +9,13 @@ import (
 	"path/filepath"
 	"syscall"
 
+	aiservice "github.com/sorface/openspec-studio/backend/internal/ai"
 	"github.com/sorface/openspec-studio/backend/internal/config"
 	"github.com/sorface/openspec-studio/backend/internal/httpapi"
 	"github.com/sorface/openspec-studio/backend/internal/platform/browser"
+	processrunner "github.com/sorface/openspec-studio/backend/internal/process"
 	"github.com/sorface/openspec-studio/backend/internal/project"
+	"github.com/sorface/openspec-studio/backend/internal/repository"
 	"github.com/sorface/openspec-studio/backend/internal/storage"
 	"github.com/sorface/openspec-studio/backend/internal/web"
 )
@@ -35,14 +38,21 @@ func run() error {
 		return err
 	}
 	defer store.Close()
+	if _, err := store.RecoverInterrupted(context.Background()); err != nil {
+		return err
+	}
+	supervisor := processrunner.NewSupervisor()
+	defer supervisor.Close()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	server := httpapi.New(httpapi.Options{
-		Address:  cfg.Address,
-		Projects: project.NewService(store),
-		Static:   web.Handler(),
+		Address:      cfg.Address,
+		Projects:     project.NewService(store),
+		Repositories: repository.NewService(store, supervisor),
+		AIOperations: aiservice.NewService(store, supervisor, cfg.DataDir),
+		Static:       web.Handler(),
 	})
 	serverURL, err := server.Listen(ctx)
 	if err != nil {

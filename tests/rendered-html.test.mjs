@@ -25,7 +25,7 @@ test("рендерит продуктовый workspace вместо старт�
 
   const html = await response.text();
   assert.match(html, /<title>OpenSpec Studio<\/title>/i);
-  assert.match(html, /Platform specifications/);
+  assert.match(html, /Загрузка проектов/);
   assert.match(html, /AI-ассистент/);
   assert.match(html, /Commit &amp; Push/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview|react-loading-skeleton/i);
@@ -36,13 +36,13 @@ test("покрывает навигацию по Store и подключённы
   for (const expected of [
     "Рабочее пространство",
     "Репозитории",
-    "platform-core",
+    "не выбран",
     "add-sso-auth",
     "proposal.md",
     "design.md",
     "tasks.md",
-    "platform-api",
-    "platform-web",
+    "Clone",
+    "Репозитории не подключены",
   ]) {
     assert.match(html, new RegExp(expected));
   }

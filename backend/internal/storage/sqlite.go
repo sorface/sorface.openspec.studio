@@ -11,11 +11,17 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/sorface/openspec-studio/backend/internal/operation"
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	_ "modernc.org/sqlite"
 )
 
 const schema = `
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	version INTEGER PRIMARY KEY,
+	applied_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS projects (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
@@ -27,6 +33,69 @@ CREATE TABLE IF NOT EXISTS projects (
 	updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS projects_updated_at_idx ON projects(updated_at DESC);
+CREATE TABLE IF NOT EXISTS repositories (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	name TEXT NOT NULL,
+	path TEXT NOT NULL UNIQUE,
+	remote_url TEXT NOT NULL,
+	fingerprint TEXT NOT NULL,
+	branch TEXT NOT NULL DEFAULT '',
+	commit_sha TEXT NOT NULL,
+	dirty INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS repositories_project_idx ON repositories(project_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS operations (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	kind TEXT NOT NULL,
+	status TEXT NOT NULL,
+	provider TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	prompt TEXT NOT NULL DEFAULT '',
+	input_json TEXT NOT NULL DEFAULT '{}',
+	result_json TEXT NOT NULL DEFAULT '',
+	error_code TEXT NOT NULL DEFAULT '',
+	error_message TEXT NOT NULL DEFAULT '',
+	correlation_id TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS operations_project_idx ON operations(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS operations_active_idx ON operations(project_id, kind, status);
+CREATE TABLE IF NOT EXISTS operation_events (
+	sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+	operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+	type TEXT NOT NULL,
+	payload TEXT NOT NULL DEFAULT '{}',
+	created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS operation_events_operation_idx ON operation_events(operation_id, sequence);
+CREATE TABLE IF NOT EXISTS ai_context_entries (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+	source TEXT NOT NULL,
+	path TEXT NOT NULL,
+	size INTEGER NOT NULL,
+	checksum TEXT NOT NULL,
+	reason TEXT NOT NULL,
+	included INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS operation_audit (
+	operation_id TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE,
+	executable TEXT NOT NULL,
+	arguments TEXT NOT NULL,
+	exit_code INTEGER NOT NULL,
+	stop_reason TEXT NOT NULL DEFAULT '',
+	stdout_bytes INTEGER NOT NULL,
+	stderr_bytes INTEGER NOT NULL,
+	duration_ms INTEGER NOT NULL,
+	created_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `
 
 type SQLite struct {
@@ -186,4 +255,247 @@ func newID() string {
 		panic("crypto/rand is unavailable")
 	}
 	return hex.EncodeToString(bytes)
+}
+
+func (store *SQLite) CreateOperation(ctx context.Context, item operation.Operation) (operation.Operation, error) {
+	now := time.Now().UTC()
+	if item.ID == "" {
+		item.ID = newID()
+	}
+	if item.Status == "" {
+		item.Status = operation.StatusQueued
+	}
+	item.CreatedAt, item.UpdatedAt = now, now
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO operations
+		(id, project_id, kind, status, provider, model, prompt, input_json,
+		 result_json, error_code, error_message, correlation_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ProjectID, item.Kind, item.Status, item.Provider, item.Model,
+		item.Prompt, item.InputJSON, item.ResultJSON, item.ErrorCode, item.ErrorMessage,
+		item.CorrelationID, formatTime(now), formatTime(now))
+	return item, err
+}
+
+func (store *SQLite) GetOperation(ctx context.Context, id string) (operation.Operation, error) {
+	row := store.db.QueryRowContext(ctx, `
+		SELECT id, project_id, kind, status, provider, model, prompt, input_json,
+		       result_json, error_code, error_message, correlation_id, created_at, updated_at
+		FROM operations WHERE id = ?`, id)
+	return scanOperation(row)
+}
+
+func (store *SQLite) UpdateOperation(ctx context.Context, item operation.Operation) (operation.Operation, error) {
+	current, err := store.GetOperation(ctx, item.ID)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	if !operation.CanTransition(current.Status, item.Status) {
+		return operation.Operation{}, operation.ErrInvalidTransition
+	}
+	item.CreatedAt = current.CreatedAt
+	item.UpdatedAt = time.Now().UTC()
+	_, err = store.db.ExecContext(ctx, `
+		UPDATE operations SET status=?, provider=?, model=?, prompt=?, input_json=?,
+		result_json=?, error_code=?, error_message=?, correlation_id=?, updated_at=?
+		WHERE id=?`,
+		item.Status, item.Provider, item.Model, item.Prompt, item.InputJSON,
+		item.ResultJSON, item.ErrorCode, item.ErrorMessage, item.CorrelationID,
+		formatTime(item.UpdatedAt), item.ID)
+	return item, err
+}
+
+func (store *SQLite) HasActiveOperation(ctx context.Context, projectID string, kind operation.Kind) (bool, error) {
+	var count int
+	err := store.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM operations
+		WHERE project_id=? AND kind=? AND status IN ('queued','running','validating')`,
+		projectID, kind).Scan(&count)
+	return count > 0, err
+}
+
+func (store *SQLite) AddEvent(ctx context.Context, event operation.Event) (operation.Event, error) {
+	now := time.Now().UTC()
+	result, err := store.db.ExecContext(ctx, `
+		INSERT INTO operation_events(operation_id, type, payload, created_at)
+		VALUES (?, ?, ?, ?)`, event.OperationID, event.Type, event.Payload, formatTime(now))
+	if err != nil {
+		return operation.Event{}, err
+	}
+	event.Sequence, err = result.LastInsertId()
+	event.CreatedAt = now
+	return event, err
+}
+
+func (store *SQLite) ListEvents(ctx context.Context, operationID string, after int64) ([]operation.Event, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT sequence, operation_id, type, payload, created_at
+		FROM operation_events WHERE operation_id=? AND sequence>? ORDER BY sequence`,
+		operationID, after)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]operation.Event, 0)
+	for rows.Next() {
+		var item operation.Event
+		var created string
+		if err := rows.Scan(&item.Sequence, &item.OperationID, &item.Type, &item.Payload, &created); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (store *SQLite) CreateRepository(ctx context.Context, item operation.RepositoryLink) (operation.RepositoryLink, error) {
+	now := time.Now().UTC()
+	if item.ID == "" {
+		item.ID = newID()
+	}
+	item.CreatedAt, item.UpdatedAt = now, now
+	item.ReadOnlyForAI, item.Available = true, true
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO repositories
+		(id, project_id, name, path, remote_url, fingerprint, branch, commit_sha,
+		 dirty, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ProjectID, item.Name, item.Path, item.RemoteURL,
+		item.Fingerprint, item.Branch, item.CommitSHA, item.Dirty,
+		formatTime(now), formatTime(now))
+	return item, err
+}
+
+func (store *SQLite) ListRepositories(ctx context.Context, projectID string) ([]operation.RepositoryLink, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, project_id, name, path, remote_url, fingerprint, branch,
+		       commit_sha, dirty, created_at, updated_at
+		FROM repositories WHERE project_id=? ORDER BY updated_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]operation.RepositoryLink, 0)
+	for rows.Next() {
+		var item operation.RepositoryLink
+		var created, updated string
+		if err := rows.Scan(&item.ID, &item.ProjectID, &item.Name, &item.Path,
+			&item.RemoteURL, &item.Fingerprint, &item.Branch, &item.CommitSHA,
+			&item.Dirty, &created, &updated); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+		if err != nil {
+			return nil, err
+		}
+		item.ReadOnlyForAI, item.Available = true, true
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (store *SQLite) SaveContext(ctx context.Context, operationID string, entries []operation.ContextEntry) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, entry := range entries {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO ai_context_entries
+			(operation_id, source, path, size, checksum, reason, included)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, operationID, entry.Source, entry.Path,
+			entry.Size, entry.Checksum, entry.Reason, entry.Included); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (store *SQLite) SaveAudit(ctx context.Context, audit operation.Audit) error {
+	_, err := store.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO operation_audit
+		(operation_id, executable, arguments, exit_code, stop_reason,
+		 stdout_bytes, stderr_bytes, duration_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		audit.OperationID, audit.Executable, audit.Arguments, audit.ExitCode,
+		audit.StopReason, audit.StdoutBytes, audit.StderrBytes, audit.DurationMS,
+		formatTime(time.Now().UTC()))
+	return err
+}
+
+func (store *SQLite) GetAudit(ctx context.Context, operationID string) (operation.Audit, error) {
+	var item operation.Audit
+	var created string
+	err := store.db.QueryRowContext(ctx, `
+		SELECT operation_id, executable, arguments, exit_code, stop_reason,
+		       stdout_bytes, stderr_bytes, duration_ms, created_at
+		FROM operation_audit WHERE operation_id=?`, operationID).Scan(
+		&item.OperationID, &item.Executable, &item.Arguments, &item.ExitCode,
+		&item.StopReason, &item.StdoutBytes, &item.StderrBytes, &item.DurationMS, &created)
+	if err != nil {
+		return operation.Audit{}, err
+	}
+	item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	return item, err
+}
+
+func (store *SQLite) ListContext(ctx context.Context, operationID string) ([]operation.ContextEntry, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT operation_id, source, path, size, checksum, reason, included
+		FROM ai_context_entries WHERE operation_id=? ORDER BY id`, operationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]operation.ContextEntry, 0)
+	for rows.Next() {
+		var item operation.ContextEntry
+		if err := rows.Scan(&item.OperationID, &item.Source, &item.Path, &item.Size,
+			&item.Checksum, &item.Reason, &item.Included); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (store *SQLite) RecoverInterrupted(ctx context.Context) (int64, error) {
+	now := formatTime(time.Now().UTC())
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE operations SET status='failed', error_code='APPLICATION_RESTARTED',
+		error_message='Приложение было перезапущено', updated_at=?
+		WHERE status IN ('queued','running','validating')`, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func scanOperation(source scanner) (operation.Operation, error) {
+	var item operation.Operation
+	var created, updated string
+	err := source.Scan(&item.ID, &item.ProjectID, &item.Kind, &item.Status,
+		&item.Provider, &item.Model, &item.Prompt, &item.InputJSON, &item.ResultJSON,
+		&item.ErrorCode, &item.ErrorMessage, &item.CorrelationID, &created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return operation.Operation{}, project.ErrNotFound
+	}
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	return item, err
 }

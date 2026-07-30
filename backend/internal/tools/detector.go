@@ -9,10 +9,13 @@ import (
 )
 
 type Tool struct {
-	Name      string `json:"name"`
-	Available bool   `json:"available"`
-	Path      string `json:"path,omitempty"`
-	Version   string `json:"version,omitempty"`
+	Name           string   `json:"name"`
+	Available      bool     `json:"available"`
+	Path           string   `json:"path,omitempty"`
+	Version        string   `json:"version,omitempty"`
+	Supported      *bool    `json:"supported,omitempty"`
+	NonInteractive *bool    `json:"nonInteractive,omitempty"`
+	Models         []string `json:"models,omitempty"`
 }
 
 type Capabilities struct {
@@ -43,5 +46,18 @@ func detectOne(parent context.Context, name string) Tool {
 	if err != nil && version == "" {
 		version = "версия недоступна"
 	}
-	return Tool{Name: name, Available: true, Path: path, Version: version}
+	result := Tool{Name: name, Available: true, Path: path, Version: version}
+	if name == "codex" {
+		supported := true
+		result.Supported, result.NonInteractive = &supported, &supported
+	}
+	if name == "gigacode" {
+		helpCtx, helpCancel := context.WithTimeout(parent, 2*time.Second)
+		defer helpCancel()
+		help, _ := exec.CommandContext(helpCtx, path, "--help").CombinedOutput()
+		supported := strings.Contains(string(help), "--non-interactive") &&
+			strings.Contains(string(help), "--json") && strings.Contains(string(help), "--cwd")
+		result.Supported, result.NonInteractive = &supported, &supported
+	}
+	return result
 }
