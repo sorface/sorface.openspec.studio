@@ -19,7 +19,7 @@
     "setup": "npm install && npm run check && npm run build && npm start",
     "check": "npm run lint && npm run typecheck && npm test",
     "test": "npm run test:web && npm run test:backend",
-    "test:web": "npm run build:site && node --test tests/rendered-html.test.mjs",
+    "test:web": "npm run build:site && node --test tests/*.test.mjs",
     "test:backend": "go test ./backend/...",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern backend/internal/web/dist",
     "typecheck": "tsc -p tsconfig.app.json",
