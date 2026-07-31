@@ -1,6 +1,7 @@
 import { apiRequest } from "@/features/api/api-client";
 import type {
   CreateProjectInput,
+  CreateProjectFromGitInput,
   Project,
   ProjectListResponse,
   UpdateProjectInput,
@@ -19,6 +20,10 @@ export function getProject(projectId: string, signal?: AbortSignal): Promise<Pro
 
 export function createProject(input: CreateProjectInput): Promise<Project> {
   return apiRequest<Project>(projectsPath, { method: "POST", body: input });
+}
+
+export function createProjectFromGit(input: CreateProjectFromGitInput): Promise<Project> {
+  return apiRequest<Project>(`${projectsPath}/from-git`, { method: "POST", body: input });
 }
 
 export function updateProject(projectId: string, input: UpdateProjectInput): Promise<Project> {

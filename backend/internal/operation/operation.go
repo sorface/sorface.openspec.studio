@@ -11,12 +11,15 @@ type Status string
 const (
 	KindRepositoryClone Kind = "repository_clone"
 	KindAI              Kind = "ai"
+	KindOpenSpec        Kind = "openspec"
 
 	StatusQueued         Status = "queued"
 	StatusRunning        Status = "running"
 	StatusValidating     Status = "validating"
 	StatusCompleted      Status = "completed"
 	StatusAwaitingReview Status = "awaiting_review"
+	StatusAccepted       Status = "accepted"
+	StatusRejected       Status = "rejected"
 	StatusCancelled      Status = "cancelled"
 	StatusFailed         Status = "failed"
 )
@@ -24,20 +27,25 @@ const (
 var ErrInvalidTransition = errors.New("invalid operation status transition")
 
 type Operation struct {
-	ID            string    `json:"id"`
-	ProjectID     string    `json:"projectId"`
-	Kind          Kind      `json:"kind"`
-	Status        Status    `json:"status"`
-	Provider      string    `json:"provider,omitempty"`
-	Model         string    `json:"model,omitempty"`
-	Prompt        string    `json:"prompt,omitempty"`
-	InputJSON     string    `json:"-"`
-	ResultJSON    string    `json:"result,omitempty"`
-	ErrorCode     string    `json:"errorCode,omitempty"`
-	ErrorMessage  string    `json:"errorMessage,omitempty"`
-	CorrelationID string    `json:"correlationId,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID                  string    `json:"id"`
+	ProjectID           string    `json:"projectId"`
+	Kind                Kind      `json:"kind"`
+	Status              Status    `json:"status"`
+	Provider            string    `json:"provider,omitempty"`
+	Model               string    `json:"model,omitempty"`
+	Prompt              string    `json:"prompt,omitempty"`
+	InputJSON           string    `json:"-"`
+	ResultJSON          string    `json:"result,omitempty"`
+	ErrorCode           string    `json:"errorCode,omitempty"`
+	ErrorMessage        string    `json:"errorMessage,omitempty"`
+	CorrelationID       string    `json:"correlationId,omitempty"`
+	OpenSpecAction      string    `json:"openspecAction,omitempty"`
+	OpenSpecChange      string    `json:"openspecChange,omitempty"`
+	OpenSpecSchema      string    `json:"openspecSchema,omitempty"`
+	OpenSpecArtifact    string    `json:"openspecArtifact,omitempty"`
+	OpenSpecFingerprint string    `json:"openspecFingerprint,omitempty"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 type Event struct {
@@ -88,6 +96,7 @@ type Audit struct {
 
 func (status Status) Terminal() bool {
 	return status == StatusCompleted || status == StatusAwaitingReview ||
+		status == StatusAccepted || status == StatusRejected ||
 		status == StatusCancelled || status == StatusFailed
 }
 
@@ -103,7 +112,36 @@ func CanTransition(from, to Status) bool {
 	case StatusValidating:
 		return to == StatusCompleted || to == StatusAwaitingReview ||
 			to == StatusCancelled || to == StatusFailed
+	case StatusAwaitingReview:
+		return to == StatusAccepted || to == StatusRejected
 	default:
 		return false
 	}
+}
+
+type DraftSetStatus string
+
+const (
+	DraftAccepted DraftSetStatus = "accepted"
+	DraftWritten  DraftSetStatus = "written"
+)
+
+type DraftMutation struct {
+	ID           string `json:"id"`
+	SetID        string `json:"setId"`
+	Type         string `json:"type"`
+	Path         string `json:"path"`
+	PreviousPath string `json:"previousPath,omitempty"`
+	Before       string `json:"before,omitempty"`
+	After        string `json:"after,omitempty"`
+}
+
+type DraftSet struct {
+	ID          string          `json:"id"`
+	ProjectID   string          `json:"projectId"`
+	OperationID string          `json:"operationId"`
+	Status      DraftSetStatus  `json:"status"`
+	Mutations   []DraftMutation `json:"mutations"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/features/api/api-client";
 import {
   createProject,
+  createProjectFromGit,
   deleteProject,
   listProjects,
   updateProject,
@@ -15,6 +16,8 @@ import {
 } from "@/features/projects/model/project-selection";
 import type {
   CreateProjectInput,
+  CreateProjectFromGitInput,
+  ContextImportSummary,
   Project,
   ProjectViewStatus,
   UpdateProjectInput,
@@ -29,9 +32,12 @@ export interface ProjectsController {
   status: ProjectViewStatus;
   error: ApiError | null;
   mutationPending: boolean;
+  lastContextImport: ContextImportSummary | null;
   selectProject: (projectId: string) => void;
   create: (input: CreateProjectInput) => Promise<Project>;
+  createFromGit: (input: CreateProjectFromGitInput) => Promise<Project>;
   rename: (projectId: string, name: string) => Promise<Project>;
+  configureAi: (projectId: string, provider: string, model: string) => Promise<Project>;
   remove: (projectId: string) => Promise<void>;
   retry: () => void;
 }
@@ -65,6 +71,7 @@ export function useProjectsController(): ProjectsController {
   const [status, setStatus] = useState<ProjectViewStatus>("loading");
   const [error, setError] = useState<ApiError | null>(null);
   const [mutationPending, setMutationPending] = useState(false);
+  const [lastContextImport, setLastContextImport] = useState<ContextImportSummary | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
   const mutationChain = useRef(Promise.resolve());
 
@@ -125,8 +132,27 @@ export function useProjectsController(): ProjectsController {
     return created;
   }), [enqueueMutation]);
 
+  const createFromGit = useCallback((input: CreateProjectFromGitInput) => enqueueMutation(async () => {
+    const created = await createProjectFromGit(input);
+    setLastContextImport(created.contextImport ?? null);
+    setProjects((current) => [...current, created]);
+    setActiveProjectId(created.id);
+    persistProjectId(created.id);
+    setStatus("ready");
+    return created;
+  }), [enqueueMutation]);
+
   const rename = useCallback((projectId: string, name: string) => enqueueMutation(async () => {
     const updated = await updateProject(projectId, { name } satisfies UpdateProjectInput);
+    setProjects((current) => current.map((project) => project.id === updated.id ? updated : project));
+    return updated;
+  }), [enqueueMutation]);
+
+  const configureAi = useCallback((projectId: string, provider: string, model: string) => enqueueMutation(async () => {
+    const updated = await updateProject(projectId, {
+      defaultAiProvider: provider,
+      defaultModel: model,
+    } satisfies UpdateProjectInput);
     setProjects((current) => current.map((project) => project.id === updated.id ? updated : project));
     return updated;
   }), [enqueueMutation]);
@@ -163,9 +189,12 @@ export function useProjectsController(): ProjectsController {
     status,
     error,
     mutationPending,
+    lastContextImport,
     selectProject,
     create,
+    createFromGit,
     rename,
+    configureAi,
     remove,
     retry,
   };

@@ -5,18 +5,23 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 
 	aiservice "github.com/sorface/openspec-studio/backend/internal/ai"
 	"github.com/sorface/openspec-studio/backend/internal/config"
+	"github.com/sorface/openspec-studio/backend/internal/document"
+	"github.com/sorface/openspec-studio/backend/internal/gitstatus"
 	"github.com/sorface/openspec-studio/backend/internal/httpapi"
+	openspecworkflow "github.com/sorface/openspec-studio/backend/internal/openspec"
 	"github.com/sorface/openspec-studio/backend/internal/platform/browser"
 	processrunner "github.com/sorface/openspec-studio/backend/internal/process"
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	"github.com/sorface/openspec-studio/backend/internal/repository"
 	"github.com/sorface/openspec-studio/backend/internal/storage"
+	"github.com/sorface/openspec-studio/backend/internal/storegit"
 	"github.com/sorface/openspec-studio/backend/internal/web"
 )
 
@@ -47,12 +52,27 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	projectsRoot := filepath.Join(cfg.DataDir, "projects")
+	storeService := storegit.NewService(projectsRoot)
+	repositoryService := repository.NewService(store, supervisor, projectsRoot)
+	projectService := project.NewService(store, storeService).WithContextImporter(repositoryService)
+	openSpecExecutable, _ := exec.LookPath("openspec")
+	if openSpecExecutable != "" && !filepath.IsAbs(openSpecExecutable) {
+		openSpecExecutable, _ = filepath.Abs(openSpecExecutable)
+	}
+	openSpecCLI := openspecworkflow.NewCLI(openSpecExecutable, nil)
+	openSpecService := openspecworkflow.NewService(projectService, openSpecCLI)
 	server := httpapi.New(httpapi.Options{
-		Address:      cfg.Address,
-		Projects:     project.NewService(store),
-		Repositories: repository.NewService(store, supervisor),
-		AIOperations: aiservice.NewService(store, supervisor, cfg.DataDir),
-		Static:       web.Handler(),
+		Address:         cfg.Address,
+		Projects:        projectService,
+		Documents:       document.NewService(projectService),
+		Repositories:    repositoryService,
+		GitStatus:       gitstatus.NewService(projectService, storeService),
+		AIOperations:    aiservice.NewService(store, supervisor, cfg.DataDir),
+		OpenSpec:        openSpecService,
+		OpenSpecActions: openspecworkflow.NewActionService(store, openSpecService, openSpecCLI, supervisor, cfg.DataDir),
+		OpenSpecDrafts:  openspecworkflow.NewDraftService(store, cfg.DataDir),
+		Static:          web.Handler(),
 	})
 	serverURL, err := server.Listen(ctx)
 	if err != nil {

@@ -60,6 +60,11 @@ CREATE TABLE IF NOT EXISTS operations (
 	error_code TEXT NOT NULL DEFAULT '',
 	error_message TEXT NOT NULL DEFAULT '',
 	correlation_id TEXT NOT NULL DEFAULT '',
+	openspec_action TEXT NOT NULL DEFAULT '',
+	openspec_change TEXT NOT NULL DEFAULT '',
+	openspec_schema TEXT NOT NULL DEFAULT '',
+	openspec_artifact TEXT NOT NULL DEFAULT '',
+	openspec_fingerprint TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -94,6 +99,24 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 	duration_ms INTEGER NOT NULL,
 	created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS draft_sets (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	operation_id TEXT NOT NULL UNIQUE REFERENCES operations(id) ON DELETE CASCADE,
+	status TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS draft_mutations (
+	id TEXT PRIMARY KEY,
+	set_id TEXT NOT NULL REFERENCES draft_sets(id) ON DELETE CASCADE,
+	type TEXT NOT NULL,
+	path TEXT NOT NULL,
+	previous_path TEXT NOT NULL DEFAULT '',
+	before_content TEXT NOT NULL DEFAULT '',
+	after_content TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS draft_mutations_set_idx ON draft_mutations(set_id);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
 VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `
@@ -117,7 +140,54 @@ func Open(path string) (*SQLite, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err = ensureOperationMetadataColumns(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate operation metadata: %w", err)
+	}
 	return &SQLite{db: db}, nil
+}
+
+func ensureOperationMetadataColumns(db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"openspec_action", "TEXT NOT NULL DEFAULT ''"},
+		{"openspec_change", "TEXT NOT NULL DEFAULT ''"},
+		{"openspec_schema", "TEXT NOT NULL DEFAULT ''"},
+		{"openspec_artifact", "TEXT NOT NULL DEFAULT ''"},
+		{"openspec_fingerprint", "TEXT NOT NULL DEFAULT ''"},
+	}
+	existing := map[string]bool{}
+	rows, err := db.Query("PRAGMA table_info(operations)")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, column := range columns {
+		if existing[column.name] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE operations ADD COLUMN " + column.name + " " + column.definition); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`
+		INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+		VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`)
+	return err
 }
 
 func (store *SQLite) Close() error {
@@ -269,18 +339,23 @@ func (store *SQLite) CreateOperation(ctx context.Context, item operation.Operati
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO operations
 		(id, project_id, kind, status, provider, model, prompt, input_json,
-		 result_json, error_code, error_message, correlation_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 result_json, error_code, error_message, correlation_id, openspec_action,
+		 openspec_change, openspec_schema, openspec_artifact, openspec_fingerprint,
+		 created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ProjectID, item.Kind, item.Status, item.Provider, item.Model,
 		item.Prompt, item.InputJSON, item.ResultJSON, item.ErrorCode, item.ErrorMessage,
-		item.CorrelationID, formatTime(now), formatTime(now))
+		item.CorrelationID, item.OpenSpecAction, item.OpenSpecChange, item.OpenSpecSchema,
+		item.OpenSpecArtifact, item.OpenSpecFingerprint, formatTime(now), formatTime(now))
 	return item, err
 }
 
 func (store *SQLite) GetOperation(ctx context.Context, id string) (operation.Operation, error) {
 	row := store.db.QueryRowContext(ctx, `
 		SELECT id, project_id, kind, status, provider, model, prompt, input_json,
-		       result_json, error_code, error_message, correlation_id, created_at, updated_at
+		       result_json, error_code, error_message, correlation_id, openspec_action,
+		       openspec_change, openspec_schema, openspec_artifact, openspec_fingerprint,
+		       created_at, updated_at
 		FROM operations WHERE id = ?`, id)
 	return scanOperation(row)
 }
@@ -297,11 +372,14 @@ func (store *SQLite) UpdateOperation(ctx context.Context, item operation.Operati
 	item.UpdatedAt = time.Now().UTC()
 	_, err = store.db.ExecContext(ctx, `
 		UPDATE operations SET status=?, provider=?, model=?, prompt=?, input_json=?,
-		result_json=?, error_code=?, error_message=?, correlation_id=?, updated_at=?
+		result_json=?, error_code=?, error_message=?, correlation_id=?,
+		openspec_action=?, openspec_change=?, openspec_schema=?, openspec_artifact=?,
+		openspec_fingerprint=?, updated_at=?
 		WHERE id=?`,
 		item.Status, item.Provider, item.Model, item.Prompt, item.InputJSON,
 		item.ResultJSON, item.ErrorCode, item.ErrorMessage, item.CorrelationID,
-		formatTime(item.UpdatedAt), item.ID)
+		item.OpenSpecAction, item.OpenSpecChange, item.OpenSpecSchema, item.OpenSpecArtifact,
+		item.OpenSpecFingerprint, formatTime(item.UpdatedAt), item.ID)
 	return item, err
 }
 
@@ -448,6 +526,111 @@ func (store *SQLite) GetAudit(ctx context.Context, operationID string) (operatio
 	return item, err
 }
 
+func (store *SQLite) CreateDraftSet(ctx context.Context, item operation.DraftSet) (operation.DraftSet, error) {
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	defer transaction.Rollback()
+	now := time.Now().UTC()
+	if item.ID == "" {
+		item.ID = newID()
+	}
+	if item.Status == "" {
+		item.Status = operation.DraftAccepted
+	}
+	item.CreatedAt, item.UpdatedAt = now, now
+	if _, err := transaction.ExecContext(ctx, `
+		INSERT INTO draft_sets(id, project_id, operation_id, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ProjectID, item.OperationID, item.Status, formatTime(now), formatTime(now)); err != nil {
+		return operation.DraftSet{}, err
+	}
+	for index := range item.Mutations {
+		if item.Mutations[index].ID == "" {
+			item.Mutations[index].ID = newID()
+		}
+		item.Mutations[index].SetID = item.ID
+		mutation := item.Mutations[index]
+		if _, err := transaction.ExecContext(ctx, `
+			INSERT INTO draft_mutations
+			(id, set_id, type, path, previous_path, before_content, after_content)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			mutation.ID, mutation.SetID, mutation.Type, mutation.Path, mutation.PreviousPath,
+			mutation.Before, mutation.After); err != nil {
+			return operation.DraftSet{}, err
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return operation.DraftSet{}, err
+	}
+	return item, nil
+}
+
+func (store *SQLite) GetDraftSet(ctx context.Context, id string) (operation.DraftSet, error) {
+	var item operation.DraftSet
+	var created, updated string
+	err := store.db.QueryRowContext(ctx, `
+		SELECT id, project_id, operation_id, status, created_at, updated_at
+		FROM draft_sets WHERE id=?`, id).Scan(
+		&item.ID, &item.ProjectID, &item.OperationID, &item.Status, &created, &updated,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return operation.DraftSet{}, project.ErrNotFound
+	}
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, set_id, type, path, previous_path, before_content, after_content
+		FROM draft_mutations WHERE set_id=? ORDER BY rowid`, id)
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	defer rows.Close()
+	item.Mutations = []operation.DraftMutation{}
+	for rows.Next() {
+		var mutation operation.DraftMutation
+		if err := rows.Scan(
+			&mutation.ID, &mutation.SetID, &mutation.Type, &mutation.Path,
+			&mutation.PreviousPath, &mutation.Before, &mutation.After,
+		); err != nil {
+			return operation.DraftSet{}, err
+		}
+		item.Mutations = append(item.Mutations, mutation)
+	}
+	return item, rows.Err()
+}
+
+func (store *SQLite) UpdateDraftSetStatus(
+	ctx context.Context,
+	id string,
+	status operation.DraftSetStatus,
+) (operation.DraftSet, error) {
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE draft_sets SET status=?, updated_at=? WHERE id=?`,
+		status, formatTime(time.Now().UTC()), id)
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	if affected == 0 {
+		return operation.DraftSet{}, project.ErrNotFound
+	}
+	return store.GetDraftSet(ctx, id)
+}
+
 func (store *SQLite) ListContext(ctx context.Context, operationID string) ([]operation.ContextEntry, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT operation_id, source, path, size, checksum, reason, included
@@ -485,7 +668,9 @@ func scanOperation(source scanner) (operation.Operation, error) {
 	var created, updated string
 	err := source.Scan(&item.ID, &item.ProjectID, &item.Kind, &item.Status,
 		&item.Provider, &item.Model, &item.Prompt, &item.InputJSON, &item.ResultJSON,
-		&item.ErrorCode, &item.ErrorMessage, &item.CorrelationID, &created, &updated)
+		&item.ErrorCode, &item.ErrorMessage, &item.CorrelationID, &item.OpenSpecAction,
+		&item.OpenSpecChange, &item.OpenSpecSchema, &item.OpenSpecArtifact,
+		&item.OpenSpecFingerprint, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return operation.Operation{}, project.ErrNotFound
 	}

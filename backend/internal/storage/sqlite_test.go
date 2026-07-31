@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -49,7 +50,10 @@ func TestOperationRepositoryAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	item, err := store.CreateOperation(context.Background(), operation.Operation{
-		ProjectID: projectItem.ID, Kind: operation.KindAI, InputJSON: "{}",
+		ProjectID: projectItem.ID, Kind: operation.KindOpenSpec, InputJSON: "{}",
+		OpenSpecAction: "prepare_artifact", OpenSpecChange: "add-auth",
+		OpenSpecSchema: "spec-driven", OpenSpecArtifact: "proposal",
+		OpenSpecFingerprint: "fingerprint",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +89,47 @@ func TestOperationRepositoryAndRecovery(t *testing.T) {
 	if err != nil || loaded.Status != operation.StatusFailed || loaded.ErrorCode != "APPLICATION_RESTARTED" {
 		t.Fatalf("loaded=%#v err=%v", loaded, err)
 	}
+	if loaded.OpenSpecAction != "prepare_artifact" || loaded.OpenSpecChange != "add-auth" ||
+		loaded.OpenSpecSchema != "spec-driven" || loaded.OpenSpecArtifact != "proposal" ||
+		loaded.OpenSpecFingerprint != "fingerprint" {
+		t.Fatalf("OpenSpec metadata not persisted: %#v", loaded)
+	}
+}
+
+func TestMigratesLegacyOperationsTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.Exec(`
+		CREATE TABLE operations (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL,
+			provider TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			prompt TEXT NOT NULL DEFAULT '',
+			input_json TEXT NOT NULL DEFAULT '{}',
+			result_json TEXT NOT NULL DEFAULT '',
+			error_code TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			correlation_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := storage.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
 }
 
 func TestRepositoryPersistenceAndContextTransaction(t *testing.T) {
@@ -133,5 +178,41 @@ func TestRepositoryPersistenceAndContextTransaction(t *testing.T) {
 	audit, err := store.GetAudit(context.Background(), operationItem.ID)
 	if err != nil || audit.Arguments != "--token [REDACTED]" {
 		t.Fatalf("audit=%#v err=%v", audit, err)
+	}
+}
+
+func TestDraftMutationSetPersistence(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "drafts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	projectItem, err := store.Create(context.Background(), project.CreateInput{Name: "Platform", StorePath: "/store"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationItem, err := store.CreateOperation(context.Background(), operation.Operation{
+		ProjectID: projectItem.ID, Kind: operation.KindOpenSpec, InputJSON: "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := store.CreateDraftSet(context.Background(), operation.DraftSet{
+		ProjectID: projectItem.ID, OperationID: operationItem.ID,
+		Mutations: []operation.DraftMutation{
+			{Type: "create", Path: "openspec/changes/add-auth/proposal.md", After: "# Why"},
+			{Type: "delete", Path: "openspec/changes/add-auth/old.md", Before: "old"},
+		},
+	})
+	if err != nil || len(set.Mutations) != 2 || set.Mutations[0].ID == "" {
+		t.Fatalf("set=%#v err=%v", set, err)
+	}
+	loaded, err := store.GetDraftSet(context.Background(), set.ID)
+	if err != nil || len(loaded.Mutations) != 2 || loaded.Status != operation.DraftAccepted {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+	written, err := store.UpdateDraftSetStatus(context.Background(), set.ID, operation.DraftWritten)
+	if err != nil || written.Status != operation.DraftWritten {
+		t.Fatalf("written=%#v err=%v", written, err)
 	}
 }

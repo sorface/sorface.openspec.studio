@@ -17,7 +17,7 @@ export interface RepositoriesController {
   operation: CloneOperation | null;
   loading: boolean;
   error: ApiError | null;
-  startClone: (url: string, targetPath: string) => Promise<void>;
+  startClone: (url: string) => Promise<void>;
   cancel: () => Promise<void>;
   retry: () => void;
 }
@@ -61,11 +61,27 @@ export function useRepositoriesController(projectId?: string): RepositoriesContr
     if (!projectId || !operationId || !operationStatus || isCloneTerminal(operationStatus)) return;
     const source = new EventSource(cloneEventsUrl(projectId, operationId));
     const refresh = async () => {
-      const next = await getRepositoryClone(projectId, operationId);
-      setOperation(next);
-      if (isCloneTerminal(next.status)) {
-        source.close();
-        if (next.status === "completed") await load();
+      try {
+        const next = await getRepositoryClone(projectId, operationId);
+        setOperation(next);
+        if (isCloneTerminal(next.status)) {
+          source.close();
+          if (next.status === "failed") {
+            setError(new ApiError(409, {
+              code: next.errorCode || "GIT_CLONE_FAILED",
+              message: next.errorMessage || "Клонирование Git-репозитория завершилось ошибкой",
+              correlationId: next.correlationId,
+            }));
+          } else {
+            setError(null);
+          }
+          if (next.status === "completed") await load();
+        }
+      } catch (cause) {
+        setError(cause instanceof ApiError ? cause : new ApiError(0, {
+          code: "UNKNOWN_ERROR",
+          message: "Не удалось получить состояние клонирования",
+        }));
       }
     };
     (["running", "progress", "validating", "completed", "cancelled", "failed"] satisfies CloneEventName[]).forEach((name) => {
@@ -82,12 +98,12 @@ export function useRepositoriesController(projectId?: string): RepositoriesContr
     };
   }, [load, operationId, operationStatus, projectId]);
 
-  const startClone = useCallback(async (url: string, targetPath: string) => {
+  const startClone = useCallback(async (url: string) => {
     if (!projectId) return;
     setLoading(true);
     setError(null);
     try {
-      setOperation(await startRepositoryClone(projectId, { url, targetPath }));
+      setOperation(await startRepositoryClone(projectId, { url }));
     } catch (cause) {
       setError(cause instanceof ApiError ? cause : new ApiError(0, { code: "UNKNOWN_ERROR", message: "Клонирование не запущено" }));
       throw cause;

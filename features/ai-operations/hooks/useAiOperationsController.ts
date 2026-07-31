@@ -25,7 +25,7 @@ export interface AiOperationsController {
 
 export function useAiOperationsController(
   projectId?: string,
-  provider = "codex",
+  provider?: string,
   model?: string,
 ): AiOperationsController {
   const [manifest, setManifest] = useState<ContextManifest | null>(null);
@@ -56,7 +56,7 @@ export function useAiOperationsController(
   }, [projectId]);
 
   const send = useCallback(async (prompt: string) => {
-    if (!projectId || !manifest) return;
+    if (!projectId || !manifest || !provider) return;
     setPending(true);
     setError(null);
     try {

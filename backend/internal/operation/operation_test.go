@@ -8,6 +8,8 @@ func TestTransitions(t *testing.T) {
 		{StatusRunning, StatusValidating},
 		{StatusValidating, StatusCompleted},
 		{StatusValidating, StatusAwaitingReview},
+		{StatusAwaitingReview, StatusAccepted},
+		{StatusAwaitingReview, StatusRejected},
 		{StatusRunning, StatusCancelled},
 	}
 	for _, pair := range valid {

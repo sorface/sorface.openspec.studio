@@ -42,6 +42,7 @@ export function AiAssistantPanel(props: AiAssistantPanelProps) {
               <h2>Чем помочь со спецификацией?</h2>
               <p>Я работаю только с активным Store. Вы увидите diff до применения любых изменений.</p>
             </div>
+            {!providerAvailable && <div className="ai-provider-notice">Выберите доступный agent CLI в верхней панели, чтобы запустить AI.</div>}
             <div className="quick-actions">
               <button onClick={() => onPromptChange("Сделай требования более проверяемыми")}><span>✎</span><b>Улучшить выделение</b><small>Переписать яснее и точнее</small></button>
               <button onClick={() => onPromptChange("Добавь граничные сценарии")}><span>＋</span><b>Дополнить документ</b><small>Добавить раздел по инструкции</small></button>
@@ -63,8 +64,8 @@ export function AiAssistantPanel(props: AiAssistantPanelProps) {
           <div className="prompt-box">
             <textarea aria-label="Инструкция для AI" placeholder="Опишите, что нужно изменить..." value={prompt} onChange={(event) => onPromptChange(event.target.value)} onKeyDown={handleKeyDown} />
             <div className="prompt-tools">
-              <button title="Добавить контекст">⌕ <span>Контекст</span></button>
-              <button title="Прикрепить файл">⌁</button>
+              <button type="button" disabled title="Используйте вкладку «Контекст» для review">⌕ <span>Контекст</span></button>
+              <button type="button" disabled title="Прикрепление файлов пока недоступно">⌁</button>
               <button className="send" onClick={onSend} disabled={!prompt.trim() || !ai.manifest || !!running || !providerAvailable}>↑</button>
             </div>
             <small><i /> AI может изменять только OpenSpec Store</small>

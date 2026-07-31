@@ -11,7 +11,7 @@ export async function listRepositories(projectId: string, signal?: AbortSignal):
 
 export function startRepositoryClone(
   projectId: string,
-  input: { url: string; targetPath: string },
+  input: { url: string },
 ): Promise<CloneOperation> {
   return apiRequest(`/api/v1/projects/${encodeURIComponent(projectId)}/repository-clones`, {
     method: "POST",

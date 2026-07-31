@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -18,15 +17,12 @@ import (
 	"github.com/sorface/openspec-studio/backend/internal/operation"
 	processrunner "github.com/sorface/openspec-studio/backend/internal/process"
 	"github.com/sorface/openspec-studio/backend/internal/project"
-	"gopkg.in/yaml.v3"
 )
 
 var (
 	ErrInvalidGitURL     = errors.New("invalid git url")
 	ErrTargetNotEmpty    = errors.New("clone target is not empty")
 	ErrPathOutsideScope  = errors.New("path outside scope")
-	ErrStoreMismatch     = errors.New("store id mismatch")
-	ErrInvalidStore      = errors.New("invalid store")
 	ErrOperationConflict = errors.New("operation conflict")
 )
 
@@ -44,7 +40,6 @@ type Store interface {
 
 type CloneInput struct {
 	URL           string `json:"url"`
-	TargetPath    string `json:"targetPath"`
 	CorrelationID string `json:"-"`
 }
 
@@ -55,15 +50,20 @@ type cloneMetadata struct {
 }
 
 type Service struct {
-	store      Store
-	runner     processrunner.Runner
-	supervisor *processrunner.Supervisor
-	gitPath    string
+	store       Store
+	runner      processrunner.Runner
+	supervisor  *processrunner.Supervisor
+	gitPath     string
+	managedRoot string
 }
 
-func NewService(store Store, supervisor *processrunner.Supervisor) *Service {
+func NewService(store Store, supervisor *processrunner.Supervisor, managedRoots ...string) *Service {
 	gitPath, _ := exec.LookPath("git")
-	return &Service{store: store, supervisor: supervisor, gitPath: gitPath}
+	managedRoot := DefaultManagedRoot("projects")
+	if len(managedRoots) > 0 {
+		managedRoot = managedRoots[0]
+	}
+	return &Service{store: store, supervisor: supervisor, gitPath: gitPath, managedRoot: managedRoot}
 }
 
 func (service *Service) List(ctx context.Context, projectID string) ([]operation.RepositoryLink, error) {
@@ -81,6 +81,94 @@ func (service *Service) List(ctx context.Context, projectID string) ([]operation
 	return items, nil
 }
 
+func (service *Service) ValidateContextRepositories(values []string) ([]string, error) {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		remote, err := ValidateGitURL(value)
+		if err != nil {
+			return nil, project.ErrInvalidContextRepositoryURL
+		}
+		if _, duplicate := seen[remote]; duplicate {
+			continue
+		}
+		seen[remote] = struct{}{}
+		normalized = append(normalized, remote)
+	}
+	return normalized, nil
+}
+
+func (service *Service) ImportContext(
+	ctx context.Context,
+	projectItem project.Project,
+	remotes []string,
+) project.ContextImportSummary {
+	summary := project.ContextImportSummary{Failures: []project.ContextImportFailure{}}
+	for _, remote := range remotes {
+		if ctx.Err() != nil {
+			summary.Failures = append(summary.Failures, project.ContextImportFailure{
+				URL: remote, Code: "CONTEXT_IMPORT_CANCELLED", Message: "Импорт контекста отменён",
+			})
+			continue
+		}
+		code, message := service.importContextRepository(ctx, projectItem, remote)
+		if code != "" {
+			summary.Failures = append(summary.Failures, project.ContextImportFailure{
+				URL: remote, Code: code, Message: message,
+			})
+			continue
+		}
+		summary.Imported++
+	}
+	return summary
+}
+
+func (service *Service) importContextRepository(
+	ctx context.Context,
+	projectItem project.Project,
+	remote string,
+) (string, string) {
+	if service.gitPath == "" {
+		return "GIT_UNAVAILABLE", "Git недоступен"
+	}
+	target, err := CreateManagedTarget(service.projectRepositoriesRoot(projectItem), remote)
+	if err != nil {
+		return "INVALID_CONTEXT_TARGET", "Не удалось подготовить каталог репозитория"
+	}
+	removeTarget := true
+	defer func() {
+		if removeTarget {
+			_ = os.RemoveAll(target)
+		}
+	}()
+
+	result, err := service.runner.Run(ctx, processrunner.Command{
+		Executable:     service.gitPath,
+		Arguments:      []string{"clone", "--progress", "--", remote, target},
+		Directory:      filepath.Dir(target),
+		Environment:    gitCloneEnvironment(),
+		Timeout:        30 * time.Minute,
+		MaxOutputBytes: 1 << 20,
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return "CONTEXT_IMPORT_CANCELLED", "Импорт контекста отменён"
+		}
+		return safeCloneError(result.Stderr)
+	}
+
+	link, err := service.inspect(projectItem, remote, target)
+	if err != nil {
+		return "INVALID_REPOSITORY", "Клонированный каталог не является отдельным Git worktree"
+	}
+	link.ProjectID = projectItem.ID
+	if _, err := service.store.CreateRepository(ctx, link); err != nil {
+		return "PERSISTENCE_ERROR", "Не удалось сохранить репозиторий"
+	}
+	removeTarget = false
+	return "", ""
+}
+
 func (service *Service) StartClone(ctx context.Context, projectID string, input CloneInput) (operation.Operation, error) {
 	projectItem, err := service.store.Get(ctx, projectID)
 	if err != nil {
@@ -90,15 +178,17 @@ func (service *Service) StartClone(ctx context.Context, projectID string, input 
 	if err != nil {
 		return operation.Operation{}, err
 	}
-	target, created, err := ValidateTarget(input.TargetPath, []string{projectItem.StorePath})
+	target, err := CreateManagedTarget(service.projectRepositoriesRoot(projectItem), normalizedURL)
 	if err != nil {
 		return operation.Operation{}, err
 	}
+	created := true
 	active, err := service.store.HasActiveOperation(ctx, projectID, operation.KindRepositoryClone)
 	if err != nil {
 		return operation.Operation{}, err
 	}
 	if active {
+		_ = os.RemoveAll(target)
 		return operation.Operation{}, ErrOperationConflict
 	}
 	meta, _ := json.Marshal(cloneMetadata{URL: normalizedURL, TargetPath: target, Created: created})
@@ -107,11 +197,33 @@ func (service *Service) StartClone(ctx context.Context, projectID string, input 
 		InputJSON: string(meta), CorrelationID: input.CorrelationID,
 	})
 	if err != nil {
+		_ = os.RemoveAll(target)
 		return operation.Operation{}, err
 	}
 	_, _ = service.store.AddEvent(ctx, operation.Event{OperationID: item.ID, Type: "queued", Payload: `{}`})
 	go service.runClone(item, projectItem, normalizedURL, target, created)
 	return item, nil
+}
+
+func (service *Service) projectRepositoriesRoot(item project.Project) string {
+	projectsRoot, err := filepath.Abs(filepath.Clean(service.managedRoot))
+	if err != nil {
+		return ""
+	}
+	if err := os.MkdirAll(projectsRoot, 0o700); err != nil {
+		return ""
+	}
+	if canonicalRoot, evalErr := filepath.EvalSymlinks(projectsRoot); evalErr == nil {
+		projectsRoot = canonicalRoot
+	}
+	storePath, err := filepath.Abs(filepath.Clean(item.StorePath))
+	if err == nil && filepath.Base(storePath) == "store" {
+		projectRoot := filepath.Dir(storePath)
+		if filepath.Dir(projectRoot) == projectsRoot {
+			return filepath.Join(projectRoot, "repositories")
+		}
+	}
+	return filepath.Join(projectsRoot, item.ID, "repositories")
 }
 
 func (service *Service) Cancel(ctx context.Context, projectID, operationID string) (operation.Operation, error) {
@@ -160,7 +272,7 @@ func (service *Service) runClone(item operation.Operation, projectItem project.P
 
 	result, err := service.runner.Run(ctx, processrunner.Command{
 		Executable: service.gitPath, Arguments: []string{"clone", "--progress", "--", remote, target},
-		Directory: filepath.Dir(target), Environment: map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		Directory: filepath.Dir(target), Environment: gitCloneEnvironment(),
 		Timeout: 30 * time.Minute, MaxOutputBytes: 1 << 20,
 		OnStderr: func(chunk []byte) {
 			if progress := sanitizeProgress(string(chunk)); progress != "" {
@@ -179,7 +291,11 @@ func (service *Service) runClone(item operation.Operation, projectItem project.P
 			service.finish(item, operation.StatusCancelled, "", "")
 			return
 		}
-		service.finish(item, operation.StatusFailed, "GIT_CLONE_FAILED", safeMessage(result.Stderr))
+		if created {
+			_ = os.RemoveAll(target)
+		}
+		code, message := safeCloneError(result.Stderr)
+		service.finish(item, operation.StatusFailed, code, message)
 		return
 	}
 	item.Status = operation.StatusValidating
@@ -188,17 +304,17 @@ func (service *Service) runClone(item operation.Operation, projectItem project.P
 
 	link, err := service.inspect(projectItem, remote, target)
 	if err != nil {
-		code := "INVALID_REPOSITORY"
-		if errors.Is(err, ErrStoreMismatch) {
-			code = "STORE_ID_MISMATCH"
-		} else if errors.Is(err, ErrInvalidStore) {
-			code = "INVALID_STORE"
+		if created {
+			_ = os.RemoveAll(target)
 		}
-		service.finish(item, operation.StatusFailed, code, err.Error())
+		service.finish(item, operation.StatusFailed, "INVALID_REPOSITORY", "Клонированный каталог не является отдельным Git worktree")
 		return
 	}
 	link.ProjectID = projectItem.ID
 	if _, err := service.store.CreateRepository(context.Background(), link); err != nil {
+		if created {
+			_ = os.RemoveAll(target)
+		}
 		service.finish(item, operation.StatusFailed, "PERSISTENCE_ERROR", "Не удалось сохранить репозиторий")
 		return
 	}
@@ -219,28 +335,22 @@ func (service *Service) finish(item operation.Operation, status operation.Status
 	}
 }
 
-func (service *Service) inspect(projectItem project.Project, remote, target string) (operation.RepositoryLink, error) {
-	storeID, err := readStoreID(filepath.Join(projectItem.StorePath, ".openspec-store", "store.yaml"), "store-id")
-	if err != nil {
-		return operation.RepositoryLink{}, ErrInvalidStore
-	}
-	repositoryStore, err := readStoreID(filepath.Join(target, "openspec", "config.yaml"), "store")
-	if err != nil {
-		return operation.RepositoryLink{}, ErrInvalidStore
-	}
-	if storeID != repositoryStore {
-		return operation.RepositoryLink{}, fmt.Errorf("%w: project=%s repository=%s", ErrStoreMismatch, storeID, repositoryStore)
-	}
-	sha, err := gitOutput(service.gitPath, target, "rev-parse", "HEAD")
-	if err != nil {
-		return operation.RepositoryLink{}, err
-	}
-	branch, _ := gitOutput(service.gitPath, target, "branch", "--show-current")
-	status, _ := gitOutput(service.gitPath, target, "status", "--porcelain")
+func (service *Service) inspect(_ project.Project, remote, target string) (operation.RepositoryLink, error) {
 	canonical, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		return operation.RepositoryLink{}, err
 	}
+	root, err := gitOutput(service.gitPath, canonical, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return operation.RepositoryLink{}, err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil || root != canonical {
+		return operation.RepositoryLink{}, ErrPathOutsideScope
+	}
+	sha, _ := gitOutput(service.gitPath, canonical, "rev-parse", "HEAD")
+	branch, _ := gitOutput(service.gitPath, target, "branch", "--show-current")
+	status, _ := gitOutput(service.gitPath, target, "status", "--porcelain")
 	sum := sha256.Sum256([]byte(canonical + "\x00" + remote + "\x00" + sha))
 	return operation.RepositoryLink{
 		Name: filepath.Base(strings.TrimSuffix(remote, ".git")), Path: canonical,
@@ -267,6 +377,49 @@ func ValidateGitURL(value string) (string, error) {
 		}
 	}
 	return value, nil
+}
+
+func DefaultManagedRoot(kind string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".osstudio", kind)
+}
+
+func CreateManagedTarget(root, remote string) (string, error) {
+	if root == "" || !filepath.IsAbs(root) {
+		return "", ErrPathOutsideScope
+	}
+	root = filepath.Clean(root)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return "", err
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSuffix(strings.TrimRight(remote, "/"), ".git")
+	if separator := strings.LastIndexAny(name, "/:"); separator >= 0 {
+		name = name[separator+1:]
+	}
+	name = strings.ToLower(regexp.MustCompile(`[^a-zA-Z0-9._-]+`).ReplaceAllString(name, "-"))
+	name = strings.Trim(name, ".-_")
+	if name == "" {
+		name = "repository"
+	}
+	target, err := os.MkdirTemp(canonicalRoot, name+"-")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(target, 0o700); err != nil {
+		_ = os.RemoveAll(target)
+		return "", err
+	}
+	return target, nil
 }
 
 func ValidateTarget(value string, protected []string) (string, bool, error) {
@@ -304,41 +457,37 @@ func ValidateTarget(value string, protected []string) (string, bool, error) {
 	return target, false, nil
 }
 
-func readStoreID(path, key string) (string, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	var document map[string]any
-	if err := yaml.Unmarshal(content, &document); err != nil {
-		return "", err
-	}
-	value, ok := document[key].(string)
-	value = strings.TrimSpace(value)
-	if ok && value != "" {
-		return value, nil
-	}
-	return "", ErrInvalidStore
-}
-
 func gitOutput(executable, directory string, args ...string) (string, error) {
 	command := exec.Command(executable, append([]string{"-C", directory}, args...)...)
 	output, err := command.Output()
 	return strings.TrimSpace(string(output)), err
 }
 
-func safeMessage(value string) string {
+func gitCloneEnvironment() map[string]string {
+	environment := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
+	if socket := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")); socket != "" {
+		environment["SSH_AUTH_SOCK"] = socket
+	}
+	return environment
+}
+
+func safeCloneError(value string) (string, string) {
 	lower := strings.ToLower(value)
 	switch {
+	case strings.Contains(lower, "host key verification failed"),
+		strings.Contains(lower, "remote host identification has changed"):
+		return "SSH_HOST_KEY_FAILED", "Не удалось проверить SSH host key. Проверьте fingerprint и known_hosts"
 	case strings.Contains(lower, "authentication failed"),
 		strings.Contains(lower, "permission denied"),
-		strings.Contains(lower, "could not read username"):
-		return "Git-аутентификация завершилась ошибкой"
+		strings.Contains(lower, "could not read username"),
+		strings.Contains(lower, "publickey"),
+		strings.Contains(lower, "could not read from remote repository"):
+		return "GIT_AUTH_FAILED", "Git-аутентификация завершилась ошибкой. Проверьте системный ssh-agent или credential helper"
 	case strings.Contains(lower, "repository not found"),
 		strings.Contains(lower, "not found"):
-		return "Git-репозиторий не найден"
+		return "GIT_REPOSITORY_NOT_FOUND", "Git-репозиторий не найден"
 	default:
-		return "Git завершился с ошибкой"
+		return "GIT_CLONE_FAILED", "Git завершился с ошибкой"
 	}
 }
 

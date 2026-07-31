@@ -40,9 +40,9 @@ func Parse() (Config, error) {
 }
 
 func defaultDataDir() (string, error) {
-	root, err := os.UserConfigDir()
+	root, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve user config directory: %w", err)
+		return "", fmt.Errorf("resolve user home directory: %w", err)
 	}
-	return filepath.Join(root, "OpenSpec Studio"), nil
+	return filepath.Join(root, ".osstudio"), nil
 }

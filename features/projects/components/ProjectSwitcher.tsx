@@ -13,8 +13,16 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<EditorMode>("list");
   const [name, setName] = useState("");
-  const [storePath, setStorePath] = useState("");
+  const [gitUrl, setGitUrl] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
+  const emptyPromptShown = useRef(false);
+
+  useEffect(() => {
+    if (controller.status === "empty" && !emptyPromptShown.current) {
+      emptyPromptShown.current = true;
+      setOpen(true);
+    }
+  }, [controller.status]);
 
   useEffect(() => {
     if (!open) return;
@@ -32,14 +40,17 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
   const openEditor = (nextMode: EditorMode) => {
     setMode(nextMode);
     setName(nextMode === "rename" ? controller.activeProject?.name ?? "" : "");
-    setStorePath("");
+    setGitUrl("");
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     try {
       if (mode === "create") {
-        await controller.create({ name: name.trim(), storePath: storePath.trim() });
+        await controller.createFromGit({
+          name: name.trim(),
+          url: gitUrl.trim(),
+        });
       } else if (mode === "rename" && controller.activeProject) {
         await controller.rename(controller.activeProject.id, name.trim());
       } else if (mode === "delete" && controller.activeProject) {
@@ -94,6 +105,22 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
                 </div>
               )}
 
+              {controller.lastContextImport && (
+                <div className={`project-state project-import-result ${controller.lastContextImport.failures.length ? "warning" : "success"}`} role="status">
+                  <b>
+                    {controller.lastContextImport.failures.length
+                      ? "Контекст загружен частично"
+                      : "Контекст проекта загружен"}
+                  </b>
+                  <p>
+                    Подключено {controller.lastContextImport.imported} из {controller.lastContextImport.requested} репозиториев из <code>.openspec/context.yaml</code>.
+                  </p>
+                  {controller.lastContextImport.failures.map((failure) => (
+                    <small key={`${failure.url}:${failure.code}`}>{failure.url}: {failure.message}</small>
+                  ))}
+                </div>
+              )}
+
               {controller.projects.map((project) => (
                 <button
                   type="button"
@@ -106,7 +133,7 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
                 >
                   <span>{project.name.charAt(0).toUpperCase()}</span>
                   <b>{project.name}</b>
-                  <small>{project.storePath || "Store path не задан"}</small>
+                  <small>OpenSpec Store</small>
                   {project.id === controller.activeProject?.id && <em>✓</em>}
                 </button>
               ))}
@@ -129,13 +156,15 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
               ) : (
                 <>
                   <label>
-                    Название
-                    <input required autoComplete="off" value={name} onChange={(event) => setName(event.target.value)} />
+                    Название, если нет манифеста
+                    <input autoComplete="off" value={name} onChange={(event) => setName(event.target.value)} placeholder="Необязательное fallback-название" />
+                    {mode === "create" && <small>Если в Store есть <code>.openspec/context.yaml</code>, название будет взято из поля <code>name</code>.</small>}
                   </label>
                   {mode === "create" && (
                     <label>
-                      Путь к Store
-                      <input required autoComplete="off" value={storePath} onChange={(event) => setStorePath(event.target.value)} placeholder="/path/to/store" />
+                      Клонировать Store из Git
+                      <input required autoComplete="off" value={gitUrl} onChange={(event) => setGitUrl(event.target.value)} placeholder="git@github.com:owner/store.git" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
+                      <small>Store и репозитории из <code>context.repositories</code> будут изолированы внутри ~/.osstudio.</small>
                     </label>
                   )}
                 </>
@@ -152,7 +181,11 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
                 disabled={controller.mutationPending}
                 type="submit"
               >
-                {controller.mutationPending ? "Выполняется…" : mode === "delete" ? "Удалить только метаданные" : "Сохранить"}
+                {controller.mutationPending
+                  ? mode === "create" ? "Загрузка проекта и контекста…" : "Выполняется…"
+                  : mode === "delete" ? "Удалить только метаданные"
+                    : mode === "create" ? "Загрузить проект"
+                      : "Сохранить"}
               </button>
             </form>
           )}

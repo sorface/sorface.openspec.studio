@@ -31,6 +31,19 @@ func TestRunnerAndOutputLimit(t *testing.T) {
 	}
 }
 
+func TestRunnerCanDisableTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	result, err := (Runner{}).Run(context.Background(), Command{
+		Executable: "/bin/sh", Arguments: []string{"-c", "sleep 0.08; printf done"},
+		Directory: t.TempDir(), Timeout: 10 * time.Millisecond, DisableTimeout: true,
+	})
+	if err != nil || result.Stdout != "done" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
 func TestCommandPolicyAndRedaction(t *testing.T) {
 	runner := Runner{}
 	_, err := runner.Run(context.Background(), Command{
@@ -43,10 +56,24 @@ func TestCommandPolicyAndRedaction(t *testing.T) {
 		t.Fatal("argument was not redacted")
 	}
 	_ = os.Setenv("UNSAFE_TEST_SECRET", "secret")
-	for _, item := range environment(nil) {
+	items := environment(map[string]string{
+		"SSH_AUTH_SOCK":  "/tmp/test-agent.sock",
+		"SSH_AGENT_PID":  "123",
+		"SSH_ASKPASS":    "/tmp/steal",
+		"ANOTHER_SECRET": "hidden",
+	})
+	foundAgentSocket := false
+	for _, item := range items {
 		if item == "UNSAFE_TEST_SECRET=secret" {
 			t.Fatal("unsafe environment inherited")
 		}
+		foundAgentSocket = foundAgentSocket || item == "SSH_AUTH_SOCK=/tmp/test-agent.sock"
+		if item == "SSH_AGENT_PID=123" || item == "SSH_ASKPASS=/tmp/steal" || item == "ANOTHER_SECRET=hidden" {
+			t.Fatalf("unsafe explicit environment accepted: %s", item)
+		}
+	}
+	if !foundAgentSocket {
+		t.Fatal("explicit SSH_AUTH_SOCK was not passed")
 	}
 }
 

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -35,20 +36,14 @@ func TestCloneBareRemoteEndToEnd(t *testing.T) {
 	}
 	root := t.TempDir()
 	storeRoot := filepath.Join(root, "store")
-	if err := os.MkdirAll(filepath.Join(storeRoot, ".openspec-store"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(storeRoot, ".openspec-store", "store.yaml"), []byte("store-id: test-store\n"), 0o600); err != nil {
+	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	source := filepath.Join(root, "source")
 	runGit(t, root, "init", source)
 	runGit(t, source, "config", "user.email", "test@example.com")
 	runGit(t, source, "config", "user.name", "Test")
-	if err := os.MkdirAll(filepath.Join(source, "openspec"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "openspec", "config.yaml"), []byte("store: test-store\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("arbitrary repository\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, source, "add", ".")
@@ -82,11 +77,8 @@ func TestCloneBareRemoteEndToEnd(t *testing.T) {
 	if err != nil || len(links) != 1 || links[0].CommitSHA == "" {
 		t.Fatalf("links=%#v err=%v", links, err)
 	}
-	if err := os.WriteFile(filepath.Join(target, "openspec", "config.yaml"), []byte("store: another-store\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.inspect(projectItem, remote, target); !errors.Is(err, ErrStoreMismatch) {
-		t.Fatalf("expected mismatch, got %v", err)
+	if _, err := service.inspect(projectItem, remote, target); err != nil {
+		t.Fatalf("arbitrary repository rejected: %v", err)
 	}
 	failing := &failingRepositoryStore{SQLite: db}
 	failingService := NewService(failing, processrunner.NewSupervisor())
@@ -102,10 +94,67 @@ func TestCloneBareRemoteEndToEnd(t *testing.T) {
 	if err != nil || second.ErrorCode != "PERSISTENCE_ERROR" {
 		t.Fatalf("persistence operation=%#v err=%v", second, err)
 	}
-	if _, err := os.Stat(secondTarget); err != nil {
-		t.Fatalf("validated clone must be preserved after persistence error: %v", err)
+	if _, err := os.Stat(secondTarget); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unpersisted managed clone must be removed, err=%v", err)
 	}
 	_ = time.Second
+}
+
+func TestContextRepositoryImport(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	storeRoot := filepath.Join(projectsRoot, "project-space", "store")
+	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "source")
+	runGit(t, root, "init", source)
+	runGit(t, source, "config", "user.email", "test@example.com")
+	runGit(t, source, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("context\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".")
+	runGit(t, source, "commit", "-m", "context")
+	remote := filepath.Join(root, "context.git")
+	runGit(t, root, "clone", "--bare", source, remote)
+
+	db, err := storage.Open(filepath.Join(root, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	projectItem, err := db.Create(context.Background(), project.CreateInput{Name: "Demo", StorePath: storeRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, processrunner.NewSupervisor(), projectsRoot)
+	summary := service.ImportContext(context.Background(), projectItem, []string{remote, filepath.Join(root, "missing.git")})
+	if summary.Imported != 1 || len(summary.Failures) != 1 || summary.Failures[0].Code != "GIT_CLONE_FAILED" {
+		t.Fatalf("unexpected import summary: %#v", summary)
+	}
+	links, err := db.ListRepositories(context.Background(), projectItem.ID)
+	if err != nil || len(links) != 1 || !links[0].ReadOnlyForAI || links[0].RemoteURL != remote {
+		t.Fatalf("unexpected links: %#v err=%v", links, err)
+	}
+}
+
+func TestValidateContextRepositories(t *testing.T) {
+	service := NewService(nil, processrunner.NewSupervisor())
+	values, err := service.ValidateContextRepositories([]string{
+		" git@example.com:team/one.git ",
+		"git@example.com:team/one.git",
+		"ssh://git@example.com/team/two.git",
+	})
+	if err != nil || len(values) != 2 || values[0] != "git@example.com:team/one.git" {
+		t.Fatalf("unexpected normalized URLs: %#v err=%v", values, err)
+	}
+	if _, err := service.ValidateContextRepositories([]string{"--upload-pack=evil"}); !errors.Is(err, project.ErrInvalidContextRepositoryURL) {
+		t.Fatalf("expected context URL error, got %v", err)
+	}
 }
 
 type failingRepositoryStore struct {
@@ -139,16 +188,23 @@ func TestCloneCancellationRemovesOnlyCreatedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	supervisor := processrunner.NewSupervisor()
-	service := NewService(db, supervisor)
+	managedRoot := filepath.Join(root, "projects")
+	service := NewService(db, supervisor, managedRoot)
 	service.gitPath = fake
-	target := filepath.Join(root, "clone")
 	item, err := service.StartClone(context.Background(), projectItem.ID, CloneInput{
-		URL: "https://example.test/code.git", TargetPath: target,
+		URL: "https://example.test/code.git",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	var metadata cloneMetadata
+	if err := json.Unmarshal([]byte(item.InputJSON), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	target := metadata.TargetPath
+	// Package-level parallelism can delay the child process callback on loaded CI hosts.
+	// Keep waiting for the observable progress event instead of cancelling on scheduler latency.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		loaded, _ := db.GetOperation(context.Background(), item.ID)
 		events, _ := db.ListEvents(context.Background(), item.ID, 0)
@@ -219,26 +275,24 @@ func TestValidateTarget(t *testing.T) {
 	}
 }
 
-func TestReadStoreID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("schema: spec-driven\nstore: \"platform\"\n"), 0o600); err != nil {
+func TestProjectRepositoriesRootIsIsolated(t *testing.T) {
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	service := NewService(nil, processrunner.NewSupervisor(), projectsRoot)
+	firstStore := filepath.Join(projectsRoot, "first-space", "store")
+	secondStore := filepath.Join(projectsRoot, "second-space", "store")
+	if err := os.MkdirAll(firstStore, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	value, err := readStoreID(path, "store")
-	if err != nil || value != "platform" {
-		t.Fatalf("value=%s err=%v", value, err)
-	}
-	if err := os.WriteFile(path, []byte("store: [invalid\n"), 0o600); err != nil {
+	if err := os.MkdirAll(secondStore, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readStoreID(path, "store"); err == nil {
-		t.Fatal("invalid YAML accepted")
+	first := service.projectRepositoriesRoot(project.Project{ID: "first", StorePath: firstStore})
+	second := service.projectRepositoriesRoot(project.Project{ID: "second", StorePath: secondStore})
+	if first == second || filepath.Dir(first) == filepath.Dir(second) {
+		t.Fatalf("project repository roots overlap: first=%q second=%q", first, second)
 	}
-	if err := os.WriteFile(path, []byte("schema: spec-driven\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readStoreID(path, "store"); !errors.Is(err, ErrInvalidStore) {
-		t.Fatalf("missing store: %v", err)
+	if filepath.Base(first) != "repositories" || filepath.Base(second) != "repositories" {
+		t.Fatalf("unexpected roots: first=%q second=%q", first, second)
 	}
 }
 
@@ -253,7 +307,47 @@ func TestSanitizeProgress(t *testing.T) {
 	if got := sanitizeProgress("fatal: https://user:pass@example.test/private"); got != "" {
 		t.Fatalf("unsafe diagnostic leaked: %q", got)
 	}
-	if got := safeMessage("fatal: https://user:pass@example.test/private"); strings.Contains(got, "pass") {
-		t.Fatalf("failure message leaked credentials: %q", got)
+	code, message := safeCloneError("fatal: https://user:pass@example.test/private")
+	if code != "GIT_CLONE_FAILED" || strings.Contains(message, "pass") {
+		t.Fatalf("failure leaked credentials: code=%q message=%q", code, message)
+	}
+}
+
+func TestGitCloneEnvironmentUsesOnlyAgentSocket(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+	t.Setenv("SSH_AGENT_PID", "123")
+	t.Setenv("SSH_ASKPASS", "/tmp/askpass")
+	environment := gitCloneEnvironment()
+	if environment["SSH_AUTH_SOCK"] != "/tmp/agent.sock" || environment["GIT_TERMINAL_PROMPT"] != "0" {
+		t.Fatalf("unexpected environment: %#v", environment)
+	}
+	if _, ok := environment["SSH_AGENT_PID"]; ok {
+		t.Fatal("SSH_AGENT_PID must not be passed")
+	}
+	if _, ok := environment["SSH_ASKPASS"]; ok {
+		t.Fatal("SSH_ASKPASS must not be passed")
+	}
+}
+
+func TestSafeCloneErrorClassification(t *testing.T) {
+	tests := []struct {
+		stderr string
+		code   string
+	}{
+		{"git@github.com: Permission denied (publickey).", "GIT_AUTH_FAILED"},
+		{"fatal: Could not read from remote repository.", "GIT_AUTH_FAILED"},
+		{"Host key verification failed.", "SSH_HOST_KEY_FAILED"},
+		{"WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", "SSH_HOST_KEY_FAILED"},
+		{"fatal: repository not found", "GIT_REPOSITORY_NOT_FOUND"},
+		{"fatal: network failed token=secret", "GIT_CLONE_FAILED"},
+	}
+	for _, test := range tests {
+		code, message := safeCloneError(test.stderr)
+		if code != test.code {
+			t.Fatalf("%q: code=%q want=%q", test.stderr, code, test.code)
+		}
+		if strings.Contains(message, "secret") || strings.Contains(message, "github.com") {
+			t.Fatalf("unsafe message: %q", message)
+		}
 	}
 }

@@ -2,9 +2,10 @@ module github.com/sorface/openspec-studio
 
 go 1.24.0
 
-require modernc.org/sqlite v1.36.3
-
-require gopkg.in/yaml.v3 v3.0.1
+require (
+	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.36.3
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

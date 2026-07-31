@@ -1,48 +1,98 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { historyShortcut } from "@/features/system/model/platform-shortcuts";
 
 interface RichMarkdownEditorProps {
   documentId: string;
   markdown: string;
   onBlur: () => void;
   onChange: (markdown: string) => void;
+  onAskAgent: (selection: string) => void;
 }
 
-export function RichMarkdownEditor({ documentId, markdown, onBlur, onChange }: RichMarkdownEditorProps) {
+const agentActionIcon = `
+  <svg data-agent-action="true" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M12 3.5 13.6 8.4 18.5 10 13.6 11.6 12 16.5 10.4 11.6 5.5 10 10.4 8.4 12 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="m17.5 15 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" fill="currentColor"/>
+  </svg>`;
+
+export function RichMarkdownEditor({ documentId, markdown, onBlur, onChange, onAskAgent }: RichMarkdownEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const onBlurRef = useRef(onBlur);
   const onChangeRef = useRef(onChange);
+  const onAskAgentRef = useRef(onAskAgent);
   const initialMarkdownRef = useRef(markdown);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
 
   useEffect(() => {
     onBlurRef.current = onBlur;
     onChangeRef.current = onChange;
+    onAskAgentRef.current = onAskAgent;
     initialMarkdownRef.current = markdown;
-  }, [markdown, onBlur, onChange]);
+  }, [markdown, onAskAgent, onBlur, onChange]);
 
   useEffect(() => {
     let disposed = false;
     let destroy: (() => void) | undefined;
+    let toolbarObserver: MutationObserver | undefined;
 
     async function initialize() {
       const root = rootRef.current;
       if (!root) return;
 
       try {
-        const { Crepe } = await import("@milkdown/crepe");
-        if (disposed) return;
+        let hasUserInteraction = false;
+        const initialMarkdown = initialMarkdownRef.current;
+        let normalizedInitialMarkdown = initialMarkdown;
+        const markUserInteraction = (event: Event) => {
+          if (event.isTrusted) hasUserInteraction = true;
+        };
+        const userInteractionEvents = ["beforeinput", "keydown", "pointerdown", "paste", "drop"] as const;
+        for (const eventName of userInteractionEvents) {
+          root.addEventListener(eventName, markUserInteraction);
+        }
+        const removeInteractionListeners = () => {
+          for (const eventName of userInteractionEvents) {
+            root.removeEventListener(eventName, markUserInteraction);
+          }
+        };
+
+        const [{ Crepe }, { editorViewCtx }, { redo, undo }] = await Promise.all([
+          import("@milkdown/crepe"),
+          import("@milkdown/kit/core"),
+          import("@milkdown/kit/prose/history"),
+        ]);
+        if (disposed) {
+          removeInteractionListeners();
+          return;
+        }
 
         const editor = new Crepe({
           root,
-          defaultValue: initialMarkdownRef.current,
+          defaultValue: initialMarkdown,
           features: {
+            [Crepe.Feature.Cursor]: false,
             [Crepe.Feature.TopBar]: true,
+            [Crepe.Feature.ImageBlock]: false,
             [Crepe.Feature.Latex]: false,
             [Crepe.Feature.AI]: false,
           },
           featureConfigs: {
+            [Crepe.Feature.Toolbar]: {
+              buildToolbar: (builder) => {
+                builder.addGroup("agent", "Agent").addItem("ask-agent", {
+                  icon: agentActionIcon,
+                  active: () => false,
+                  onRun: (context) => {
+                    const view = context.get(editorViewCtx);
+                    const { from, to } = view.state.selection;
+                    const selection = view.state.doc.textBetween(from, to, "\n").trim();
+                    if (selection) onAskAgentRef.current(selection);
+                  },
+                });
+              },
+            },
             [Crepe.Feature.Placeholder]: {
               text: "Начните писать или нажмите «/», чтобы добавить блок…",
               mode: "doc",
@@ -53,19 +103,55 @@ export function RichMarkdownEditor({ documentId, markdown, onBlur, onChange }: R
           },
         });
 
+        const handleHistoryShortcut = (event: KeyboardEvent) => {
+          const action = historyShortcut(event);
+          if (!action) return;
+          hasUserInteraction = true;
+          const handled = editor.editor.action((context) => {
+            const view = context.get(editorViewCtx);
+            return (action === "undo" ? undo : redo)(view.state, view.dispatch);
+          });
+          if (!handled) return;
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        root.addEventListener("keydown", handleHistoryShortcut, true);
+
         editor.on((listener) => {
           listener.markdownUpdated((_context, nextMarkdown, previousMarkdown) => {
-            if (nextMarkdown !== previousMarkdown) onChangeRef.current(nextMarkdown);
+            if (!hasUserInteraction) return;
+            if (nextMarkdown !== previousMarkdown) {
+              onChangeRef.current(nextMarkdown === normalizedInitialMarkdown ? initialMarkdown : nextMarkdown);
+            }
           });
           listener.blur(() => onBlurRef.current());
         });
 
         await editor.create();
+        const labelAgentActions = () => {
+          root.querySelectorAll<SVGElement>("[data-agent-action]").forEach((icon) => {
+            const button = icon.closest("button");
+            button?.setAttribute("aria-label", "Редактировать изменение через agent");
+            button?.setAttribute("title", "Редактировать изменение через agent");
+            button?.setAttribute("data-testid", "editor-agent-action");
+          });
+        };
+        labelAgentActions();
+        toolbarObserver = new MutationObserver(labelAgentActions);
+        toolbarObserver.observe(root, { childList: true, subtree: true });
+        normalizedInitialMarkdown = editor.getMarkdown();
         if (disposed) {
+          toolbarObserver.disconnect();
+          removeInteractionListeners();
           editor.destroy();
           return;
         }
-        destroy = () => editor.destroy();
+        destroy = () => {
+          toolbarObserver?.disconnect();
+          root.removeEventListener("keydown", handleHistoryShortcut, true);
+          removeInteractionListeners();
+          editor.destroy();
+        };
         setStatus("ready");
       } catch {
         if (!disposed) setStatus("failed");

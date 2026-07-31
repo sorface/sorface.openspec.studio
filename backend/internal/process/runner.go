@@ -27,6 +27,7 @@ type Command struct {
 	Stdin          string
 	Environment    map[string]string
 	Timeout        time.Duration
+	DisableTimeout bool
 	MaxOutputBytes int64
 	OnStdout       func([]byte)
 	OnStderr       func([]byte)
@@ -47,11 +48,15 @@ func (Runner) Run(parent context.Context, command Command) (Result, error) {
 	if err := validate(command); err != nil {
 		return Result{}, err
 	}
-	timeout := command.Timeout
-	if timeout <= 0 {
-		timeout = 10 * time.Minute
+	ctx := parent
+	cancel := func() {}
+	if !command.DisableTimeout {
+		timeout := command.Timeout
+		if timeout <= 0 {
+			timeout = 10 * time.Minute
+		}
+		ctx, cancel = context.WithTimeout(parent, timeout)
 	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, command.Executable, command.Arguments...)
@@ -123,7 +128,7 @@ func environment(values map[string]string) []string {
 		}
 	}
 	for key, value := range values {
-		if key == "PATH" || key == "HOME" || key == "LANG" || key == "LC_ALL" ||
+		if key == "PATH" || key == "HOME" || key == "LANG" || key == "LC_ALL" || key == "SSH_AUTH_SOCK" ||
 			strings.HasPrefix(key, "CODEX_") || strings.HasPrefix(key, "GIT_") {
 			result = append(result, key+"="+value)
 		}
