@@ -25,6 +25,6 @@
 ## 4. Проверка
 
 - [x] 4.1 Выполнить Go tests, frontend `npm run check`, production build и `openspec validate --strict`.
-- [ ] 4.2 Проверить локальный browser flow: выбор проекта, загрузка реального дерева/файла, редактирование и запись через backend.
+- [x] 4.2 Проверить локальный browser flow: выбор проекта, загрузка реального дерева/файла, редактирование и запись через backend.
 - [x] 4.3 После изменения навигации повторно выполнить frontend `npm run check`, production build и строгую OpenSpec-валидацию.
 - [x] 4.4 Проверить двухуровневую навигацию в локальном браузере и повторно выполнить frontend `npm run check`, production build и строгую OpenSpec-валидацию.

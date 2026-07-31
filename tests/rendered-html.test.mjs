@@ -135,10 +135,10 @@ test("визуальный редактор сохраняет Markdown, undo/re
 
   assert.match(packageJson, /"@milkdown\/crepe"/);
   assert.match(editor, /listener\.markdownUpdated/);
-  assert.match(editor, /let hasUserInteraction = false/);
-  assert.match(editor, /if \(event\.isTrusted\) hasUserInteraction = true/);
-  assert.match(editor, /if \(!hasUserInteraction\) return/);
-  assert.match(editor, /"beforeinput", "keydown", "pointerdown", "paste", "drop"/);
+  assert.match(editor, /let editorReady = false/);
+  assert.match(editor, /if \(!editorReady\) return/);
+  assert.match(editor, /normalizedInitialMarkdown = editor\.getMarkdown\(\);\s*editorReady = true/);
+  assert.doesNotMatch(editor, /event\.isTrusted|hasUserInteraction/);
   assert.match(editor, /onChangeRef\.current\(nextMarkdown === normalizedInitialMarkdown \? initialMarkdown : nextMarkdown\)/);
   assert.match(editor, /\[Crepe\.Feature\.TopBar\]: true/);
   assert.match(editor, /\[Crepe\.Feature\.ImageBlock\]: false/);

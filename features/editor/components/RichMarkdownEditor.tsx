@@ -42,31 +42,16 @@ export function RichMarkdownEditor({ documentId, markdown, onBlur, onChange, onA
       if (!root) return;
 
       try {
-        let hasUserInteraction = false;
+        let editorReady = false;
         const initialMarkdown = initialMarkdownRef.current;
         let normalizedInitialMarkdown = initialMarkdown;
-        const markUserInteraction = (event: Event) => {
-          if (event.isTrusted) hasUserInteraction = true;
-        };
-        const userInteractionEvents = ["beforeinput", "keydown", "pointerdown", "paste", "drop"] as const;
-        for (const eventName of userInteractionEvents) {
-          root.addEventListener(eventName, markUserInteraction);
-        }
-        const removeInteractionListeners = () => {
-          for (const eventName of userInteractionEvents) {
-            root.removeEventListener(eventName, markUserInteraction);
-          }
-        };
 
         const [{ Crepe }, { editorViewCtx }, { redo, undo }] = await Promise.all([
           import("@milkdown/crepe"),
           import("@milkdown/kit/core"),
           import("@milkdown/kit/prose/history"),
         ]);
-        if (disposed) {
-          removeInteractionListeners();
-          return;
-        }
+        if (disposed) return;
 
         const editor = new Crepe({
           root,
@@ -106,7 +91,6 @@ export function RichMarkdownEditor({ documentId, markdown, onBlur, onChange, onA
         const handleHistoryShortcut = (event: KeyboardEvent) => {
           const action = historyShortcut(event);
           if (!action) return;
-          hasUserInteraction = true;
           const handled = editor.editor.action((context) => {
             const view = context.get(editorViewCtx);
             return (action === "undo" ? undo : redo)(view.state, view.dispatch);
@@ -119,7 +103,7 @@ export function RichMarkdownEditor({ documentId, markdown, onBlur, onChange, onA
 
         editor.on((listener) => {
           listener.markdownUpdated((_context, nextMarkdown, previousMarkdown) => {
-            if (!hasUserInteraction) return;
+            if (!editorReady) return;
             if (nextMarkdown !== previousMarkdown) {
               onChangeRef.current(nextMarkdown === normalizedInitialMarkdown ? initialMarkdown : nextMarkdown);
             }
@@ -140,16 +124,15 @@ export function RichMarkdownEditor({ documentId, markdown, onBlur, onChange, onA
         toolbarObserver = new MutationObserver(labelAgentActions);
         toolbarObserver.observe(root, { childList: true, subtree: true });
         normalizedInitialMarkdown = editor.getMarkdown();
+        editorReady = true;
         if (disposed) {
           toolbarObserver.disconnect();
-          removeInteractionListeners();
           editor.destroy();
           return;
         }
         destroy = () => {
           toolbarObserver?.disconnect();
           root.removeEventListener("keydown", handleHistoryShortcut, true);
-          removeInteractionListeners();
           editor.destroy();
         };
         setStatus("ready");
