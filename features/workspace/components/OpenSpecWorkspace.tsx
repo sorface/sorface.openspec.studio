@@ -5,7 +5,6 @@ import { useDocumentsController } from "@/features/documents/hooks/useDocumentsC
 import { useDocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
 import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
-import { useAiOperationsController } from "@/features/ai-operations/hooks/useAiOperationsController";
 import { useGitStatusController } from "@/features/git/hooks/useGitStatusController";
 import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
 import { OpenSpecPanel } from "@/features/openspec-workflow/components/OpenSpecPanel";
@@ -15,12 +14,12 @@ import {
 } from "@/features/system/model/platform-shortcuts";
 import { GitPanel } from "@/features/git/components/GitPanel";
 import { RepositoriesPanel } from "@/features/repositories/components/RepositoriesPanel";
-import { AiAssistantPanel } from "./AiAssistantPanel";
+import { AgentCliPanel } from "./AgentCliPanel";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { WorkspaceFooter } from "./WorkspaceFooter";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
-import type { AssistantMode, ViewMode, WorkspaceMode } from "@/features/workspace/model/workspace-types";
+import type { ViewMode, WorkspaceMode } from "@/features/workspace/model/workspace-types";
 
 export function OpenSpecWorkspace() {
   const projects = useProjectsController();
@@ -28,7 +27,6 @@ export function OpenSpecWorkspace() {
   const documents = useDocumentsController(projects.activeProject?.id);
   const documentHistory = useDocumentHistoryController(projects.activeProject?.id, documents.selectedPath);
   const configuredProvider = projects.activeProject?.defaultAiProvider ?? undefined;
-  const ai = useAiOperationsController(projects.activeProject?.id, configuredProvider, projects.activeProject?.defaultModel ?? undefined);
   const providerAvailable = !!configuredProvider && (projects.capabilities?.tools.some((tool) =>
     tool.name === configuredProvider.toLowerCase() && tool.available && tool.supported !== false && tool.nonInteractive !== false,
   ) ?? false);
@@ -45,10 +43,7 @@ export function OpenSpecWorkspace() {
   );
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
   const [leftOpen, setLeftOpen] = useState(true);
-  const [rightOpen, setRightOpen] = useState(true);
-  const [assistantMode, setAssistantMode] = useState<AssistantMode>("assistant");
-  const [prompt, setPrompt] = useState("");
-  const [messages] = useState<string[]>([]);
+  const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [saveShortcutLabel, setSaveShortcutLabel] = useState("Ctrl+S");
   const [openSpecCreateDialogOpen, setOpenSpecCreateDialogOpen] = useState(false);
@@ -78,14 +73,8 @@ export function OpenSpecWorkspace() {
     return () => window.removeEventListener("keydown", handleSaveShortcut, true);
   }, [writeFile]);
 
-  const sendPrompt = () => {
-    if (!prompt.trim()) return;
-    void ai.send(prompt).then(() => setPrompt("")).catch(() => undefined);
-  };
-
   const editDocumentWithAgent = async (path: string, selection: string, instruction: string) => {
-    await openSpec.editDocument(path, selection, instruction);
-    setWorkspaceMode("openspec");
+    return openSpec.editDocument(path, selection, instruction);
   };
 
   const addOpenSpecChange = useCallback(() => {
@@ -95,9 +84,14 @@ export function OpenSpecWorkspace() {
 
   return (
     <main className="app-shell">
-      <WorkspaceHeader draftSaved={!documents.dirty} projects={projects} />
+      <WorkspaceHeader
+        agentSettingsOpen={agentSettingsOpen}
+        draftSaved={!documents.dirty}
+        onAgentSettingsToggle={() => setAgentSettingsOpen((open) => !open)}
+        projects={projects}
+      />
 
-      <section className={`workspace ${leftOpen ? "" : "left-collapsed"} ${rightOpen ? "" : "right-collapsed"}`}>
+      <section className={`workspace ${agentSettingsOpen ? "agent-settings-open" : ""} ${leftOpen ? "" : "left-collapsed"}`}>
         <WorkspaceSidebar
           key={projects.activeProject?.id ?? "no-project"}
           documents={documents}
@@ -146,18 +140,7 @@ export function OpenSpecWorkspace() {
           />
         )}
 
-        <AiAssistantPanel
-          assistantMode={assistantMode}
-          messages={messages}
-          prompt={prompt}
-          onClose={() => setRightOpen(false)}
-          onModeChange={setAssistantMode}
-          onPromptChange={setPrompt}
-          onSend={sendPrompt}
-          ai={ai}
-          providerAvailable={providerAvailable}
-        />
-        {!rightOpen && <button className="open-panel right" onClick={() => setRightOpen(true)}>‹</button>}
+        {agentSettingsOpen && <AgentCliPanel onClose={() => setAgentSettingsOpen(false)} projects={projects} />}
       </section>
 
       <WorkspaceFooter

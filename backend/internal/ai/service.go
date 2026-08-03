@@ -69,11 +69,14 @@ type Manifest struct {
 }
 
 type CreateInput struct {
-	ReviewToken   string `json:"reviewToken"`
-	Prompt        string `json:"prompt"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model,omitempty"`
-	CorrelationID string `json:"-"`
+	ReviewToken     string `json:"reviewToken"`
+	Prompt          string `json:"prompt"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	Selection       string `json:"selection,omitempty"`
+	CorrelationID   string `json:"-"`
 }
 
 type ProviderCapability struct {
@@ -180,6 +183,15 @@ func (service *Service) Start(ctx context.Context, projectID string, input Creat
 	if strings.TrimSpace(input.Prompt) == "" {
 		return operation.Operation{}, ErrInvalidContext
 	}
+	if input.ReasoningEffort != "" && input.ReasoningEffort != "low" {
+		return operation.Operation{}, ErrInvalidContext
+	}
+	if input.Mode != "" && input.Mode != "inline" {
+		return operation.Operation{}, ErrInvalidContext
+	}
+	if input.Mode == "inline" && strings.TrimSpace(input.Selection) == "" {
+		return operation.Operation{}, ErrInvalidContext
+	}
 	service.mu.Lock()
 	manifest, ok := service.manifests[input.ReviewToken]
 	if ok {
@@ -214,10 +226,15 @@ func (service *Service) Start(ctx context.Context, projectID string, input Creat
 	if active {
 		return operation.Operation{}, ErrOperationConflict
 	}
+	operationInput, _ := json.Marshal(map[string]string{
+		"reasoningEffort": input.ReasoningEffort,
+		"mode":            input.Mode,
+		"selection":       input.Selection,
+	})
 	item, err := service.store.CreateOperation(ctx, operation.Operation{
 		ProjectID: projectID, Kind: operation.KindAI, Status: operation.StatusQueued,
 		Provider: strings.ToLower(input.Provider), Model: input.Model, Prompt: input.Prompt,
-		InputJSON: "{}", CorrelationID: input.CorrelationID,
+		InputJSON: string(operationInput), CorrelationID: input.CorrelationID,
 	})
 	if err != nil {
 		return operation.Operation{}, err
@@ -270,6 +287,16 @@ func (service *Service) Cancel(ctx context.Context, projectID, id string) (opera
 func (service *Service) run(item operation.Operation, entries []resolvedEntry) {
 	ctx, done := service.supervisor.Context(context.Background(), item.ID)
 	defer done()
+	var operationInput struct {
+		ReasoningEffort string `json:"reasoningEffort"`
+		Mode            string `json:"mode"`
+		Selection       string `json:"selection"`
+	}
+	_ = json.Unmarshal([]byte(item.InputJSON), &operationInput)
+	if operationInput.Mode == "inline" {
+		service.runInline(ctx, item, entries, operationInput.Selection, operationInput.ReasoningEffort)
+		return
+	}
 	projectItem, err := service.store.Get(ctx, item.ProjectID)
 	if err != nil {
 		service.finish(item, operation.StatusFailed, "PROJECT_NOT_FOUND", err.Error(), "")
@@ -290,7 +317,7 @@ func (service *Service) run(item operation.Operation, entries []resolvedEntry) {
 		service.finish(item, operation.StatusFailed, "AI_PROVIDER_UNAVAILABLE", err.Error(), "")
 		return
 	}
-	args, err := providerArguments(item.Provider, item.Model, working)
+	args, err := providerArguments(item.Provider, item.Model, working, operationInput.ReasoningEffort, false)
 	if err != nil {
 		service.finish(item, operation.StatusFailed, "AI_PROVIDER_UNSUPPORTED", err.Error(), "")
 		return
@@ -339,6 +366,133 @@ func (service *Service) run(item operation.Operation, entries []resolvedEntry) {
 	final := finalResponse(result.Stdout)
 	payload, _ := json.Marshal(map[string]any{"finalResponse": final, "files": diff})
 	service.finish(item, operation.StatusAwaitingReview, "", "", string(payload))
+}
+
+func (service *Service) runInline(
+	ctx context.Context,
+	item operation.Operation,
+	entries []resolvedEntry,
+	selection string,
+	reasoningEffort string,
+) {
+	var target *resolvedEntry
+	for index := range entries {
+		if entries[index].Included && entries[index].Source == "store" {
+			if target != nil {
+				service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", "Inline edit requires one Store file", "")
+				return
+			}
+			target = &entries[index]
+		}
+	}
+	if target == nil {
+		service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", "Selected fragment is missing or ambiguous", "")
+		return
+	}
+	before := string(target.content)
+	selectionStart, selectionEnd, ok := locateMarkdownSelection(before, selection)
+	if !ok {
+		service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", "Selected fragment is missing or ambiguous", "")
+		return
+	}
+
+	_, working, cleanup, err := createWorkspace(service.dataDir, item.ID, "", nil)
+	if err != nil {
+		service.finish(item, operation.StatusFailed, "AI_WORKSPACE_FAILED", err.Error(), "")
+		return
+	}
+	defer cleanup()
+	item.Status = operation.StatusRunning
+	item, _ = service.store.UpdateOperation(ctx, item)
+	_, _ = service.store.AddEvent(ctx, operation.Event{OperationID: item.ID, Type: "running", Payload: `{}`})
+
+	executable, err := providerPath(item.Provider)
+	if err != nil {
+		service.finish(item, operation.StatusFailed, "AI_PROVIDER_UNAVAILABLE", err.Error(), "")
+		return
+	}
+	args, err := providerArguments(item.Provider, item.Model, working, reasoningEffort, true)
+	if err != nil {
+		service.finish(item, operation.StatusFailed, "AI_PROVIDER_UNSUPPORTED", err.Error(), "")
+		return
+	}
+	result, runErr := service.runner.Run(ctx, processrunner.Command{
+		Executable: executable, Arguments: args, Directory: working,
+		Stdin: inlinePrompt(item.Prompt, selection), Timeout: service.timeout, MaxOutputBytes: 1 << 20,
+	})
+	_ = service.store.SaveAudit(context.Background(), operation.Audit{
+		OperationID: item.ID, Executable: filepath.Base(executable), Arguments: strings.Join(result.Arguments, " "),
+		ExitCode: result.ExitCode, StopReason: result.StopReason, StdoutBytes: int64(len(result.Stdout)),
+		StderrBytes: int64(len(result.Stderr)), DurationMS: result.Duration.Milliseconds(),
+	})
+	if runErr != nil {
+		service.finish(item, operation.StatusFailed, "AI_PROVIDER_FAILED", safeDiagnostic(result.Stderr), "")
+		return
+	}
+	for _, event := range normalizeProviderEvents(result.Stdout) {
+		event.OperationID = item.ID
+		_, _ = service.store.AddEvent(context.Background(), event)
+	}
+	item.Status = operation.StatusValidating
+	item, _ = service.store.UpdateOperation(context.Background(), item)
+	_, _ = service.store.AddEvent(context.Background(), operation.Event{
+		OperationID: item.ID, Type: "validating", Payload: `{}`,
+	})
+	replacement, err := parseInlineReplacement(finalResponse(result.Stdout))
+	if err != nil {
+		service.finish(item, operation.StatusFailed, "AI_INVALID_RESPONSE", "Agent returned an invalid inline edit", "")
+		return
+	}
+	after := before[:selectionStart] + replacement + before[selectionEnd:]
+	payload, _ := json.Marshal(map[string]any{
+		"finalResponse": replacement,
+		"files":         []fileDiff{{Path: target.Path, Before: before, After: after}},
+	})
+	service.finish(item, operation.StatusAwaitingReview, "", "", string(payload))
+}
+
+func inlinePrompt(prompt, selection string) string {
+	return "Выполни короткое редактирование текста без использования инструментов, shell и файлов.\n" +
+		"Ответь только одним JSON-объектом вида {\"replacement\":\"новый текст\"}.\n" +
+		"Поле replacement должно содержать только замену выделенного фрагмента, без пояснений и Markdown-ограждений.\n\n" +
+		"ВЫДЕЛЕННЫЙ ФРАГМЕНТ:\n" + selection + "\n\nИНСТРУКЦИЯ:\n" + prompt
+}
+
+func parseInlineReplacement(response string) (string, error) {
+	trimmed := strings.TrimSpace(response)
+	trimmed = strings.TrimPrefix(trimmed, "```json")
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	trimmed = strings.TrimSuffix(trimmed, "```")
+	var payload struct {
+		Replacement string `json:"replacement"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(trimmed)), &payload) != nil || strings.TrimSpace(payload.Replacement) == "" {
+		return "", ErrInvalidContext
+	}
+	return payload.Replacement, nil
+}
+
+func locateMarkdownSelection(markdown, selection string) (int, int, bool) {
+	if strings.Count(markdown, selection) == 1 {
+		start := strings.Index(markdown, selection)
+		return start, start + len(selection), true
+	}
+	tokens := strings.Fields(selection)
+	if len(tokens) == 0 {
+		return 0, 0, false
+	}
+	parts := make([]string, len(tokens))
+	for index, token := range tokens {
+		parts[index] = regexp.QuoteMeta(token)
+	}
+	// The visual editor collapses Markdown line wrapping and hides lightweight inline
+	// markers. Permit only whitespace and those markers between the selected words.
+	pattern := strings.Join(parts, "(?:\\s|[*_`~])+")
+	matches := regexp.MustCompile(pattern).FindAllStringIndex(markdown, 2)
+	if len(matches) != 1 {
+		return 0, 0, false
+	}
+	return matches[0][0], matches[0][1], true
 }
 
 func (service *Service) finish(item operation.Operation, status operation.Status, code, message, result string) {
@@ -519,12 +673,22 @@ func providerPath(provider string) (string, error) {
 	}
 }
 
-func providerArguments(provider, model, working string) ([]string, error) {
+func providerArguments(provider, model, working, reasoningEffort string, inline bool) ([]string, error) {
 	provider = strings.ToLower(provider)
 	var args []string
 	switch provider {
 	case "codex":
-		args = []string{"exec", "--json", "--ephemeral", "--sandbox", "workspace-write", "--skip-git-repo-check", "--cd", working}
+		sandbox := "workspace-write"
+		if inline {
+			sandbox = "read-only"
+		}
+		args = []string{"exec", "--json", "--ephemeral", "--sandbox", sandbox, "--skip-git-repo-check", "--cd", working}
+		if inline {
+			args = append(args, "--ignore-rules")
+		}
+		if reasoningEffort == "low" {
+			args = append(args, "--config", `model_reasoning_effort="low"`)
+		}
 	case "gigacode":
 		capability := ProbeProvider(context.Background(), "gigacode")
 		if !capability.Available {

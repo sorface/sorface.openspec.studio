@@ -75,9 +75,17 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
-        <span className="project-avatar">{controller.activeProject?.name.charAt(0).toUpperCase() || "P"}</span>
-        <span><small>ПРОЕКТ</small><b>{title}</b></span>
-        <em>⌄</em>
+        <span className="project-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M8.5 7V5.75A1.75 1.75 0 0 1 10.25 4h3.5a1.75 1.75 0 0 1 1.75 1.75V7" />
+            <path d="M5.25 7h13.5A2.25 2.25 0 0 1 21 9.25v8.5A2.25 2.25 0 0 1 18.75 20H5.25A2.25 2.25 0 0 1 3 17.75v-8.5A2.25 2.25 0 0 1 5.25 7Z" />
+            <path d="M3 11.25c2.7 1.35 5.72 2.03 9 2.03s6.3-.68 9-2.03M10 12.9v1.6h4v-1.6" />
+          </svg>
+        </span>
+        <b>{title}</b>
+        <svg className={`project-chevron ${open ? "open" : ""}`} aria-hidden="true" viewBox="0 0 16 16">
+          <path d="m4 6.5 4 4 4-4" />
+        </svg>
       </button>
 
       {open && (

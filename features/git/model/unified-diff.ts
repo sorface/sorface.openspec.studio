@@ -19,6 +19,19 @@ export interface DiffFile {
   hunks: DiffHunk[];
 }
 
+export type SplitDiffKind = DiffLineKind | "empty";
+
+export interface SplitDiffSide {
+  kind: SplitDiffKind;
+  content: string;
+  line?: number;
+}
+
+export interface SplitDiffRow {
+  before: SplitDiffSide;
+  after: SplitDiffSide;
+}
+
 const hunkPattern = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/;
 const filePattern = /^diff --git a\/(.+) b\/(.+)$/;
 
@@ -83,4 +96,45 @@ export function parseUnifiedDiff(value: string): DiffFile[] {
   }
 
   return files;
+}
+
+/** Aligns a unified diff hunk into the two columns used by a side-by-side viewer. */
+export function buildSplitDiffRows(lines: DiffLine[]): SplitDiffRow[] {
+  const rows: SplitDiffRow[] = [];
+
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (line.kind === "context") {
+      rows.push({
+        before: { kind: "context", content: line.content, line: line.oldLine },
+        after: { kind: "context", content: line.content, line: line.newLine },
+      });
+      index += 1;
+      continue;
+    }
+
+    const changed: DiffLine[] = [];
+    while (index < lines.length && lines[index].kind !== "context") {
+      changed.push(lines[index]);
+      index += 1;
+    }
+    const deletions = changed.filter((item) => item.kind === "deletion");
+    const additions = changed.filter((item) => item.kind === "addition");
+    const changedRowCount = Math.max(deletions.length, additions.length);
+
+    for (let changedIndex = 0; changedIndex < changedRowCount; changedIndex += 1) {
+      const deletion = deletions[changedIndex];
+      const addition = additions[changedIndex];
+      rows.push({
+        before: deletion
+          ? { kind: "deletion", content: deletion.content, line: deletion.oldLine }
+          : { kind: "empty", content: "" },
+        after: addition
+          ? { kind: "addition", content: addition.content, line: addition.newLine }
+          : { kind: "empty", content: "" },
+      });
+    }
+  }
+
+  return rows;
 }

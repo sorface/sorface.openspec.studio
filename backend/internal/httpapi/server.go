@@ -21,6 +21,7 @@ import (
 	openspecworkflow "github.com/sorface/openspec-studio/backend/internal/openspec"
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	"github.com/sorface/openspec-studio/backend/internal/repository"
+	"github.com/sorface/openspec-studio/backend/internal/storegit"
 	"github.com/sorface/openspec-studio/backend/internal/tools"
 )
 
@@ -34,6 +35,7 @@ type Server struct {
 	capabilities         func(context.Context) tools.Capabilities
 	repositories         *repository.Service
 	gitStatus            *gitstatus.Service
+	storeGit             *storegit.Manager
 	aiOperations         *aiservice.Service
 	openSpec             *openspecworkflow.Service
 	openSpecActions      *openspecworkflow.ActionService
@@ -51,6 +53,7 @@ type Options struct {
 	Capabilities         func(context.Context) tools.Capabilities
 	Repositories         *repository.Service
 	GitStatus            *gitstatus.Service
+	StoreGit             *storegit.Manager
 	AIOperations         *aiservice.Service
 	OpenSpec             *openspecworkflow.Service
 	OpenSpecActions      *openspecworkflow.ActionService
@@ -84,6 +87,7 @@ func New(options Options) *Server {
 		capabilities:         options.Capabilities,
 		repositories:         options.Repositories,
 		gitStatus:            options.GitStatus,
+		storeGit:             options.StoreGit,
 		aiOperations:         options.AIOperations,
 		openSpec:             options.OpenSpec,
 		openSpecActions:      options.OpenSpecActions,
@@ -117,8 +121,20 @@ func (server *Server) Handler() http.Handler {
 		mux.HandleFunc("DELETE /api/v1/projects/{projectId}/repository-clones/{operationId}", server.cancelRepositoryClone)
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/repository-clones/{operationId}/events", server.repositoryCloneEvents)
 	}
-	if server.gitStatus != nil {
+	if server.gitStatus != nil || server.storeGit != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/git/status", server.getGitStatus)
+	}
+	if server.storeGit != nil {
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/git/stage", server.stageGitPaths)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/git/unstage", server.unstageGitPaths)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/git/commits", server.createGitCommit)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/git/branches", server.createGitBranch)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/git/branch-switches", server.switchGitBranch)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/git/fetches", server.createGitFetch)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/git/pushes", server.createGitPush)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/git/operations/{operationId}", server.getGitOperation)
+		mux.HandleFunc("DELETE /api/v1/projects/{projectId}/git/operations/{operationId}", server.cancelGitOperation)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/git/operations/{operationId}/events", server.gitOperationEvents)
 	}
 	if server.aiOperations != nil {
 		mux.HandleFunc("POST /api/v1/projects/{projectId}/ai/context-manifests", server.createAIContextManifest)
@@ -367,21 +383,218 @@ func (server *Server) handleOpenSpecError(response http.ResponseWriter, request 
 }
 
 func (server *Server) getGitStatus(response http.ResponseWriter, request *http.Request) {
-	status, err := server.gitStatus.Get(request.Context(), request.PathValue("projectId"))
+	var status gitstatus.Status
+	var err error
+	if server.storeGit != nil {
+		status, err = server.storeGit.Status(request.Context(), request.PathValue("projectId"))
+	} else {
+		status, err = server.gitStatus.Get(request.Context(), request.PathValue("projectId"))
+	}
 	if err != nil {
-		switch {
-		case errors.Is(err, project.ErrNotFound):
-			server.writeError(response, request, http.StatusNotFound, "PROJECT_NOT_FOUND", "Проект не найден", nil)
-		case errors.Is(err, project.ErrInvalidStore), errors.Is(err, project.ErrInvalidStorePath):
-			server.writeError(response, request, http.StatusBadRequest, "INVALID_STORE", "Исправьте локальный Store проекта", nil)
-		case errors.Is(err, project.ErrGitUnavailable):
-			server.writeError(response, request, http.StatusConflict, "GIT_UNAVAILABLE", "Git недоступен", nil)
-		default:
-			server.writeError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Не удалось получить Git status", nil)
-		}
+		server.handleGitError(response, request, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, status)
+}
+
+func (server *Server) stageGitPaths(response http.ResponseWriter, request *http.Request) {
+	var input storegit.PathsInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	status, err := server.storeGit.Stage(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, status)
+}
+
+func (server *Server) unstageGitPaths(response http.ResponseWriter, request *http.Request) {
+	var input storegit.PathsInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	status, err := server.storeGit.Unstage(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, status)
+}
+
+func (server *Server) createGitCommit(response http.ResponseWriter, request *http.Request) {
+	var input storegit.CommitInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	status, err := server.storeGit.Commit(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, status)
+}
+
+func (server *Server) createGitBranch(response http.ResponseWriter, request *http.Request) {
+	var input storegit.CreateBranchInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	status, err := server.storeGit.CreateBranch(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusCreated, status)
+}
+
+func (server *Server) switchGitBranch(response http.ResponseWriter, request *http.Request) {
+	var input storegit.SwitchBranchInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	status, err := server.storeGit.SwitchBranch(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, status)
+}
+
+func (server *Server) createGitFetch(response http.ResponseWriter, request *http.Request) {
+	var input storegit.FetchInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	input.CorrelationID = correlationID(request)
+	item, err := server.storeGit.StartFetch(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, item)
+}
+
+func (server *Server) createGitPush(response http.ResponseWriter, request *http.Request) {
+	var input storegit.PushInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	input.CorrelationID = correlationID(request)
+	item, err := server.storeGit.StartPush(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusAccepted, item)
+}
+
+func (server *Server) getGitOperation(response http.ResponseWriter, request *http.Request) {
+	item, err := server.storeGit.Get(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) cancelGitOperation(response http.ResponseWriter, request *http.Request) {
+	item, err := server.storeGit.Cancel(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+	if err != nil {
+		server.handleGitError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) gitOperationEvents(response http.ResponseWriter, request *http.Request) {
+	after, _ := strconv.ParseInt(request.Header.Get("Last-Event-ID"), 10, 64)
+	response.Header().Set("Content-Type", "text/event-stream")
+	response.Header().Set("Cache-Control", "no-cache")
+	response.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := response.(http.Flusher)
+	if !ok {
+		server.writeError(response, request, http.StatusInternalServerError, "SSE_UNAVAILABLE", "SSE недоступен", nil)
+		return
+	}
+	ticker := time.NewTicker(server.ssePollInterval)
+	heartbeat := time.NewTicker(server.sseHeartbeatInterval)
+	defer ticker.Stop()
+	defer heartbeat.Stop()
+	for {
+		events, err := server.storeGit.Events(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"), after)
+		if err != nil {
+			return
+		}
+		for _, event := range events {
+			fmt.Fprintf(response, "id: %d\nevent: %s\ndata: %s\n\n", event.Sequence, event.Type, event.Payload)
+			after = event.Sequence
+			flusher.Flush()
+		}
+		item, err := server.storeGit.Get(request.Context(), request.PathValue("projectId"), request.PathValue("operationId"))
+		if err != nil || item.Status.Terminal() {
+			return
+		}
+		select {
+		case <-request.Context().Done():
+			return
+		case <-ticker.C:
+		case <-heartbeat.C:
+			fmt.Fprint(response, ": heartbeat\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func (server *Server) handleGitError(response http.ResponseWriter, request *http.Request, err error) {
+	switch {
+	case errors.Is(err, project.ErrNotFound):
+		server.writeError(response, request, http.StatusNotFound, "PROJECT_NOT_FOUND", "Проект или Git-операция не найдены", nil)
+	case errors.Is(err, project.ErrInvalidStore), errors.Is(err, project.ErrInvalidStorePath):
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_STORE", "Исправьте локальный Store проекта", nil)
+	case errors.Is(err, project.ErrGitUnavailable):
+		server.writeError(response, request, http.StatusConflict, "GIT_UNAVAILABLE", "Git недоступен", nil)
+	case errors.Is(err, storegit.ErrInvalidPath):
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_STORE_PATH", "Путь должен находиться внутри активного Store", nil)
+	case errors.Is(err, storegit.ErrInvalidSelection):
+		server.writeError(response, request, http.StatusBadRequest, "GIT_EMPTY_SELECTION", "Выберите хотя бы один файл", nil)
+	case errors.Is(err, storegit.ErrInvalidMessage):
+		server.writeError(response, request, http.StatusBadRequest, "GIT_INVALID_COMMIT_MESSAGE", "Используйте conventional commit: type(scope): описание", nil)
+	case errors.Is(err, storegit.ErrIndexChanged):
+		server.writeError(response, request, http.StatusConflict, "GIT_INDEX_CHANGED", "Набор подготовленных файлов изменился, обновите status", nil)
+	case errors.Is(err, storegit.ErrHeadChanged):
+		server.writeError(response, request, http.StatusConflict, "GIT_HEAD_CHANGED", "HEAD изменился, обновите status", nil)
+	case errors.Is(err, storegit.ErrWorktreeDirty):
+		server.writeError(response, request, http.StatusConflict, "WORKTREE_DIRTY", "Сначала зафиксируйте или уберите изменения Store", nil)
+	case errors.Is(err, storegit.ErrInvalidBranch):
+		server.writeError(response, request, http.StatusBadRequest, "GIT_INVALID_BRANCH", "Некорректное имя ветки", nil)
+	case errors.Is(err, storegit.ErrBranchExists):
+		server.writeError(response, request, http.StatusConflict, "GIT_BRANCH_EXISTS", "Локальная ветка уже существует", nil)
+	case errors.Is(err, storegit.ErrBranchNotFound):
+		server.writeError(response, request, http.StatusNotFound, "GIT_BRANCH_NOT_FOUND", "Git-ветка не найдена", nil)
+	case errors.Is(err, storegit.ErrRemoteNotFound):
+		server.writeError(response, request, http.StatusNotFound, "GIT_REMOTE_NOT_FOUND", "Git remote не найден", nil)
+	case errors.Is(err, storegit.ErrDetachedHead):
+		server.writeError(response, request, http.StatusConflict, "GIT_DETACHED_HEAD", "Переключитесь на локальную ветку перед push", nil)
+	case errors.Is(err, storegit.ErrOperationConflict):
+		server.writeError(response, request, http.StatusConflict, "GIT_OPERATION_CONFLICT", "Сетевая Git-операция уже выполняется", nil)
+	case errors.Is(err, storegit.ErrGitAuthFailed):
+		server.writeError(response, request, http.StatusConflict, "GIT_AUTH_FAILED", "Проверьте системный ssh-agent или credential helper", nil)
+	case errors.Is(err, storegit.ErrNonFastForward):
+		server.writeError(response, request, http.StatusConflict, "GIT_NON_FAST_FORWARD", "Remote содержит новые commits", nil)
+	case errors.Is(err, storegit.ErrGitTimeout):
+		server.writeError(response, request, http.StatusGatewayTimeout, "GIT_TIMEOUT", "Git-операция превысила допустимое время", nil)
+	default:
+		server.writeError(response, request, http.StatusInternalServerError, "GIT_OPERATION_FAILED", "Git-операция не выполнена", nil)
+	}
 }
 
 func (server *Server) listDocuments(response http.ResponseWriter, request *http.Request) {
@@ -691,6 +904,7 @@ func (server *Server) session(response http.ResponseWriter, _ *http.Request) {
 }
 
 func (server *Server) systemCapabilities(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
 	writeJSON(response, http.StatusOK, server.capabilities(request.Context()))
 }
 

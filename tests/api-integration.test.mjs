@@ -146,24 +146,55 @@ test("projects client и controller покрывают CRUD, lifecycle и под
   assert.match(switcher, /lastContextImport\.imported/);
 });
 
-test("Git feature получает read-only status и показывает читаемый diff", async () => {
-  const [client, controller, panel, workspace, sidebar, footer, diffParser] = await Promise.all([
+test("Git feature управляет Store status, локальными mutations, ветками и network lifecycle", async () => {
+  const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, footer, diffParser] = await Promise.all([
     readFile(new URL("../features/git/api/git-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/git/components/GitPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/git/components/GitChangesPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/git/model/git-operation.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
     importTypeScript("../features/git/model/unified-diff.ts"),
   ]);
   assert.match(client, /getGitStatus/);
-  assert.match(client, /\/git\/status/);
+  assert.match(client, /projectGitPath\(projectId, "status"\)/);
+  assert.match(client, /stageGitPaths/);
+  assert.match(client, /unstageGitPaths/);
+  assert.match(client, /createGitCommit/);
+  assert.match(client, /switchGitBranch/);
+  assert.match(client, /startGitFetch/);
+  assert.match(client, /startGitPush/);
+  assert.match(client, /cancelGitOperation/);
   assert.match(controller, /AbortController/);
   assert.match(controller, /getGitStatus/);
-  assert.match(panel, /Изменения по строкам/);
+  assert.match(controller, /setInterval/);
+  assert.match(controller, /isGitOperationTerminal/);
+  assert.match(controller, /setVersion/);
+  assert.match(operationModel, /queued/);
+  assert.match(operationModel, /cancelled/);
+  assert.match(panel, /DIFF PREVIEW/);
+  assert.match(panel, /effectiveActivePath/);
   assert.match(panel, /git-diff-line/);
-  assert.match(panel, /Изменений нет/);
-  assert.match(panel, /Только просмотр/);
+  assert.match(panel, /buildSplitDiffRows/);
+  assert.match(panel, /До изменения/);
+  assert.match(panel, /Текущая версия/);
+  assert.match(panel, /GitChangesPanel/);
+  assert.match(changesPanel, /aria-label="Изменения Git"/);
+  assert.match(changesPanel, /Рабочее дерево чистое/);
+  assert.match(changesPanel, /Staged/);
+  assert.match(changesPanel, /Unstaged/);
+  assert.match(changesPanel, /Фильтр Git-изменений/);
+  assert.match(changesPanel, /Stage/);
+  assert.match(changesPanel, /Unstage/);
+  assert.match(changesPanel, /Commit message/);
+  assert.match(panel, /Fetch/);
+  assert.match(panel, /Push & set upstream/);
+  assert.match(panel, /role="dialog"/);
+  assert.match(panel, /event\.key === "Escape"/);
+  assert.match(panel, /gitRecoveryHint/);
+  assert.doesNotMatch(panel, /Только просмотр · commit/);
   assert.match(workspace, /useGitStatusController/);
   assert.match(workspace, /<GitPanel/);
   assert.match(sidebar, /onWorkspaceModeChange\("git"\)/);
@@ -193,15 +224,28 @@ index 123..456 100644
 });
 
 test("agent CLI settings используют capabilities и сохранённые настройки проекта", async () => {
-  const [header, workspace, controller] = await Promise.all([
+  const [header, panel, customSelect, workspace, controller] = await Promise.all([
     readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/AgentCliPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../components/ui/CustomSelect.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/ai-operations/hooks/useAiOperationsController.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(header, /Настройка agent CLI/);
+  assert.match(panel, /Настройка Agent CLI/);
   assert.match(header, /availableProviders/);
-  assert.match(header, /projects\.configureAi/);
-  assert.match(header, /defaultAiProvider|selectedProvider/);
+  assert.match(panel, /projects\.configureAi/);
+  assert.match(panel, /defaultAiProvider|selectedProvider/);
+  assert.match(panel, /availableModels/);
+  assert.match(panel, /доступно/);
+  assert.match(panel, /недоступна/);
+  assert.match(panel, /<CustomSelect ariaLabel="Модель"/);
+  assert.doesNotMatch(panel, /<select/);
+  assert.doesNotMatch(panel, /Каталог .* CLI|CLI не предоставил каталог моделей|provider-model-hint/);
+  assert.match(customSelect, /aria-haspopup="listbox"/);
+  assert.match(customSelect, /ArrowDown|ArrowUp/);
+  assert.match(await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"), /\.agent-cli-form \{[^}]*flex:\s*1 1 auto/s);
+  assert.match(workspace, /agentSettingsOpen/);
+  assert.match(workspace, /\)\}\s*\{agentSettingsOpen && <AgentCliPanel/s);
   assert.doesNotMatch(workspace, /defaultAiProvider \?\? "codex"/);
   assert.match(controller, /if \(!projectId \|\| !manifest \|\| !provider\) return/);
 });
@@ -330,22 +374,15 @@ test("платформенные shortcuts поддерживают macOS, Windo
 });
 
 test("AI operations feature требует review token и показывает review-ready diff", async () => {
-  const [client, controller, panel, state] = await Promise.all([
+  const [client, controller, state] = await Promise.all([
     readFile(new URL("../features/ai-operations/api/ai-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/ai-operations/hooks/useAiOperationsController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/AiAssistantPanel.tsx", import.meta.url), "utf8"),
     importTypeScript("../features/ai-operations/model/ai-operation-state.ts"),
   ]);
   assert.match(client, /context-manifests/);
   assert.match(client, /reviewToken/);
   assert.match(controller, /EventSource/);
   assert.match(controller, /awaiting_review/);
-  assert.match(panel, /Проверить контекст/);
-  assert.match(panel, /AWAITING REVIEW/);
-  assert.match(panel, /ai\.result\.files/);
-  assert.match(panel, /entry\.included/);
-  assert.match(panel, /maxTotalBytes/);
-  assert.match(panel, /Correlation ID:/);
   assert.equal(state.reduceAiStatus("running", "provider_event"), "running");
   assert.equal(state.reduceAiStatus("running", "awaiting_review"), "awaiting_review");
   assert.equal(state.isAiTerminal("failed"), true);
@@ -439,6 +476,8 @@ test("OpenSpec workflow проводит explore до создания change и
   assert.match(controller, /Agent продолжает исследование/);
 
   assert.match(panel, /Добавить изменение/);
+  assert.doesNotMatch(panel, /className="openspec-add-change"/);
+  assert.doesNotMatch(css, /\.openspec-panel-header \.openspec-add-change/);
   assert.match(panel, /aria-labelledby="openspec-create-title"/);
   assert.match(panel, /1 · Исследование/);
   assert.match(panel, /Исследовать задачу/);
@@ -460,7 +499,7 @@ test("OpenSpec workflow проводит explore до создания change и
   assert.match(css, /\.openspec-validation-badge\.status-valid/);
 });
 
-test("контекстная панель редактора запускает scoped редактирование OpenSpec через agent", async () => {
+test("контекстная панель редактора заменяет выделенный фрагмент ответом agent", async () => {
   const [richEditor, markdownEditor, workspace, controller, css, logic] = await Promise.all([
     readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
@@ -470,20 +509,30 @@ test("контекстная панель редактора запускает 
     importTypeScript("../features/openspec-workflow/model/openspec-document-action.ts"),
   ]);
 
-  assert.match(richEditor, /addGroup\("agent", "Agent"\)/);
+  assert.match(richEditor, /selectionchange/);
+  assert.match(richEditor, /container\.closest\("\.cm-content"\)/);
   assert.match(richEditor, /Редактировать изменение через agent/);
+  assert.match(richEditor, /linearGradient id="editor-agent-gradient"/);
+  assert.match(richEditor, /#168BFF|#7557F5|#E34BA9|#F59B45/);
   assert.match(richEditor, /textBetween\(from, to, "\\n"\)/);
-  assert.match(markdownEditor, /aria-labelledby="agent-edit-title"/);
-  assert.match(markdownEditor, /Как изменить документ\?/);
-  assert.match(markdownEditor, /Подготовить изменения/);
-  assert.match(markdownEditor, /Перед записью вы увидите полный diff/);
+  assert.doesNotMatch(markdownEditor, /aria-labelledby="agent-edit-title"/);
+  assert.match(richEditor, /agent-inline-prompt/);
+  assert.match(richEditor, /Как изменить выделенный текст\?/);
+  assert.match(richEditor, /Отправить инструкцию agent/);
+  assert.match(richEditor, /agent-selection-processing/);
   assert.match(workspace, /openSpec\.editDocument\(path, selection, instruction\)/);
-  assert.match(workspace, /setWorkspaceMode\("openspec"\)/);
-  assert.match(controller, /changeFromDocumentPath/);
-  assert.match(controller, /actionMatchesDocument/);
-  assert.match(controller, /kind: "fix_artifact"/);
-  assert.match(controller, /statusFingerprint: current\.fingerprint/);
-  assert.match(css, /\.agent-edit-dialog/);
+  assert.doesNotMatch(workspace, /await openSpec\.editDocument\(path, selection, instruction\);\s*setWorkspaceMode\("openspec"\)/);
+  assert.match(controller, /createContextManifest/);
+  assert.match(controller, /createAiOperation/);
+  assert.match(controller, /mode: "inline"/);
+  assert.match(controller, /reasoningEffort: "low"/);
+  assert.match(controller, /replacement: result\.finalResponse/);
+  assert.match(richEditor, /insertText\(result\.replacement, range\.from, range\.to\)/);
+  assert.match(richEditor, /onChangeRef\.current\(result\.markdown\)/);
+  assert.match(css, /\.agent-inline-prompt/);
+  assert.match(css, /\.agent-selection-action/);
+  assert.match(css, /\.agent-selection-processing-overlay/);
+  assert.match(css, /\.agent-selection-processing/);
   assert.equal(logic.changeFromDocumentPath("openspec/changes/add-report/design.md"), "add-report");
   assert.equal(logic.changeFromDocumentPath("openspec/changes/archive/2026-01-01-add-report/design.md"), null);
   assert.equal(logic.actionMatchesDocument({ outputPaths: ["openspec/changes/add-report/specs/**/*.md"] }, "openspec/changes/add-report/specs/report/spec.md"), true);

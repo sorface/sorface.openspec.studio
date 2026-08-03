@@ -3,13 +3,24 @@ import type { AiOperation, ContextManifest } from "@/features/ai-operations/mode
 
 const projectPath = (projectId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/ai`;
 
-export function createContextManifest(projectId: string): Promise<ContextManifest> {
-  return apiRequest(`${projectPath(projectId)}/context-manifests`, { method: "POST", body: { files: [] } });
+export function createContextManifest(
+  projectId: string,
+  files: Array<{ source: string; path: string }> = [],
+): Promise<ContextManifest> {
+  return apiRequest(`${projectPath(projectId)}/context-manifests`, { method: "POST", body: { files } });
 }
 
 export function createAiOperation(
   projectId: string,
-  input: { reviewToken: string; prompt: string; provider: string; model?: string },
+  input: {
+    reviewToken: string;
+    prompt: string;
+    provider: string;
+    model?: string;
+    reasoningEffort?: "low";
+    mode?: "inline";
+    selection?: string;
+  },
 ): Promise<AiOperation> {
   return apiRequest(`${projectPath(projectId)}/operations`, { method: "POST", body: input });
 }

@@ -26,9 +26,27 @@ test("рендерит продуктовый workspace вместо старт�
   const html = await response.text();
   assert.match(html, /<title>OpenSpec Studio<\/title>/i);
   assert.match(html, /Загрузка проектов/);
-  assert.match(html, /AI-ассистент/);
-  assert.match(html, /Git только для просмотра/);
+  assert.doesNotMatch(html, /AI-ассистент/);
+  assert.match(html, /Git управляет только Store/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview|react-loading-skeleton/i);
+});
+
+test("переключатель проекта использует портфель без избыточной подписи", async () => {
+  const switcher = await readFile(new URL("../features/projects/components/ProjectSwitcher.tsx", import.meta.url), "utf8");
+  assert.match(switcher, /className="project-icon"/);
+  assert.match(switcher, /<svg viewBox="0 0 24 24"/);
+  assert.match(switcher, /className=\{`project-chevron/);
+  assert.doesNotMatch(switcher, />ПРОЕКТ</);
+  assert.doesNotMatch(switcher, />⌄</);
+  assert.match(await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"), /\.project-chevron \{[^}]*fill:\s*none[^}]*stroke-width:\s*1\.35/s);
+});
+
+test("логотип OpenSpec Studio изображает горные вершины", async () => {
+  const logo = await readFile(new URL("../components/ui/LogoMark.tsx", import.meta.url), "utf8");
+  assert.match(logo, /className="logo-mark-peak logo-mark-peak-back"/);
+  assert.match(logo, /className="logo-mark-peak logo-mark-peak-front"/);
+  assert.doesNotMatch(logo, /<rect|logo-mark-ground|logo-mark-summits/);
+  assert.doesNotMatch(logo, /<i \/>/);
 });
 
 test("покрывает навигацию по Store и подключённым репозиториям", async () => {
@@ -163,32 +181,37 @@ test("текущий стиль Paragraph в toolbar не выделяется �
   assert.match(css, /\.top-bar-heading-label,[\s\S]*\.top-bar-heading-option\.active\s*\{[\s\S]*font-weight:\s*400/);
 });
 
+test("уровни заголовков редактора визуально отличаются от основного текста", async () => {
+  const css = await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8");
+  assert.match(css, /\.rich-editor-shell \.milkdown \.ProseMirror h2 \{[^}]*font-size:\s*24px[^}]*font-weight:\s*700/s);
+  assert.match(css, /\.rich-editor-shell \.milkdown \.ProseMirror h3 \{[^}]*font-size:\s*19px[^}]*font-weight:\s*650/s);
+});
+
 test("code block редактора оформлен как минималистичная карточка", async () => {
   const css = await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8");
   assert.match(css, /\.rich-editor-shell \.milkdown \.milkdown-code-block \{[^}]*border:\s*1px solid #dfe6e2[^}]*border-radius:\s*8px[^}]*box-shadow:\s*none/s);
   assert.match(css, /\.milkdown-code-block \.cm-gutters \{ display:\s*none;/);
-  assert.match(css, /\.milkdown-code-block \.tools \{[^}]*position:\s*absolute[^}]*top:\s*6px[^}]*right:\s*6px/s);
+  assert.match(css, /\.milkdown-code-block \.tools \{[^}]*position:\s*absolute[^}]*top:\s*6px[^}]*right:\s*6px[^}]*pointer-events:\s*auto/s);
+  assert.match(css, /\.milkdown-code-block \.language-picker \{[^}]*pointer-events:\s*auto/s);
+  assert.match(css, /\.milkdown-code-block \.list-wrapper \{[^}]*pointer-events:\s*auto/s);
   assert.match(css, /\.milkdown-code-block:hover \.tools \.language-button/);
   assert.match(css, /\.milkdown-code-block:focus-within \.tools \.tools-button-group button/);
   assert.match(css, /\.milkdown-code-block \.milkdown-code-block-placeholder \{[^}]*font:\s*12px\/1\.6 var\(--font-code\)/s);
 });
 
-test("покрывает AI-инструкции, context review и diff-ready flow", async () => {
+test("не рендерит удалённую панель AI-ассистента", async () => {
   const html = await (await render()).text();
-  assert.match(html, /Улучшить выделение/);
-  assert.match(html, /Дополнить документ/);
-  assert.match(html, /Проверить change/);
-  assert.match(html, /Контекст/);
-  assert.match(html, /aria-label="Инструкция для AI"/);
-  assert.match(html, /AI может изменять только OpenSpec Store/);
-  assert.match(html, /вы увидите diff до применения/i);
+  const workspace = await readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /AI-ассистент|Чем помочь со спецификацией|Инструкция для AI/);
+  assert.doesNotMatch(workspace, /AiAssistantPanel|useAiOperationsController|rightOpen|assistantMode/);
 });
 
-test("покрывает рабочую Git-навигацию, OpenSpec и операции", async () => {
+test("покрывает рабочую Git- и OpenSpec-навигацию без неиспользуемых операций", async () => {
   const html = await (await render()).text();
-  for (const expected of ["Git", "OpenSpec", "Операции", "Локальный режим", "Git только для просмотра"]) {
+  for (const expected of ["Git", "OpenSpec", "Локальный режим", "Git управляет только Store"]) {
     assert.match(html, new RegExp(expected));
   }
+  assert.doesNotMatch(html, /Операции|История операций пока недоступна/);
   assert.doesNotMatch(html, /Git-панель пока недоступна/);
   assert.doesNotMatch(html, /Commit &amp; Push появится вместе с Git-панелью/);
   assert.doesNotMatch(html, /OPENSpec/);
@@ -196,17 +219,19 @@ test("покрывает рабочую Git-навигацию, OpenSpec и оп
 
 test("сохраняет доступные имена у интерактивных icon-only controls", async () => {
   const html = await (await render()).text();
-  const [header, sidebar] = await Promise.all([
+  const [header, sidebar, agentPanel] = await Promise.all([
     readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/AgentCliPanel.tsx", import.meta.url), "utf8"),
   ]);
   for (const label of [
     "Свернуть панель",
     "История файла",
-    "Свернуть AI-панель",
   ]) {
     assert.match(html, new RegExp(`aria-label="${label}"`));
   }
+  assert.match(agentPanel, /label="Свернуть панель Agent CLI"/);
+  assert.match(agentPanel, /onClick=\{onClose\}>›<\/IconButton>/);
   for (const label of ["Управление OpenSpec", "Обновить"]) {
     assert.match(sidebar, new RegExp(`label="${label}"`));
   }
@@ -258,8 +283,12 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(css, /\.tree-section-count \{[^}]*margin-left:\s*auto[^}]*border-radius:\s*9px/s);
   assert.match(css, /\.tree-section-heading-row \.tree-section-add/);
   assert.match(css, /\.document-tree-panel \{[^}]*position:\s*relative[^}]*width:\s*auto[^}]*min-width:\s*0[^}]*box-shadow:\s*none/s);
-  assert.match(css, /\.workspace:has\(> \.document-tree-panel\) \{[^}]*grid-template-columns:\s*260px 280px minmax\(470px, 1fr\) 350px/s);
-  assert.match(css, /\.workspace\.right-collapsed:has\(> \.document-tree-panel\) \{[^}]*grid-template-columns:\s*260px 280px minmax\(470px, 1fr\) 0/s);
+  assert.doesNotMatch(css, /\.document-tree-panel \{[^}]*z-index/s);
+  assert.match(css, /\.workspace:has\(> \.document-tree-panel\) \{[^}]*grid-template-columns:\s*260px 280px minmax\(470px, 1fr\)/s);
+  assert.match(css, /\.workspace\.agent-settings-open \{[^}]*grid-template-columns:\s*260px minmax\(470px, 1fr\) 310px/s);
+  assert.match(css, /\.workspace\.agent-settings-open:has\(> \.document-tree-panel\) \{[^}]*grid-template-columns:\s*260px 280px minmax\(470px, 1fr\) 310px/s);
+  assert.doesNotMatch(css, /right-collapsed|\.assistant-panel/);
+  assert.match(css, /\.agent-cli-panel \{[^}]*border-left:\s*1px solid var\(--line\)/s);
   assert.doesNotMatch(css, /\.document-tree-panel \{[^}]*position:\s*absolute/s);
   assert.match(css, /\.tree-scope-row\.active/);
   assert.match(css, /\.tree-row\.artifact-analyst \{[^}]*box-shadow:\s*inset 2px 0 #d49a38/s);
@@ -268,7 +297,11 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(header, /className=\{`provider-chevron/);
   assert.match(header, /className="provider-icon" aria-hidden="true">✦</);
   assert.doesNotMatch(header, /className="provider-icon"[^>]*>✣</);
-  assert.match(header, /aria-haspopup="dialog"/);
+  assert.match(header, /aria-controls=\{agentSettingsOpen \? "agent-cli-panel" : undefined\}/);
+  assert.match(header, /aria-expanded=\{agentSettingsOpen\}/);
+  assert.match(header, /const modelLabel = provider \? model\?\.trim\(\) \|\| "По умолчанию CLI" : ""/);
+  assert.match(header, /title=\{`Выбранная модель: \$\{modelLabel\}`\}/);
+  assert.doesNotMatch(header, /aria-haspopup="dialog"/);
   assert.doesNotMatch(header, /: "⌄"/);
 });
 
@@ -288,11 +321,17 @@ test("использует самостоятельную реализацию �
   assert.match(css, /button:disabled/);
   assert.match(css, /\.rich-editor-shell \.milkdown \.milkdown-top-bar/);
   assert.match(css, /\.milkdown-top-bar \{\s*z-index: 2/s);
+  assert.match(css, /\.milkdown-top-bar \{[^}]*border-bottom:\s*0/s);
   assert.match(css, /\.editor-area \{[^}]*isolation: isolate/s);
   assert.doesNotMatch(css, /(?:^|[;{]\s*)zoom\s*:/m);
   assert.doesNotMatch(css, /transform:\s*scale\(/);
   assert.match(css, /\.milkdown-top-bar \.top-bar-item\s*\{[^}]*margin:\s*2px/s);
   assert.match(css, /\.milkdown-top-bar \.top-bar-divider\s*\{[^}]*margin:\s*6px/s);
+  assert.match(css, /\.milkdown-top-bar \.top-bar-inner\s*\{[^}]*border-radius:\s*18px[^}]*backdrop-filter:\s*blur\(22px\) saturate\(170%\)/s);
+  assert.match(css, /\.milkdown-top-bar \.top-bar-item:hover/);
+  assert.match(css, /\.milkdown-top-bar \.top-bar-item:not\(:disabled\) \.milkdown-icon \{\s*color:\s*#111/s);
+  assert.match(css, /\.milkdown-top-bar \.top-bar-item\.active \{[^}]*background:\s*rgba\(15, 112, 80, \.12\)[^}]*color:\s*var\(--green\)/s);
+  assert.match(css, /\.milkdown-top-bar \.top-bar-item:disabled \{[^}]*opacity:\s*\.38/s);
   assert.match(css, /\.milkdown-list-item-block > \.list-item > \.children > \.content-dom > p \{[^}]*margin:\s*0[^}]*padding:\s*4px 0/s);
   assert.match(css, /\.milkdown-list-item-block > \.list-item > \.label-wrapper \{[^}]*height:\s*32px[^}]*flex:\s*0 0 24px/s);
   assert.match(css, /\.ProseMirror blockquote > p \{[^}]*margin:\s*0/s);
@@ -300,11 +339,10 @@ test("использует самостоятельную реализацию �
 });
 
 test("сохраняет feature-first архитектуру и тонкий route entry point", async () => {
-  const [page, workspace, editor, assistant, model, uiPrimitive, richEditor] = await Promise.all([
+  const [page, workspace, editor, model, uiPrimitive, richEditor] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/AiAssistantPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/ui/IconButton.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
@@ -315,9 +353,8 @@ test("сохраняет feature-first архитектуру и тонкий ro
   assert.match(workspace, /WorkspaceHeader/);
   assert.match(workspace, /WorkspaceSidebar/);
   assert.match(workspace, /MarkdownEditor/);
-  assert.match(workspace, /AiAssistantPanel/);
+  assert.doesNotMatch(workspace, /AiAssistantPanel/);
   assert.match(editor, /interface MarkdownEditorProps/);
-  assert.match(assistant, /interface AiAssistantPanelProps/);
   assert.match(model, /export type ViewMode/);
   assert.match(uiPrimitive, /ButtonHTMLAttributes/);
   assert.match(richEditor, /interface RichMarkdownEditorProps/);

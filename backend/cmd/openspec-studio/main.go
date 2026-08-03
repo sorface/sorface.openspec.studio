@@ -56,6 +56,8 @@ func run() error {
 	storeService := storegit.NewService(projectsRoot)
 	repositoryService := repository.NewService(store, supervisor, projectsRoot)
 	projectService := project.NewService(store, storeService).WithContextImporter(repositoryService)
+	gitStatusService := gitstatus.NewService(projectService, storeService)
+	storeGitManager := storegit.NewManager(store, supervisor, storeService, gitStatusService)
 	openSpecExecutable, _ := exec.LookPath("openspec")
 	if openSpecExecutable != "" && !filepath.IsAbs(openSpecExecutable) {
 		openSpecExecutable, _ = filepath.Abs(openSpecExecutable)
@@ -67,7 +69,8 @@ func run() error {
 		Projects:        projectService,
 		Documents:       document.NewService(projectService),
 		Repositories:    repositoryService,
-		GitStatus:       gitstatus.NewService(projectService, storeService),
+		GitStatus:       gitStatusService,
+		StoreGit:        storeGitManager,
 		AIOperations:    aiservice.NewService(store, supervisor, cfg.DataDir),
 		OpenSpec:        openSpecService,
 		OpenSpecActions: openspecworkflow.NewActionService(store, openSpecService, openSpecCLI, supervisor, cfg.DataDir),

@@ -10,5 +10,5 @@ export async function getSession(signal?: AbortSignal): Promise<SessionResponse>
 }
 
 export async function getCapabilities(signal?: AbortSignal): Promise<SystemCapabilities> {
-  return apiRequest<SystemCapabilities>("/api/v1/system/capabilities", { signal });
+  return apiRequest<SystemCapabilities>("/api/v1/system/capabilities", { cache: "no-store", signal });
 }

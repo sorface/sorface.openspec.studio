@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,11 +29,18 @@ type Change struct {
 }
 
 type Status struct {
-	Branch        string   `json:"branch"`
-	Head          string   `json:"head"`
-	Changes       []Change `json:"changes"`
-	Diff          string   `json:"diff"`
-	DiffTruncated bool     `json:"diffTruncated"`
+	Branch         string   `json:"branch"`
+	Detached       bool     `json:"detached"`
+	Head           string   `json:"head"`
+	Upstream       string   `json:"upstream"`
+	Ahead          int      `json:"ahead"`
+	Behind         int      `json:"behind"`
+	LocalBranches  []string `json:"localBranches"`
+	RemoteBranches []string `json:"remoteBranches"`
+	Remotes        []string `json:"remotes"`
+	Changes        []Change `json:"changes"`
+	Diff           string   `json:"diff"`
+	DiffTruncated  bool     `json:"diffTruncated"`
 }
 
 type Service struct {
@@ -63,7 +71,23 @@ func (service *Service) Get(ctx context.Context, projectID string) (Status, erro
 	if err != nil {
 		return Status{}, project.ErrInvalidStore
 	}
-	branch, _ := service.run(ctx, path, 64<<10, "branch", "--show-current")
+	branch, _ := service.run(ctx, path, 64<<10, "symbolic-ref", "--quiet", "--short", "HEAD")
+	branch = strings.TrimSpace(branch)
+	upstream, _ := service.run(ctx, path, 64<<10, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	upstream = strings.TrimSpace(upstream)
+	ahead, behind := 0, 0
+	if upstream != "" {
+		if counts, countErr := service.run(ctx, path, 64<<10, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"); countErr == nil {
+			fields := strings.Fields(counts)
+			if len(fields) == 2 {
+				ahead, _ = strconv.Atoi(fields[0])
+				behind, _ = strconv.Atoi(fields[1])
+			}
+		}
+	}
+	localBranches, _ := service.run(ctx, path, 128<<10, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	remoteBranches, _ := service.run(ctx, path, 128<<10, "for-each-ref", "--format=%(refname:lstrip=2)", "refs/remotes")
+	remotes, _ := service.run(ctx, path, 64<<10, "remote")
 	rawStatus, err := service.run(ctx, path, 256<<10, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return Status{}, project.ErrInvalidStore
@@ -87,12 +111,32 @@ func (service *Service) Get(ctx context.Context, projectID string) (Status, erro
 		diff += "# Unstaged\n" + unstaged
 	}
 	return Status{
-		Branch:        strings.TrimSpace(branch),
-		Head:          strings.TrimSpace(head),
-		Changes:       parseStatus(rawStatus),
-		Diff:          diff,
-		DiffTruncated: stagedTruncated || unstagedTruncated,
+		Branch:         branch,
+		Detached:       branch == "",
+		Head:           strings.TrimSpace(head),
+		Upstream:       upstream,
+		Ahead:          ahead,
+		Behind:         behind,
+		LocalBranches:  splitLines(localBranches, false),
+		RemoteBranches: splitLines(remoteBranches, true),
+		Remotes:        splitLines(remotes, false),
+		Changes:        parseStatus(rawStatus),
+		Diff:           diff,
+		DiffTruncated:  stagedTruncated || unstagedTruncated,
 	}, nil
+}
+
+func splitLines(value string, omitRemoteHead bool) []string {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || (omitRemoteHead && strings.HasSuffix(line, "/HEAD")) {
+			continue
+		}
+		result = append(result, line)
+	}
+	return result
 }
 
 func (service *Service) diff(ctx context.Context, directory string, arguments ...string) (string, bool, error) {

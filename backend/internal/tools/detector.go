@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -50,6 +52,7 @@ func detectOne(parent context.Context, name string) Tool {
 	if name == "codex" {
 		supported := true
 		result.Supported, result.NonInteractive = &supported, &supported
+		result.Models = detectCodexModels(parent, path)
 	}
 	if name == "gigacode" {
 		helpCtx, helpCancel := context.WithTimeout(parent, 2*time.Second)
@@ -60,4 +63,47 @@ func detectOne(parent context.Context, name string) Tool {
 		result.Supported, result.NonInteractive = &supported, &supported
 	}
 	return result
+}
+
+var modelSlugPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,100}$`)
+
+func detectCodexModels(parent context.Context, path string) []string {
+	type catalogModel struct {
+		Slug       string `json:"slug"`
+		Visibility string `json:"visibility"`
+	}
+	type catalog struct {
+		Models []catalogModel `json:"models"`
+	}
+
+	commands := [][]string{{"debug", "models"}, {"debug", "models", "--bundled"}}
+	for _, arguments := range commands {
+		ctx, cancel := context.WithTimeout(parent, 4*time.Second)
+		output, err := exec.CommandContext(ctx, path, arguments...).Output()
+		cancel()
+		if err != nil {
+			continue
+		}
+
+		var decoded catalog
+		if json.Unmarshal(output, &decoded) != nil {
+			continue
+		}
+		models := make([]string, 0, len(decoded.Models))
+		seen := make(map[string]struct{}, len(decoded.Models))
+		for _, model := range decoded.Models {
+			if (model.Visibility != "" && model.Visibility != "list") || !modelSlugPattern.MatchString(model.Slug) {
+				continue
+			}
+			if _, exists := seen[model.Slug]; exists {
+				continue
+			}
+			seen[model.Slug] = struct{}{}
+			models = append(models, model.Slug)
+		}
+		if len(models) > 0 {
+			return models
+		}
+	}
+	return nil
 }

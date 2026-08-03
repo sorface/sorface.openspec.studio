@@ -1,10 +1,10 @@
-import { useState, type FormEvent } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import type { ApiError } from "@/features/api/api-client";
 import { DocumentHistoryPanel } from "@/features/documents/components/DocumentHistoryPanel";
 import type { DocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
 import { MarkdownPreview } from "@/features/editor/components/MarkdownPreview";
 import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
+import type { AgentEditResult } from "@/features/editor/model/agent-edit";
 import type { DocumentViewStatus } from "@/features/documents/model/document-types";
 import type { ViewMode } from "@/features/workspace/model/workspace-types";
 
@@ -24,7 +24,7 @@ interface MarkdownEditorProps {
   agentAvailable: boolean;
   agentPending: boolean;
   onBlur: () => void;
-  onAgentEdit: (path: string, selection: string, instruction: string) => Promise<void>;
+  onAgentEdit: (path: string, selection: string, instruction: string) => Promise<AgentEditResult>;
   onChange: (markdown: string) => void;
   onViewModeChange: (mode: ViewMode) => void;
   onWrite: () => void;
@@ -39,31 +39,9 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
     error, history, saveShortcutLabel, viewMode, agentAvailable, agentPending,
     onBlur, onAgentEdit, onChange, onViewModeChange, onWrite, onRetry,
   } = props;
-  const [agentSelection, setAgentSelection] = useState<string | null>(null);
-  const [agentInstruction, setAgentInstruction] = useState("");
-  const [agentError, setAgentError] = useState("");
   const breadcrumbs = activeFile?.split("/") ?? [];
   const canEdit = documentStatus === "ready" && !!activeFile && !loadingDocument;
   const wordCount = markdown.trim() ? markdown.trim().split(/\s+/).length : 0;
-
-  const closeAgentDialog = () => {
-    if (agentPending) return;
-    setAgentSelection(null);
-    setAgentInstruction("");
-    setAgentError("");
-  };
-
-  const submitAgentEdit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!activeFile || !agentSelection || !agentInstruction.trim()) return;
-    setAgentError("");
-    try {
-      await onAgentEdit(activeFile, agentSelection, agentInstruction.trim());
-      closeAgentDialog();
-    } catch (cause) {
-      setAgentError(cause instanceof Error ? cause.message : "Не удалось запустить agent");
-    }
-  };
 
   return (
     <section className="editor-area">
@@ -123,11 +101,9 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
           <RichMarkdownEditor
             documentId={activeFile!}
             markdown={markdown}
-            onAskAgent={(selection) => {
-              setAgentSelection(selection);
-              setAgentInstruction("");
-              setAgentError("");
-            }}
+            agentAvailable={agentAvailable}
+            agentPending={agentPending}
+            onAgentEdit={(selection, instruction) => onAgentEdit(activeFile!, selection, instruction)}
             onChange={onChange}
             onBlur={onBlur}
           />
@@ -141,50 +117,6 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
       </div>
 
       {history.open && activeFile && <DocumentHistoryPanel controller={history} path={activeFile} />}
-
-      {agentSelection !== null && activeFile && (
-        <div className="openspec-create-backdrop" role="presentation">
-          <form
-            className="openspec-create-dialog agent-edit-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="agent-edit-title"
-            onSubmit={submitAgentEdit}
-          >
-            <header>
-              <div>
-                <small>AGENT · OPENSPEC CHANGE</small>
-                <h3 id="agent-edit-title">Редактировать изменение</h3>
-              </div>
-              <button type="button" aria-label="Закрыть запрос к agent" onClick={closeAgentDialog} disabled={agentPending}>×</button>
-            </header>
-            <div className="openspec-create-content">
-              <div className="agent-edit-file"><small>АКТИВНЫЙ ФАЙЛ</small><code>{activeFile}</code></div>
-              <div className="agent-edit-selection"><small>ВЫДЕЛЕННЫЙ ФРАГМЕНТ</small><p>{agentSelection}</p></div>
-              <label>
-                Как изменить документ?
-                <textarea
-                  autoFocus
-                  aria-label="Как изменить документ?"
-                  placeholder="Например: уточни риски, добавь альтернативу и сделай формулировки проверяемыми…"
-                  value={agentInstruction}
-                  onChange={(event) => setAgentInstruction(event.target.value)}
-                  disabled={agentPending}
-                />
-                <small>Agent изменит только соответствующий артефакт change. Перед записью вы увидите полный diff.</small>
-              </label>
-              {!agentAvailable && <div className="openspec-create-agent-warning">Сначала выберите доступный agent CLI в верхней панели.</div>}
-              {agentError && <div className="openspec-create-error" role="alert">{agentError}</div>}
-            </div>
-            <footer>
-              <button type="button" onClick={closeAgentDialog} disabled={agentPending}>Отмена</button>
-              <button className="primary-submit" type="submit" disabled={!agentAvailable || agentPending || !agentInstruction.trim()}>
-                {agentPending ? "Запускаем agent…" : "Подготовить изменения"}
-              </button>
-            </footer>
-          </form>
-        </div>
-      )}
 
       <footer className="editor-statusbar">
         <span className="draft-label"><i /> {saving ? "Запись…" : dirty ? "Есть изменения" : "Файл сохранён"}</span>

@@ -12,6 +12,7 @@ const (
 	KindRepositoryClone Kind = "repository_clone"
 	KindAI              Kind = "ai"
 	KindOpenSpec        Kind = "openspec"
+	KindStoreGit        Kind = "store_git"
 
 	StatusQueued         Status = "queued"
 	StatusRunning        Status = "running"
@@ -44,6 +45,9 @@ type Operation struct {
 	OpenSpecSchema      string    `json:"openspecSchema,omitempty"`
 	OpenSpecArtifact    string    `json:"openspecArtifact,omitempty"`
 	OpenSpecFingerprint string    `json:"openspecFingerprint,omitempty"`
+	GitAction           string    `json:"gitAction,omitempty"`
+	GitRemote           string    `json:"gitRemote,omitempty"`
+	GitBranch           string    `json:"gitBranch,omitempty"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
 }

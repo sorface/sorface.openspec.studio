@@ -3,6 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/features/api/api-client";
 import {
+  createAiOperation,
+  createContextManifest,
+  getAiOperation,
+} from "@/features/ai-operations/api/ai-client";
+import { isAiTerminal } from "@/features/ai-operations/model/ai-operation-state";
+import type { AiResult } from "@/features/ai-operations/model/ai-types";
+import type { AgentEditResult } from "@/features/editor/model/agent-edit";
+import {
   acceptOpenSpecOperation,
   cancelOpenSpecOperation,
   deleteOpenSpecChange,
@@ -20,10 +28,6 @@ import {
   openSpecViewStatus,
   reduceOpenSpecOperationStatus,
 } from "@/features/openspec-workflow/model/openspec-state";
-import {
-  actionMatchesDocument,
-  changeFromDocumentPath,
-} from "@/features/openspec-workflow/model/openspec-document-action";
 import type {
   OpenSpecAction,
   OpenSpecActionResult,
@@ -59,7 +63,7 @@ export interface OpenSpecWorkflowController {
   validate: (all?: boolean) => Promise<void>;
   explore: (goal: string) => Promise<void>;
   createChange: (change: string, goal: string, exploration: string) => Promise<void>;
-  editDocument: (path: string, selection: string, instruction: string) => Promise<void>;
+  editDocument: (path: string, selection: string, instruction: string) => Promise<AgentEditResult>;
   deleteChange: (confirmation: string) => Promise<void>;
   runAction: (action: OpenSpecAction, goal: string) => Promise<void>;
   cancel: () => Promise<void>;
@@ -256,55 +260,75 @@ export function useOpenSpecWorkflowController(
   }, [execute, model, provider]);
 
   const editDocument = useCallback(async (path: string, selection: string, instruction: string) => {
-    const change = changeFromDocumentPath(path);
-    if (!projectId || !provider || !change) {
+    if (!projectId || !provider) {
       throw new ApiError(400, {
         code: "OPENSPEC_DOCUMENT_ACTION_UNAVAILABLE",
-        message: "Agent доступен только для Markdown-артефактов активного OpenSpec change",
+        message: "Сначала выберите доступный agent CLI в верхней панели",
       });
     }
+    if (operationStartInFlight.current) {
+      throw new ApiError(409, {
+        code: "OPENSPEC_OPERATION_IN_PROGRESS",
+        message: "Дождитесь завершения текущей операции agent",
+      });
+    }
+    operationStartInFlight.current = true;
     setPending(true);
     setError(null);
-    let current: OpenSpecChangeDetails;
+    setValidation(null);
+    setDraft(null);
+    const initialProgress = "Agent изменяет выделенный фрагмент…";
+    setOperationProgress(initialProgress);
+    setOperationActivity([initialProgress]);
+    setOperationElapsedSeconds(0);
     try {
-      current = await getOpenSpecChange(projectId, change);
-      setSelectedChange(change);
-      setDetails(current);
+      // Every Markdown document uses the same fragment-only protocol. Running archived or
+      // active change files through the full OpenSpec action used to produce false scope errors.
+      const manifest = await createContextManifest(projectId, [{ source: "store", path }]);
+      const prompt = [
+        "Переработай только выделенный фрагмент текущего Markdown-файла по инструкции пользователя.",
+        `Активный файл: ${path}`,
+        `Выделенный фрагмент:\n${selection.trim()}`,
+        `Инструкция пользователя:\n${instruction.trim()}`,
+        "Верни только новый текст выделенного фрагмента без пояснений.",
+      ].join("\n\n");
+      let aiOperation = await createAiOperation(projectId, {
+        reviewToken: manifest.reviewToken,
+        prompt,
+        provider,
+        model,
+        reasoningEffort: "low",
+        mode: "inline",
+        selection,
+      });
+      while (!isAiTerminal(aiOperation.status)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        aiOperation = await getAiOperation(projectId, aiOperation.id);
+      }
+      if (aiOperation.status !== "awaiting_review" || !aiOperation.result) {
+        throw new ApiError(409, {
+          code: "OPENSPEC_INLINE_EDIT_FAILED",
+          message: aiOperation.errorMessage || "Agent не подготовил изменение",
+        });
+      }
+      const result = JSON.parse(aiOperation.result) as AiResult;
+      const mutation = result.files.find((file) => file.path === path);
+      if (result.files.length !== 1 || !mutation) {
+        throw new ApiError(409, {
+          code: "OPENSPEC_INLINE_EDIT_SCOPE_VIOLATION",
+          message: "Agent вышел за границы выделенного фрагмента. Изменения не применены.",
+        });
+      }
+      return { markdown: mutation.after, replacement: result.finalResponse };
     } catch (cause) {
-      const nextError = toApiError(cause, "Не удалось определить OpenSpec-артефакт");
+      const nextError = toApiError(cause, "Не удалось изменить выделенный фрагмент");
       setError(nextError);
       throw nextError;
     } finally {
+      operationStartInFlight.current = false;
       setPending(false);
     }
-    const action = current.actions.find((candidate) =>
-      candidate.available && !!candidate.artifact && actionMatchesDocument(candidate, path),
-    );
-    if (!action?.artifact) {
-      const nextError = new ApiError(409, {
-        code: "OPENSPEC_DOCUMENT_ACTION_UNAVAILABLE",
-        message: "Для выбранного файла сейчас нет доступного действия OpenSpec",
-      });
-      setError(nextError);
-      throw nextError;
-    }
-    const goal = [
-      "Отредактируй текущий артефакт OpenSpec по инструкции аналитика.",
-      `Активный файл: ${path}`,
-      selection.trim() ? `Выделенный фрагмент:\n${selection.trim()}` : "",
-      `Инструкция аналитика:\n${instruction.trim()}`,
-      "Сохрани остальной смысл документа и не изменяй файлы за пределами разрешённого артефакта.",
-    ].filter(Boolean).join("\n\n");
-    await execute({
-      kind: "fix_artifact",
-      change,
-      artifact: action.artifact,
-      goal,
-      provider,
-      model,
-      statusFingerprint: current.fingerprint,
-    });
-  }, [execute, model, projectId, provider]);
+  }, [model, projectId, provider]);
 
   const runAction = useCallback(async (action: OpenSpecAction, goal: string) => {
     if (!details || !action.available) return;

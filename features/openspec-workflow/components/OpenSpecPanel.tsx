@@ -243,14 +243,6 @@ export function OpenSpecPanel({
           <h2>Управление изменениями</h2>
         </div>
         <div>
-          <button
-            type="button"
-            className="openspec-add-change"
-            onClick={openCreateDialog}
-            disabled={operationActive}
-          >
-            ＋ Добавить изменение
-          </button>
           <button type="button" onClick={() => void controller.validate(true)} disabled={controller.pending}>
             Проверить всё
           </button>

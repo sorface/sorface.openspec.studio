@@ -185,12 +185,16 @@ func TestWorkspaceAndAuditLeaveStoreUnchanged(t *testing.T) {
 }
 
 func TestCodexArgumentsAndPromptEnvelope(t *testing.T) {
-	args, err := providerArguments("codex", "gpt-5", "/tmp/work")
+	args, err := providerArguments("codex", "gpt-5", "/tmp/work", "", false)
 	if err != nil || strings.Join(args, " ") != "exec --json --ephemeral --sandbox workspace-write --skip-git-repo-check --cd /tmp/work --model gpt-5 -" {
 		t.Fatalf("args=%v err=%v", args, err)
 	}
-	if _, err := providerArguments("codex", "--dangerous", "/tmp/work"); err == nil {
+	if _, err := providerArguments("codex", "--dangerous", "/tmp/work", "", false); err == nil {
 		t.Fatal("unsafe model accepted")
+	}
+	fastArgs, err := providerArguments("codex", "gpt-5", "/tmp/work", "low", true)
+	if err != nil || !strings.Contains(strings.Join(fastArgs, " "), `--config model_reasoning_effort="low"`) {
+		t.Fatalf("fast args=%v err=%v", fastArgs, err)
 	}
 	repositoryEntry := resolvedEntry{
 		ContextEntry: operationEntry("repository-1", "src/main.go", []byte("package main")),
@@ -202,6 +206,33 @@ func TestCodexArgumentsAndPromptEnvelope(t *testing.T) {
 		!strings.Contains(envelope, "package main") ||
 		strings.Contains(envelope, repositoryEntry.absolute) {
 		t.Fatalf("unsafe prompt envelope: %s", envelope)
+	}
+}
+
+func TestParseInlineReplacement(t *testing.T) {
+	replacement, err := parseInlineReplacement("```json\n{\"replacement\":\"Новый текст\"}\n```")
+	if err != nil || replacement != "Новый текст" {
+		t.Fatalf("replacement=%q err=%v", replacement, err)
+	}
+	if _, err := parseInlineReplacement("обычный текст"); err == nil {
+		t.Fatal("unstructured inline response accepted")
+	}
+}
+
+func TestLocateMarkdownSelectionAcrossVisualFormatting(t *testing.T) {
+	markdown := "- Сохранять snapshot, состояние задания и результат в PostgreSQL, чтобы\n  генерация переживала рестарт.\n"
+	selection := "Сохранять snapshot, состояние задания и результат в PostgreSQL, чтобы генерация переживала рестарт."
+	start, end, ok := locateMarkdownSelection(markdown, selection)
+	if !ok || markdown[start:end] != "Сохранять snapshot, состояние задания и результат в PostgreSQL, чтобы\n  генерация переживала рестарт." {
+		t.Fatalf("range=%d:%d ok=%v text=%q", start, end, ok, markdown[start:end])
+	}
+
+	formatted := "Текст с **важным решением** здесь."
+	start, end, ok = locateMarkdownSelection(formatted, "с важным решением здесь.")
+	if !ok || formatted[start:end] != "с **важным решением** здесь." {
+		// The assertion above checks the wrapped list; this branch only verifies that
+		// hidden emphasis markers do not make the selection ambiguous.
+		t.Fatalf("formatted range=%d:%d ok=%v", start, end, ok)
 	}
 }
 
@@ -268,7 +299,7 @@ func TestProviderProbeAndGigaCodeFixture(t *testing.T) {
 	if !capability.Available || !capability.Supported || !capability.NonInteractive {
 		t.Fatalf("capability=%#v", capability)
 	}
-	args, err := providerArguments("gigacode", "model-1", "/tmp/work")
+	args, err := providerArguments("gigacode", "model-1", "/tmp/work", "", false)
 	if err != nil || strings.Join(args, " ") != "--non-interactive --json --cwd /tmp/work --model model-1 -" {
 		t.Fatalf("args=%v err=%v", args, err)
 	}

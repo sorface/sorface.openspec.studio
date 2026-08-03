@@ -14,7 +14,7 @@ export function WorkspaceFooter({ workspaceMode, gitAvailable, projectSelected, 
         className={workspaceMode === "git" ? "active" : ""}
         type="button"
         disabled={!projectSelected || !gitAvailable}
-        title={gitAvailable ? "Открыть Git status и diff Store" : "Git не обнаружен backend"}
+        title={gitAvailable ? "Управлять Git-репозиторием Store" : "Git не обнаружен backend"}
         onClick={() => onWorkspaceModeChange("git")}
       ><span>⌁</span><b>Git</b></button>
       <button
@@ -24,9 +24,8 @@ export function WorkspaceFooter({ workspaceMode, gitAvailable, projectSelected, 
         title="Управление OpenSpec через agent"
         onClick={() => onWorkspaceModeChange("openspec")}
       ><span>◇</span><b>OpenSpec</b></button>
-      <button type="button" disabled title="История операций пока недоступна"><span>◴</span><b>Операции</b></button>
       <div className="bottom-spacer" />
-      <span className="validation"><i /> Локальный режим · Git только для просмотра</span>
+      <span className="validation"><i /> Локальный режим · Git управляет только Store</span>
     </nav>
   );
 }

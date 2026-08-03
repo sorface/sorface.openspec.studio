@@ -214,6 +214,9 @@ func TestCapabilities(t *testing.T) {
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available":true`)) {
 		t.Fatalf("unexpected response: %d %s", response.Code, response.Body)
 	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache-control=%q", response.Header().Get("Cache-Control"))
+	}
 }
 
 func TestRejectsForeignOrigin(t *testing.T) {
@@ -430,6 +433,108 @@ func TestGitStatusContract(t *testing.T) {
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"openspec/spec.md"`)) ||
 		!bytes.Contains(response.Body.Bytes(), []byte(`"diffTruncated":false`)) {
 		t.Fatalf("status: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestStoreGitMutationContractsAndCSRF(t *testing.T) {
+	root := createGitStore(t)
+	for _, arguments := range [][]string{{"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}} {
+		command := exec.Command("git", append([]string{"-C", root}, arguments...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	database, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	item, err := database.Create(context.Background(), project.CreateInput{Name: "Git", StorePath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := storegit.NewService()
+	projectService := project.NewService(database, validator)
+	statusService := gitstatus.NewService(projectService, validator)
+	manager := storegit.NewManager(database, processrunner.NewSupervisor(), validator, statusService)
+	handler := httpapi.New(httpapi.Options{
+		Address: "127.0.0.1:0", Projects: projectService, GitStatus: statusService,
+		StoreGit: manager, Static: http.NotFoundHandler(),
+	}).Handler()
+	base := "/api/v1/projects/" + item.ID + "/git"
+	withoutCSRF := request(handler, http.MethodPost, base+"/stage", []byte(`{"paths":["openspec/spec.md"]}`), "")
+	if withoutCSRF.Code != http.StatusForbidden || !bytes.Contains(withoutCSRF.Body.Bytes(), []byte("CSRF_REJECTED")) {
+		t.Fatalf("csrf: %d %s", withoutCSRF.Code, withoutCSRF.Body)
+	}
+	token := csrfToken(t, handler)
+	invalid := request(handler, http.MethodPost, base+"/stage", []byte(`{"paths":["../outside"]}`), token)
+	if invalid.Code != http.StatusBadRequest || !bytes.Contains(invalid.Body.Bytes(), []byte("INVALID_STORE_PATH")) {
+		t.Fatalf("invalid path: %d %s", invalid.Code, invalid.Body)
+	}
+	staged := request(handler, http.MethodPost, base+"/stage", []byte(`{"paths":["openspec/spec.md"]}`), token)
+	if staged.Code != http.StatusOK || !bytes.Contains(staged.Body.Bytes(), []byte(`"index":"M"`)) {
+		t.Fatalf("stage: %d %s", staged.Code, staged.Body)
+	}
+	var status gitstatus.Status
+	if err := json.Unmarshal(staged.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	commitBody := []byte(fmt.Sprintf(`{"paths":["openspec/spec.md"],"message":"docs: update spec","expectedHead":%q}`, status.Head))
+	committed := request(handler, http.MethodPost, base+"/commits", commitBody, token)
+	if committed.Code != http.StatusCreated || bytes.Contains(committed.Body.Bytes(), []byte(status.Head)) {
+		t.Fatalf("commit: %d %s", committed.Code, committed.Body)
+	}
+	created := request(handler, http.MethodPost, base+"/branches", []byte(`{"name":"change/api-test"}`), token)
+	if created.Code != http.StatusCreated || !bytes.Contains(created.Body.Bytes(), []byte(`"branch":"change/api-test"`)) {
+		t.Fatalf("branch: %d %s", created.Code, created.Body)
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	for _, command := range []*exec.Cmd{
+		exec.Command("git", "init", "--bare", remote),
+		exec.Command("git", "-C", root, "remote", "add", "origin", remote),
+	} {
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("prepare remote: %v\n%s", err, output)
+		}
+	}
+	fetchStarted := request(handler, http.MethodPost, base+"/fetches", []byte(`{"remote":"origin"}`), token)
+	if fetchStarted.Code != http.StatusAccepted || !bytes.Contains(fetchStarted.Body.Bytes(), []byte(`"gitAction":"fetch"`)) {
+		t.Fatalf("fetch start: %d %s", fetchStarted.Code, fetchStarted.Body)
+	}
+	var fetch operation.Operation
+	if err := json.Unmarshal(fetchStarted.Body.Bytes(), &fetch); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !fetch.Status.Terminal() && time.Now().Before(deadline) {
+		fetched := request(handler, http.MethodGet, base+"/operations/"+fetch.ID, nil, "")
+		if err := json.Unmarshal(fetched.Body.Bytes(), &fetch); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if fetch.Status != operation.StatusCompleted || fetch.GitRemote != "origin" {
+		t.Fatalf("fetch terminal: %#v", fetch)
+	}
+	queued, err := database.CreateOperation(context.Background(), operation.Operation{
+		ProjectID: item.ID, Kind: operation.KindStoreGit, Status: operation.StatusQueued,
+		InputJSON: `{"action":"fetch","remote":"origin"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelWithoutCSRF := request(handler, http.MethodDelete, base+"/operations/"+queued.ID, nil, "")
+	if cancelWithoutCSRF.Code != http.StatusForbidden {
+		t.Fatalf("cancel csrf: %d %s", cancelWithoutCSRF.Code, cancelWithoutCSRF.Body)
+	}
+	cancelled := request(handler, http.MethodDelete, base+"/operations/"+queued.ID, nil, token)
+	if cancelled.Code != http.StatusOK || !bytes.Contains(cancelled.Body.Bytes(), []byte(`"status":"cancelled"`)) ||
+		bytes.Contains(cancelled.Body.Bytes(), []byte(remote)) {
+		t.Fatalf("cancel: %d %s", cancelled.Code, cancelled.Body)
+	}
+	unknownField := request(handler, http.MethodPost, base+"/stage", []byte(`{"paths":["openspec/spec.md"],"repositoryPath":"/tmp/code"}`), token)
+	if unknownField.Code != http.StatusBadRequest || !bytes.Contains(unknownField.Body.Bytes(), []byte("INVALID_REQUEST")) {
+		t.Fatalf("arbitrary repository: %d %s", unknownField.Code, unknownField.Body)
 	}
 }
 
