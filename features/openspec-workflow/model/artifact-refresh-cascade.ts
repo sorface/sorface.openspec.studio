@@ -8,6 +8,7 @@ export interface OpenSpecArtifactRefreshCascade {
   completed: OpenSpecArtifactRefreshStep[];
   status: OpenSpecArtifactRefreshStatus;
   specsArtifact: "spec" | "specs";
+  proposalGuidance?: string;
   operationId?: string;
   reason?: string;
 }
@@ -36,6 +37,7 @@ export function createOpenSpecArtifactRefreshCascade(
   change: string,
   specsArtifact: string,
   includeTasks = true,
+  proposalGuidance = "",
 ): OpenSpecArtifactRefreshCascade {
   return {
     change,
@@ -44,6 +46,7 @@ export function createOpenSpecArtifactRefreshCascade(
     completed: [],
     status: "active",
     specsArtifact: specsArtifact === "spec" ? "spec" : "specs",
+    ...(proposalGuidance ? { proposalGuidance } : {}),
   };
 }
 
@@ -119,6 +122,13 @@ export function openSpecArtifactRefreshGoal(step: OpenSpecArtifactRefreshStep): 
     "Если ранее выполненная задача стала спорной, изменилась или утратила актуальность, оставь её невыполненной и сделай изменение видимым в diff.",
     "Не считай change реализованным, пока не выполнены все актуальные пункты tasks.md.",
   ].join(" ");
+}
+
+export function openSpecArtifactRefreshCascadeGoal(cascade: OpenSpecArtifactRefreshCascade): string {
+  const goal = openSpecArtifactRefreshGoal(cascade.current);
+  return cascade.current === "specs" && cascade.proposalGuidance
+    ? `${goal}\n\n${cascade.proposalGuidance}`
+    : goal;
 }
 
 export function openSpecArtifactRefreshStepLabel(step: OpenSpecArtifactRefreshStep): string {

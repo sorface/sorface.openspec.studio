@@ -674,7 +674,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(controller, /acceptOpenSpecOperation/);
   assert.match(controller, /writeOpenSpecDraft/);
   assert.match(controller, /name === "awaiting_review"\) setOperationDialogOpen\(true\)/);
-  assert.match(controller, /const writtenDraft = await writeOpenSpecDraft\(projectId, draft\.id\);[\s\S]*setDraft\(writtenDraft\);[\s\S]*onStoreChanged\?\.\(\)/);
+  assert.match(controller, /const writtenDraft = await writeOpenSpecDraft\(projectId, draft\.id\);[\s\S]*setDraft\(writtenDraft\);[\s\S]*onStoreChanged\?\.\(operation \?\? undefined\)/);
   assert.match(controller, /deleteOpenSpecChange/);
   assert.match(controller, /details\.fingerprint/);
   assert.match(controller, /runArtifactAction = useCallback/);
@@ -682,7 +682,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(controller, /statusFingerprint: latest\.fingerprint/);
   assert.match(controller, /startArtifactRefresh = useCallback/);
   assert.match(controller, /advanceOpenSpecArtifactRefreshCascade/);
-  assert.match(controller, /openSpecArtifactRefreshGoal\(nextCascade\.current\)/);
+  assert.match(controller, /openSpecArtifactRefreshCascadeGoal\(nextCascade\)/);
   assert.match(controller, /interruptOpenSpecArtifactRefreshCascade/);
   assert.match(controller, /retryArtifactRefresh = useCallback/);
   assert.match(controller, /resumeOpenSpecArtifactRefreshCascade/);
@@ -704,7 +704,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(panel, /deleteConfirmation !== changeName/);
   assert.match(workspace, /useOpenSpecWorkflowController/);
   assert.match(workspace, /documents\.retry/);
-  assert.match(workspace, /const retryDocuments = documents\.retry;[\s\S]*const refreshTasks = tasks\.refresh;[\s\S]*const refreshStoreState = useCallback\(\(\) => \{\s*retryDocuments\(\);\s*refreshTasks\(\);\s*\}/);
+  assert.match(workspace, /const retryDocuments = documents\.retry;[\s\S]*const refreshTasks = tasks\.refresh;[\s\S]*const refreshStoreState = useCallback\(\(operation\?:[\s\S]*retryDocuments\(\);\s*refreshTasks\(\);/);
   assert.match(workspace, /useOpenSpecWorkflowController\([\s\S]*refreshStoreState,\s*workspaceContext/);
   assert.match(workspace, /<OpenSpecPanel/);
   assert.match(workspace, /openSpecCreationPageOpen/);
@@ -723,7 +723,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(documentActions, /Пересогласовать артефакты change\?/);
   assert.match(documentActions, /Создать новый change/);
   assert.match(documentActions, /Принять риск и обновить/);
-  assert.match(documentActions, /controller\.startArtifactRefresh\(change, action\.artifact, tasksCreated\)/);
+  assert.match(documentActions, /controller\.startArtifactRefresh\([\s\S]*change,[\s\S]*action\.artifact,[\s\S]*tasksCreated,[\s\S]*proposalCommentsGoal\(proposalComments\)/);
   assert.match(documentActions, /proposal\.md \+ diff specs/);
   assert.match(documentActions, /openSpecDocumentActions\(controller\.details, hasSpecs, documentArtifact\)/);
   assert.match(documentActions, /actions\.map\(\(\{ action, label, primary \}\)/);
@@ -920,45 +920,47 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.equal(invalidated.proposal, undefined);
 });
 
-test("контекстная панель редактора заменяет выделенный фрагмент ответом agent", async () => {
-  const [richEditor, markdownEditor, workspace, controller, css, logic] = await Promise.all([
+test("proposal.md хранит видимые комментарии к фрагментам и применяет их через полное обновление", async () => {
+  const [richEditor, markdownEditor, workspace, controller, documentActions, css, logic, commentModel] = await Promise.all([
     readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
     importTypeScript("../features/openspec-workflow/model/openspec-document-action.ts"),
+    importTypeScript("../features/editor/model/fragment-comment.ts"),
   ]);
 
   assert.match(richEditor, /selectionchange/);
   assert.match(richEditor, /container\.closest\("\.cm-content"\)/);
-  assert.match(richEditor, /Редактировать изменение через agent/);
-  assert.match(richEditor, /linearGradient id="editor-agent-gradient"/);
-  assert.match(richEditor, /#168BFF|#7557F5|#E34BA9|#F59B45/);
+  assert.match(richEditor, /Добавить комментарий к выделенному фрагменту/);
+  assert.match(richEditor, /editor-comment-highlight/);
+  assert.match(richEditor, /editor-fragment-comments/);
+  assert.match(richEditor, /onDeleteComment/);
   assert.match(richEditor, /textBetween\(from, to, "\\n"\)/);
   assert.match(richEditor, /candidate\.prefix = view\.state\.doc\.textBetween\(0, from, "\\n"\)/);
   assert.match(richEditor, /candidate\.suffix = view\.state\.doc\.textBetween\(to, view\.state\.doc\.content\.size, "\\n"\)/);
-  assert.doesNotMatch(markdownEditor, /aria-labelledby="agent-edit-title"/);
-  assert.match(richEditor, /agent-inline-prompt/);
-  assert.match(richEditor, /Как изменить выделенный текст\?/);
-  assert.match(richEditor, /Отправить инструкцию agent/);
-  assert.match(richEditor, /agent-selection-processing/);
-  assert.match(workspace, /openSpec\.editDocument\(path, selection, instruction\)/);
-  assert.doesNotMatch(workspace, /await openSpec\.editDocument\(path, selection, instruction\);\s*setWorkspaceMode\("openspec"\)/);
-  assert.match(controller, /createContextManifest/);
-  assert.match(controller, /createAiOperation/);
-  assert.match(controller, /prompt: instruction\.trim\(\)/);
-  assert.match(controller, /mode: "inline"/);
-  assert.match(controller, /selectionPrefix: selection\.prefix/);
-  assert.match(controller, /selectionSuffix: selection\.suffix/);
-  assert.match(controller, /reasoningEffort: "low"/);
-  assert.match(controller, /replacement: result\.finalResponse/);
-  assert.match(richEditor, /insertText\(result\.replacement, range\.from, range\.to\)/);
-  assert.match(richEditor, /onChangeRef\.current\(result\.markdown\)/);
-  assert.match(css, /\.agent-inline-prompt/);
-  assert.match(css, /\.agent-selection-action/);
-  assert.match(css, /\.agent-selection-processing-overlay/);
-  assert.match(css, /\.agent-selection-processing/);
+  assert.match(markdownEditor, /onAddComment/);
+  assert.match(workspace, /proposalCommentsStorageKey/);
+  assert.match(workspace, /pendingCommentUpdatePath/);
+  assert.match(workspace, /clearFragmentComments/);
+  assert.match(documentActions, /proposalCommentsGoal\(proposalComments\)/);
+  assert.match(documentActions, /controller\.startArtifactRefresh/);
+  assert.doesNotMatch(controller, /editDocument|mode: "inline"|createAiOperation/);
+  assert.doesNotMatch(richEditor, /agent-inline-prompt|Редактировать изменение через agent/);
+  assert.match(css, /\.editor-comment-prompt/);
+  assert.match(css, /\.editor-comment-action/);
+  assert.match(css, /\.editor-comment-highlight/);
+  assert.match(css, /\.editor-fragment-comments/);
+  const goal = commentModel.proposalCommentsGoal([{
+    id: "comment-1",
+    selection: { text: "Исходный фрагмент" },
+    text: "Добавить ограничение",
+    createdAt: "2026-08-04T00:00:00.000Z",
+  }]);
+  assert.match(goal, /Исходный фрагмент/);
+  assert.match(goal, /Добавить ограничение/);
   assert.equal(logic.changeFromDocumentPath("openspec/changes/add-report/design.md"), "add-report");
   assert.equal(logic.changeFromDocumentPath("openspec/changes/archive/2026-01-01-add-report/design.md"), null);
   assert.equal(logic.actionMatchesDocument({ outputPaths: ["openspec/changes/add-report/specs/**/*.md"] }, "openspec/changes/add-report/specs/report/spec.md"), true);

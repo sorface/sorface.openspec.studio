@@ -14,6 +14,8 @@ import {
   openSpecArtifactRefreshStepNumber,
 } from "@/features/openspec-workflow/model/artifact-refresh-cascade";
 import type { OpenSpecAction } from "@/features/openspec-workflow/model/openspec-types";
+import type { EditorFragmentComment } from "@/features/editor/model/fragment-comment";
+import { proposalCommentsGoal } from "@/features/editor/model/fragment-comment";
 
 interface OpenSpecDocumentActionProps {
   controller: OpenSpecWorkflowController;
@@ -22,8 +24,10 @@ interface OpenSpecDocumentActionProps {
   hasSpecs: boolean;
   documentDirty: boolean;
   documentSaving: boolean;
+  proposalComments: EditorFragmentComment[];
   onSave: () => Promise<boolean>;
   onCreateChange: () => void;
+  onCommentsSubmitted: () => void;
 }
 
 interface OpenSpecDocumentReviewProps {
@@ -38,8 +42,10 @@ export function OpenSpecDocumentAction({
   hasSpecs,
   documentDirty,
   documentSaving,
+  proposalComments,
   onSave,
   onCreateChange,
+  onCommentsSubmitted,
 }: OpenSpecDocumentActionProps) {
   const [startingArtifact, setStartingArtifact] = useState("");
   const [startError, setStartError] = useState("");
@@ -101,7 +107,9 @@ export function OpenSpecDocumentAction({
       const goal = documentArtifact === "proposal" && hasSpecs && ["spec", "specs"].includes(action.artifact)
         ? openSpecArtifactRefreshGoal("specs")
         : defaultOpenSpecActionGoal(action);
-      await controller.runArtifactAction(change, action.artifact, goal);
+      const guidance = documentArtifact === "proposal" ? proposalCommentsGoal(proposalComments) : "";
+      const operation = await controller.runArtifactAction(change, action.artifact, [goal, guidance].filter(Boolean).join("\n\n"));
+      if (operation && guidance) onCommentsSubmitted();
     } catch (cause) {
       setStartError(cause instanceof Error ? cause.message : "Не удалось запустить подготовку артефакта");
     } finally {
@@ -116,7 +124,13 @@ export function OpenSpecDocumentAction({
     setStartingArtifact(action.artifact);
     setStartError("");
     try {
-      await controller.startArtifactRefresh(change, action.artifact, tasksCreated);
+      await controller.startArtifactRefresh(
+        change,
+        action.artifact,
+        tasksCreated,
+        proposalCommentsGoal(proposalComments),
+      );
+      if (proposalComments.length) onCommentsSubmitted();
     } catch (cause) {
       setStartError(cause instanceof Error ? cause.message : "Не удалось запустить пересогласование артефактов");
     } finally {
@@ -151,6 +165,9 @@ export function OpenSpecDocumentAction({
             : documentDirty
               ? `Записать и ${label.toLowerCase()}`
               : label}</span>
+          {documentArtifact === "proposal" && proposalComments.length > 0 && (
+            <b className="proposal-comments-count" aria-label={`Комментариев: ${proposalComments.length}`}>{proposalComments.length}</b>
+          )}
         </button>
       ))}
       {refreshWarningAction && createPortal((

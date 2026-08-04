@@ -5,7 +5,7 @@ import { DocumentHistoryPanel } from "@/features/documents/components/DocumentHi
 import type { DocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
 import { MarkdownPreview } from "@/features/editor/components/MarkdownPreview";
 import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
-import type { AgentEditResult, AgentEditSelection } from "@/features/editor/model/agent-edit";
+import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
 import type { DocumentViewStatus } from "@/features/documents/model/document-types";
 import type { ViewMode } from "@/features/workspace/model/workspace-types";
 
@@ -25,12 +25,12 @@ interface MarkdownEditorProps {
   userReadOnly?: boolean;
   hideHeaderActions?: boolean;
   readOnlyLabel?: string;
-  agentAvailable: boolean;
-  agentPending: boolean;
+  comments?: EditorFragmentComment[];
   toolbarActions?: ReactNode;
   contextPanel?: ReactNode;
   onBlur: () => void;
-  onAgentEdit: (path: string, selection: AgentEditSelection, instruction: string) => Promise<AgentEditResult>;
+  onAddComment?: (path: string, selection: EditorTextSelection, comment: string) => void;
+  onDeleteComment?: (path: string, commentId: string) => void;
   onChange: (markdown: string) => void;
   onViewModeChange: (mode: ViewMode) => void;
   onWrite: () => void;
@@ -43,8 +43,8 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
   const {
     activeFile, lines, markdown, documentStatus, loadingDocument, saving, dirty, conflict,
     error, history, saveShortcutLabel, viewMode, userReadOnly = false, hideHeaderActions = false,
-    readOnlyLabel = "Только просмотр", agentAvailable, agentPending,
-    toolbarActions, contextPanel, onBlur, onAgentEdit, onChange, onViewModeChange, onWrite, onRetry,
+    readOnlyLabel = "Только просмотр", comments,
+    toolbarActions, contextPanel, onBlur, onAddComment, onDeleteComment, onChange, onViewModeChange, onWrite, onRetry,
   } = props;
   const breadcrumbs = activeFile?.split("/") ?? [];
   const canEdit = documentStatus === "ready" && !!activeFile && !loadingDocument;
@@ -120,10 +120,10 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
           <RichMarkdownEditor
             documentId={activeFile!}
             markdown={markdown}
-            agentAvailable={agentAvailable}
-            agentPending={agentPending}
+            comments={comments}
             toolbarActions={toolbarActions}
-            onAgentEdit={(selection, instruction) => onAgentEdit(activeFile!, selection, instruction)}
+            onAddComment={onAddComment ? (selection, comment) => onAddComment(activeFile!, selection, comment) : undefined}
+            onDeleteComment={onDeleteComment ? (commentId) => onDeleteComment(activeFile!, commentId) : undefined}
             onChange={onChange}
             onBlur={onBlur}
           />

@@ -3,14 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/features/api/api-client";
 import {
-  createAiOperation,
-  createContextManifest,
-  getAiOperation,
-} from "@/features/ai-operations/api/ai-client";
-import { isAiTerminal } from "@/features/ai-operations/model/ai-operation-state";
-import type { AiResult } from "@/features/ai-operations/model/ai-types";
-import type { AgentEditResult, AgentEditSelection } from "@/features/editor/model/agent-edit";
-import {
   acceptOpenSpecOperation,
   cancelOpenSpecOperation,
   deleteOpenSpecChange,
@@ -35,7 +27,7 @@ import {
   createOpenSpecArtifactRefreshCascade,
   interruptOpenSpecArtifactRefreshCascade,
   openSpecArtifactRefreshActionArtifact,
-  openSpecArtifactRefreshGoal,
+  openSpecArtifactRefreshCascadeGoal,
   openSpecArtifactRefreshMatchesOperation,
   resumeOpenSpecArtifactRefreshCascade,
   type OpenSpecArtifactRefreshCascade,
@@ -83,11 +75,10 @@ export interface OpenSpecWorkflowController {
   validate: (all?: boolean) => Promise<void>;
   explore: (goal: string) => Promise<void>;
   createChange: (change: string, proposal: string) => Promise<void>;
-  editDocument: (path: string, selection: AgentEditSelection, instruction: string) => Promise<AgentEditResult>;
   deleteChange: (confirmation: string) => Promise<void>;
   runAction: (action: OpenSpecAction, goal: string) => Promise<void>;
   runArtifactAction: (change: string, artifact: string, goal: string) => Promise<OpenSpecOperation | undefined>;
-  startArtifactRefresh: (change: string, specsArtifact: string, includeTasks: boolean) => Promise<void>;
+  startArtifactRefresh: (change: string, specsArtifact: string, includeTasks: boolean, proposalGuidance?: string) => Promise<void>;
   retryArtifactRefresh: () => Promise<void>;
   cancel: () => Promise<void>;
   accept: () => Promise<boolean>;
@@ -127,7 +118,7 @@ export function useOpenSpecWorkflowController(
   provider?: string,
   model?: string,
   agentAvailable = false,
-  onStoreChanged?: () => void,
+  onStoreChanged?: (operation?: OpenSpecOperation) => void,
   workspaceContext = "",
 ): OpenSpecWorkflowController {
   const [overview, setOverview] = useState<OpenSpecOverview | null>(null);
@@ -325,72 +316,6 @@ export function useOpenSpecWorkflowController(
     });
   }, [execute]);
 
-  const editDocument = useCallback(async (path: string, selection: AgentEditSelection, instruction: string) => {
-    if (!projectId || !provider) {
-      throw new ApiError(400, {
-        code: "OPENSPEC_DOCUMENT_ACTION_UNAVAILABLE",
-        message: "Сначала выберите доступный agent CLI в верхней панели",
-      });
-    }
-    if (operationStartInFlight.current) {
-      throw new ApiError(409, {
-        code: "OPENSPEC_OPERATION_IN_PROGRESS",
-        message: "Дождитесь завершения текущей операции agent",
-      });
-    }
-    operationStartInFlight.current = true;
-    setPending(true);
-    setError(null);
-    setValidation(null);
-    setDraft(null);
-    const initialProgress = "Agent изменяет выделенный фрагмент…";
-    setOperationProgress(initialProgress);
-    setOperationActivity([initialProgress]);
-    setOperationElapsedSeconds(0);
-    try {
-      // Every Markdown document uses the same fragment-only protocol. Running archived or
-      // active change files through the full OpenSpec action used to produce false scope errors.
-      const manifest = await createContextManifest(projectId, [{ source: "store", path }]);
-      let aiOperation = await createAiOperation(projectId, {
-        reviewToken: manifest.reviewToken,
-        prompt: instruction.trim(),
-        provider,
-        model,
-        reasoningEffort: "low",
-        mode: "inline",
-        selection: selection.text,
-        selectionPrefix: selection.prefix,
-        selectionSuffix: selection.suffix,
-      });
-      while (!isAiTerminal(aiOperation.status)) {
-        await new Promise((resolve) => window.setTimeout(resolve, 250));
-        aiOperation = await getAiOperation(projectId, aiOperation.id);
-      }
-      if (aiOperation.status !== "awaiting_review" || !aiOperation.result) {
-        throw new ApiError(409, {
-          code: "OPENSPEC_INLINE_EDIT_FAILED",
-          message: aiOperation.errorMessage || "Agent не подготовил изменение",
-        });
-      }
-      const result = JSON.parse(aiOperation.result) as AiResult;
-      const mutation = result.files.find((file) => file.path === path);
-      if (result.files.length !== 1 || !mutation) {
-        throw new ApiError(409, {
-          code: "OPENSPEC_INLINE_EDIT_SCOPE_VIOLATION",
-          message: "Agent вышел за границы выделенного фрагмента. Изменения не применены.",
-        });
-      }
-      return { markdown: mutation.after, replacement: result.finalResponse };
-    } catch (cause) {
-      const nextError = toApiError(cause, "Не удалось изменить выделенный фрагмент");
-      setError(nextError);
-      throw nextError;
-    } finally {
-      operationStartInFlight.current = false;
-      setPending(false);
-    }
-  }, [model, projectId, provider]);
-
   const runAction = useCallback(async (action: OpenSpecAction, goal: string) => {
     if (!details || !action.available) return;
     await execute({
@@ -443,14 +368,14 @@ export function useOpenSpecWorkflowController(
     });
   }, [execute, model, projectId, provider]);
 
-  const startArtifactRefresh = useCallback(async (change: string, specsArtifact: string, includeTasks: boolean) => {
-    const initial = createOpenSpecArtifactRefreshCascade(change, specsArtifact, includeTasks);
+  const startArtifactRefresh = useCallback(async (change: string, specsArtifact: string, includeTasks: boolean, proposalGuidance = "") => {
+    const initial = createOpenSpecArtifactRefreshCascade(change, specsArtifact, includeTasks, proposalGuidance);
     setArtifactRefresh(initial);
     try {
       const nextOperation = await runArtifactAction(
         change,
         openSpecArtifactRefreshActionArtifact(initial),
-        openSpecArtifactRefreshGoal(initial.current),
+        openSpecArtifactRefreshCascadeGoal(initial),
       );
       if (!nextOperation) {
         setArtifactRefresh((current) => current?.status === "active"
@@ -480,7 +405,7 @@ export function useOpenSpecWorkflowController(
       const nextOperation = await runArtifactAction(
         resumed.change,
         openSpecArtifactRefreshActionArtifact(resumed),
-        openSpecArtifactRefreshGoal(resumed.current),
+        openSpecArtifactRefreshCascadeGoal(resumed),
       );
       setArtifactRefresh((current) => current?.status === "active" && current.current === resumed.current
         ? bindOpenSpecArtifactRefreshOperation(current, nextOperation?.id)
@@ -671,7 +596,7 @@ export function useOpenSpecWorkflowController(
       }
       setValidation(null);
       setValidationStatus("idle");
-      onStoreChanged?.();
+      onStoreChanged?.(operation ?? undefined);
       const refreshForWrite = artifactRefresh?.status === "interrupted"
         ? resumeOpenSpecArtifactRefreshCascade(artifactRefresh)
         : artifactRefresh;
@@ -688,7 +613,7 @@ export function useOpenSpecWorkflowController(
             const nextOperation = await runArtifactAction(
               nextCascade.change,
               openSpecArtifactRefreshActionArtifact(nextCascade),
-              openSpecArtifactRefreshGoal(nextCascade.current),
+              openSpecArtifactRefreshCascadeGoal(nextCascade),
             );
             setArtifactRefresh((current) => current?.status === "active" && current.current === nextCascade.current
               ? bindOpenSpecArtifactRefreshOperation(current, nextOperation?.id)
@@ -792,7 +717,6 @@ export function useOpenSpecWorkflowController(
     validate,
     explore,
     createChange,
-    editDocument,
     deleteChange,
     runAction,
     runArtifactAction,

@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDocumentsController } from "@/features/documents/hooks/useDocumentsController";
 import { useDocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
-import type { AgentEditSelection } from "@/features/editor/model/agent-edit";
+import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
+import { proposalCommentsStorageKey } from "@/features/editor/model/fragment-comment";
 import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
@@ -55,14 +56,56 @@ export function OpenSpecWorkspace() {
   const workspaceContext = tasks.overview?.active?.id ?? projects.activeProject?.activeTask ?? "base";
   const documents = useDocumentsController(projects.activeProject?.id, workspaceContext);
   const documentHistory = useDocumentHistoryController(projects.activeProject?.id, documents.selectedPath, workspaceContext);
+  const [fragmentCommentsByPath, setFragmentCommentsByPath] = useState<Record<string, EditorFragmentComment[]>>({});
+  const [commentsProjectId, setCommentsProjectId] = useState("");
+  const pendingCommentUpdatePath = useRef("");
   const retryDocuments = documents.retry;
   const saveDocument = documents.save;
   const selectedDocumentPath = documents.selectedPath;
   const refreshTasks = tasks.refresh;
-  const refreshStoreState = useCallback(() => {
+  useEffect(() => {
+    const projectId = projects.activeProject?.id ?? "";
+    if (!projectId) {
+      setFragmentCommentsByPath({});
+      setCommentsProjectId("");
+      return;
+    }
+    try {
+      const saved = window.localStorage.getItem(proposalCommentsStorageKey(projectId));
+      setFragmentCommentsByPath(saved ? JSON.parse(saved) as Record<string, EditorFragmentComment[]> : {});
+    } catch {
+      setFragmentCommentsByPath({});
+    }
+    setCommentsProjectId(projectId);
+  }, [projects.activeProject?.id]);
+
+  useEffect(() => {
+    const projectId = projects.activeProject?.id;
+    if (!projectId || commentsProjectId !== projectId) return;
+    window.localStorage.setItem(proposalCommentsStorageKey(projectId), JSON.stringify(fragmentCommentsByPath));
+  }, [commentsProjectId, fragmentCommentsByPath, projects.activeProject?.id]);
+
+  const clearFragmentComments = useCallback((path: string) => {
+    setFragmentCommentsByPath((current) => {
+      if (!current[path]?.length) return current;
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+  }, []);
+
+  const refreshStoreState = useCallback((operation?: { openspecChange?: string; openspecArtifact?: string }) => {
+    const expectedPath = operation?.openspecChange
+      ? `openspec/changes/${operation.openspecChange}/proposal.md`
+      : "";
+    if (pendingCommentUpdatePath.current && expectedPath === pendingCommentUpdatePath.current &&
+      ["spec", "specs"].includes(operation?.openspecArtifact ?? "")) {
+      clearFragmentComments(pendingCommentUpdatePath.current);
+      pendingCommentUpdatePath.current = "";
+    }
     retryDocuments();
     refreshTasks();
-  }, [refreshTasks, retryDocuments]);
+  }, [clearFragmentComments, refreshTasks, retryDocuments]);
   const configuredProvider = projects.activeProject?.defaultAiProvider ?? undefined;
   const providerAvailable = !!configuredProvider && (projects.capabilities?.tools.some((tool) =>
     tool.name === configuredProvider.toLowerCase() && tool.available && tool.supported !== false && tool.nonInteractive !== false,
@@ -90,6 +133,9 @@ export function OpenSpecWorkspace() {
     () => changeDocumentContextFromPath(documents.selectedPath),
     [documents.selectedPath],
   );
+  const activeFragmentComments = documents.selectedPath
+    ? fragmentCommentsByPath[documents.selectedPath] ?? []
+    : [];
   const masterSpecReadOnly = isMasterSpecPath(documents.selectedPath);
   const deltaSpecReadOnly = isDeltaSpecPath(documents.selectedPath);
   const userReadOnlySpec = masterSpecReadOnly || deltaSpecReadOnly;
@@ -179,9 +225,25 @@ export function OpenSpecWorkspace() {
     return () => window.removeEventListener("keydown", handleSaveShortcut, true);
   }, [writeFile]);
 
-  const editDocumentWithAgent = async (path: string, selection: AgentEditSelection, instruction: string) => {
-    return openSpec.editDocument(path, selection, instruction);
-  };
+  const addFragmentComment = useCallback((path: string, selection: EditorTextSelection, text: string) => {
+    const comment: EditorFragmentComment = {
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      selection,
+      text,
+      createdAt: new Date().toISOString(),
+    };
+    setFragmentCommentsByPath((current) => ({
+      ...current,
+      [path]: [...(current[path] ?? []), comment],
+    }));
+  }, []);
+
+  const deleteFragmentComment = useCallback((path: string, commentId: string) => {
+    setFragmentCommentsByPath((current) => ({
+      ...current,
+      [path]: (current[path] ?? []).filter((comment) => comment.id !== commentId),
+    }));
+  }, []);
 
   const addOpenSpecChange = useCallback(() => {
     setWorkspaceMode("openspec");
@@ -253,8 +315,7 @@ export function OpenSpecWorkspace() {
             userReadOnly={userReadOnlySpec}
             hideHeaderActions={masterSpecReadOnly}
             readOnlyLabel={masterSpecReadOnly ? "Master spec · только просмотр" : "Diff spec · только просмотр"}
-            agentAvailable={providerAvailable}
-            agentPending={openSpec.pending}
+            comments={changeDocument?.artifact === "proposal" ? activeFragmentComments : undefined}
             toolbarActions={changeDocument ? (
               <OpenSpecDocumentAction
                 controller={openSpec}
@@ -263,8 +324,14 @@ export function OpenSpecWorkspace() {
                 hasSpecs={changeHasSpecs}
                 documentDirty={documents.dirty}
                 documentSaving={documents.saving}
+                proposalComments={changeDocument.artifact === "proposal" ? activeFragmentComments : []}
                 onSave={writeFile}
                 onCreateChange={addOpenSpecChange}
+                onCommentsSubmitted={() => {
+                  if (documents.selectedPath && activeFragmentComments.length) {
+                    pendingCommentUpdatePath.current = documents.selectedPath;
+                  }
+                }}
               />
             ) : taskDocumentProgress ? (
               <span
@@ -281,7 +348,8 @@ export function OpenSpecWorkspace() {
               <OpenSpecDocumentReview controller={openSpec} change={changeDocument.change} />
             ) : undefined}
             onBlur={() => undefined}
-            onAgentEdit={editDocumentWithAgent}
+            onAddComment={changeDocument?.artifact === "proposal" ? addFragmentComment : undefined}
+            onDeleteComment={changeDocument?.artifact === "proposal" ? deleteFragmentComment : undefined}
             onChange={userReadOnlySpec ? () => undefined : documents.change}
             onViewModeChange={setViewMode}
             onWrite={writeFile}

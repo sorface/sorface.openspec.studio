@@ -2,60 +2,39 @@
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { AgentEditResult, AgentEditSelection } from "@/features/editor/model/agent-edit";
+import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
 import { historyShortcut } from "@/features/system/model/platform-shortcuts";
 
 interface RichMarkdownEditorProps {
   documentId: string;
   markdown: string;
-  agentAvailable: boolean;
-  agentPending: boolean;
+  comments?: EditorFragmentComment[];
   toolbarActions?: ReactNode;
   onBlur: () => void;
   onChange: (markdown: string) => void;
-  onAgentEdit: (selection: AgentEditSelection, instruction: string) => Promise<AgentEditResult>;
+  onAddComment?: (selection: EditorTextSelection, comment: string) => void;
+  onDeleteComment?: (commentId: string) => void;
 }
 
-interface AgentRequest {
-  selection: string;
-  prefix?: string;
-  suffix?: string;
-  from?: number;
-  to?: number;
+interface SelectionCandidate extends EditorTextSelection {
   top: number;
   left: number;
   selectionRect: { top: number; left: number; width: number; height: number };
 }
 
-const agentActionIcon = `
-  <svg data-agent-action="true" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <linearGradient id="editor-agent-gradient" x1="5" y1="4" x2="20" y2="21" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#168BFF"/>
-        <stop offset=".38" stop-color="#7557F5"/>
-        <stop offset=".7" stop-color="#E34BA9"/>
-        <stop offset="1" stop-color="#F59B45"/>
-      </linearGradient>
-    </defs>
-    <path d="M12 3.5 13.6 8.4 18.5 10 13.6 11.6 12 16.5 10.4 11.6 5.5 10 10.4 8.4 12 3.5Z" stroke="url(#editor-agent-gradient)" stroke-width="1.8" stroke-linejoin="round"/>
-    <path d="m17.5 15 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" fill="url(#editor-agent-gradient)"/>
-  </svg>`;
-
 export function RichMarkdownEditor({
-  documentId, markdown, agentAvailable, agentPending, toolbarActions, onBlur, onChange, onAgentEdit,
+  documentId, markdown, comments = [], toolbarActions, onBlur, onChange, onAddComment, onDeleteComment,
 }: RichMarkdownEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const onBlurRef = useRef(onBlur);
   const onChangeRef = useRef(onChange);
-  const applyAgentEditRef = useRef<(result: AgentEditResult, range: { from: number; to: number } | null) => void>(() => undefined);
-  const showProcessingRef = useRef<(range: { from: number; to: number } | null) => void>(() => undefined);
+  const commentsRef = useRef(comments);
+  const showCommentsRef = useRef<(comments: EditorFragmentComment[]) => void>(() => undefined);
   const initialMarkdownRef = useRef(markdown);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
-  const [agentRequest, setAgentRequest] = useState<AgentRequest | null>(null);
-  const [agentCandidate, setAgentCandidate] = useState<AgentRequest | null>(null);
-  const [agentInstruction, setAgentInstruction] = useState("");
-  const [agentError, setAgentError] = useState("");
-  const [agentSubmitting, setAgentSubmitting] = useState(false);
+  const [commentRequest, setCommentRequest] = useState<SelectionCandidate | null>(null);
+  const [selectionCandidate, setSelectionCandidate] = useState<SelectionCandidate | null>(null);
+  const [commentText, setCommentText] = useState("");
   const [toolbarTarget, setToolbarTarget] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -64,39 +43,23 @@ export function RichMarkdownEditor({
     initialMarkdownRef.current = markdown;
   }, [markdown, onBlur, onChange]);
 
-  const submitAgentEdit = async (event: FormEvent) => {
+  useEffect(() => {
+    commentsRef.current = comments;
+    showCommentsRef.current(comments);
+  }, [comments]);
+
+  const submitComment = (event: FormEvent) => {
     event.preventDefault();
-    if (!agentRequest || !agentInstruction.trim() || agentSubmitting || agentPending) return;
-    if (!agentAvailable) {
-      setAgentError("Сначала выберите доступный agent CLI в верхней панели.");
-      return;
-    }
-    setAgentSubmitting(true);
-    setAgentError("");
-    if (agentRequest.from !== undefined && agentRequest.to !== undefined) {
-      showProcessingRef.current({ from: agentRequest.from, to: agentRequest.to });
-    }
-    try {
-      const result = await onAgentEdit({
-        text: agentRequest.selection,
-        prefix: agentRequest.prefix,
-        suffix: agentRequest.suffix,
-      }, agentInstruction.trim());
-      const range = agentRequest.from !== undefined && agentRequest.to !== undefined
-        ? { from: agentRequest.from, to: agentRequest.to }
-        : null;
-      applyAgentEditRef.current(result, range);
-      // Persist the exact backend-scoped Markdown even if the visual editor normalizes
-      // the transaction differently. The editor transaction remains the immediate UI update.
-      onChangeRef.current(result.markdown);
-      setAgentRequest(null);
-      setAgentInstruction("");
-    } catch (cause) {
-      setAgentError(cause instanceof Error ? cause.message : "Не удалось изменить выделенный фрагмент");
-    } finally {
-      showProcessingRef.current(null);
-      setAgentSubmitting(false);
-    }
+    if (!commentRequest || !commentText.trim() || !onAddComment) return;
+    onAddComment({
+      text: commentRequest.text,
+      prefix: commentRequest.prefix,
+      suffix: commentRequest.suffix,
+      from: commentRequest.from,
+      to: commentRequest.to,
+    }, commentText.trim());
+    setCommentRequest(null);
+    setCommentText("");
   };
 
   useEffect(() => {
@@ -115,7 +78,7 @@ export function RichMarkdownEditor({
         let normalizedInitialMarkdown = initialMarkdown;
 
         const [
-          { Crepe }, { editorViewCtx }, { redo, undo }, { replaceAll, $prose },
+          { Crepe }, { editorViewCtx }, { redo, undo }, { $prose },
           { Plugin, PluginKey }, { Decoration, DecorationSet },
         ] = await Promise.all([
           import("@milkdown/crepe"),
@@ -127,22 +90,23 @@ export function RichMarkdownEditor({
         ]);
         if (disposed) return;
 
-        const processingKey = new PluginKey("agent-selection-processing");
-        const processingPlugin = $prose(() => new Plugin({
-          key: processingKey,
+        const commentsKey = new PluginKey("editor-fragment-comments");
+        const commentsPlugin = $prose(() => new Plugin({
+          key: commentsKey,
           state: {
             init: () => DecorationSet.empty,
             apply: (transaction, current) => {
-              const range = transaction.getMeta(processingKey) as { from: number; to: number } | null | undefined;
-              if (range === undefined) return current.map(transaction.mapping, transaction.doc);
-              if (range === null) return DecorationSet.empty;
-              return DecorationSet.create(transaction.doc, [
-                Decoration.inline(range.from, range.to, { class: "agent-selection-processing" }),
-              ]);
+              const ranges = transaction.getMeta(commentsKey) as Array<{ id: string; from: number; to: number }> | undefined;
+              if (ranges === undefined) return current.map(transaction.mapping, transaction.doc);
+              return DecorationSet.create(transaction.doc, ranges.map((range) => Decoration.inline(
+                range.from,
+                range.to,
+                { class: "editor-comment-highlight", "data-comment-id": range.id },
+              )));
             },
           },
           props: {
-            decorations: (state) => processingKey.getState(state),
+            decorations: (state) => commentsKey.getState(state),
           },
         }));
 
@@ -166,7 +130,7 @@ export function RichMarkdownEditor({
             },
           },
         });
-        editor.editor.use(processingPlugin);
+        editor.editor.use(commentsPlugin);
 
         const handleHistoryShortcut = (event: KeyboardEvent) => {
           const action = historyShortcut(event);
@@ -204,25 +168,23 @@ export function RichMarkdownEditor({
           syncHeadingSelectorWeight();
           setToolbarTarget(nextToolbarTarget);
         }
-        applyAgentEditRef.current = (result, range) => {
-          if (!range || result.replacement.includes("\n")) {
-            editor.editor.action(replaceAll(result.markdown));
-            return;
-          }
-          editor.editor.action((context) => {
-            const view = context.get(editorViewCtx);
-            view.dispatch(view.state.tr.insertText(result.replacement, range.from, range.to));
-          });
-        };
-        showProcessingRef.current = (range) => editor.editor.action((context) => {
+        showCommentsRef.current = (nextComments) => editor.editor.action((context) => {
           const view = context.get(editorViewCtx);
-          view.dispatch(view.state.tr.setMeta(processingKey, range));
+          const ranges = nextComments.flatMap((comment) => {
+            const { from, to, text } = comment.selection;
+            if (from === undefined || to === undefined || from >= to || to > view.state.doc.content.size) return [];
+            return view.state.doc.textBetween(from, to, "\n").trim() === text.trim()
+              ? [{ id: comment.id, from, to }]
+              : [];
+          });
+          view.dispatch(view.state.tr.setMeta(commentsKey, ranges));
         });
+        showCommentsRef.current(commentsRef.current);
 
         const captureSelection = () => {
           const nativeSelection = window.getSelection();
           if (!nativeSelection || nativeSelection.isCollapsed || !nativeSelection.rangeCount) {
-            setAgentCandidate(null);
+            setSelectionCandidate(null);
             return;
           }
           const selection = nativeSelection.toString().trim();
@@ -231,13 +193,13 @@ export function RichMarkdownEditor({
             ? range.commonAncestorContainer as Element
             : range.commonAncestorContainer.parentElement;
           if (!selection || !container || !root.contains(container)) {
-            setAgentCandidate(null);
+            setSelectionCandidate(null);
             return;
           }
           const rect = range.getBoundingClientRect();
           if (!rect.width && !rect.height) return;
-          const candidate: AgentRequest = {
-            selection,
+          const candidate: SelectionCandidate = {
+            text: selection,
             top: Math.min(rect.bottom + 12, window.innerHeight - 92),
             left: Math.max(12, Math.min(rect.left, window.innerWidth - 402)),
             selectionRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
@@ -254,7 +216,7 @@ export function RichMarkdownEditor({
               }
             });
           }
-          setAgentCandidate(candidate);
+          setSelectionCandidate(candidate);
         };
         document.addEventListener("selectionchange", captureSelection);
         removeSelectionListener = () => document.removeEventListener("selectionchange", captureSelection);
@@ -270,8 +232,7 @@ export function RichMarkdownEditor({
           removeSelectionListener?.();
           headingSelectorObserver?.disconnect();
           root.removeEventListener("keydown", handleHistoryShortcut, true);
-          applyAgentEditRef.current = () => undefined;
-          showProcessingRef.current = () => undefined;
+          showCommentsRef.current = () => undefined;
           setToolbarTarget((current) => current === nextToolbarTarget ? null : current);
           editor.destroy();
         };
@@ -307,42 +268,54 @@ export function RichMarkdownEditor({
         <div className="rich-editor-context-actions">{toolbarActions}</div>,
         toolbarTarget,
       )}
+      {comments.length > 0 && (
+        <aside className="editor-fragment-comments" aria-label={`Комментарии к фрагментам: ${comments.length}`}>
+          <header><b>Комментарии</b><span>{comments.length}</span></header>
+          {comments.map((comment) => (
+            <article key={comment.id}>
+              <button
+                type="button"
+                className="editor-comment-link"
+                onClick={() => document.querySelector(`[data-comment-id="${comment.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                title="Перейти к фрагменту"
+              >
+                <small>«{comment.selection.text.replace(/\s+/g, " ").slice(0, 74)}{comment.selection.text.length > 74 ? "…»" : "»"}</small>
+                <span>{comment.text}</span>
+              </button>
+              <button type="button" className="editor-comment-delete" onClick={() => onDeleteComment?.(comment.id)} aria-label="Удалить комментарий">×</button>
+            </article>
+          ))}
+        </aside>
+      )}
       {typeof document !== "undefined" && createPortal(<>
-        {agentCandidate && !agentRequest && (
+        {selectionCandidate && !commentRequest && onAddComment && (
           <button
             type="button"
-            className="agent-selection-action"
+            className="editor-comment-action"
             style={{
-              top: Math.max(76, Math.min(agentCandidate.selectionRect.top - 38, window.innerHeight - 44)),
-              left: Math.max(8, Math.min(agentCandidate.selectionRect.left + agentCandidate.selectionRect.width - 32, window.innerWidth - 40)),
+              top: Math.max(76, Math.min(selectionCandidate.selectionRect.top - 38, window.innerHeight - 44)),
+              left: Math.max(8, Math.min(selectionCandidate.selectionRect.left + selectionCandidate.selectionRect.width - 32, window.innerWidth - 40)),
             }}
-            aria-label="Редактировать изменение через agent"
-            title="Редактировать через agent"
-            data-testid="editor-agent-action"
+            aria-label="Добавить комментарий к выделенному фрагменту"
+            title="Добавить комментарий"
+            data-testid="editor-comment-action"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
-              setAgentRequest(agentCandidate);
-              setAgentCandidate(null);
-              setAgentInstruction("");
-              setAgentError("");
+              setCommentRequest(selectionCandidate);
+              setSelectionCandidate(null);
+              setCommentText("");
             }}
-            dangerouslySetInnerHTML={{ __html: agentActionIcon }}
-          />
+          >
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12v8.2H9l-3.8 3v-3H4Z" /><path d="M7 8.5h6M10 5.8v5.4" /></svg>
+          </button>
         )}
-        {agentSubmitting && agentRequest && agentRequest.from === undefined && (
-          <div
-            className="agent-selection-processing-overlay"
-            style={agentRequest.selectionRect}
-            aria-hidden="true"
-          />
-        )}
-        {agentRequest && (
+        {commentRequest && (
           <form
-            className="agent-inline-prompt"
-            style={{ top: agentRequest.top, left: agentRequest.left }}
-            onSubmit={submitAgentEdit}
+            className="editor-comment-prompt"
+            style={{ top: commentRequest.top, left: commentRequest.left }}
+            onSubmit={submitComment}
             onKeyDown={(event) => {
-              if (event.key === "Escape" && !agentSubmitting) setAgentRequest(null);
+              if (event.key === "Escape") setCommentRequest(null);
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 event.currentTarget.requestSubmit();
@@ -351,24 +324,20 @@ export function RichMarkdownEditor({
           >
             <textarea
               autoFocus
-              aria-label="Как изменить выделенный текст?"
-              placeholder="Как изменить выделенный текст?"
+              aria-label="Комментарий к выделенному фрагменту"
+              placeholder="Оставьте комментарий к фрагменту…"
               rows={2}
-              value={agentInstruction}
-              onChange={(event) => setAgentInstruction(event.target.value)}
-              disabled={agentSubmitting || agentPending}
+              value={commentText}
+              onChange={(event) => setCommentText(event.target.value)}
             />
             <button
               type="submit"
-              aria-label="Отправить инструкцию agent"
-              title="Отправить"
-              disabled={!agentInstruction.trim() || agentSubmitting || agentPending}
+              aria-label="Сохранить комментарий"
+              title="Сохранить комментарий"
+              disabled={!commentText.trim()}
             >
-              {agentSubmitting || agentPending ? <span className="agent-inline-spinner" /> : (
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 17 8-17 8 3-8-3-8Zm3.4 7h8.4L6.5 6.6 7.4 11Zm0 2-.9 4.4 9.3-4.4H7.4Z" /></svg>
-              )}
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 3.5 3.5L16 5" /></svg>
             </button>
-            {agentError && <small role="alert">{agentError}</small>}
           </form>
         )}
       </>, document.body)}

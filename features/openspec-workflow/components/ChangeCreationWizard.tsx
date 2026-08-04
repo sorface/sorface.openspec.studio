@@ -204,11 +204,8 @@ export function ChangeCreationWizard({
                   key={leftDocumentId}
                   documentId={leftDocumentId}
                   markdown={leftMarkdown}
-                  agentAvailable={false}
-                  agentPending={activeOperation}
                   onBlur={() => undefined}
                   onChange={leftChange}
-                  onAgentEdit={async () => ({ markdown: leftMarkdown, replacement: "" })}
                 />
               )}
               <footer>

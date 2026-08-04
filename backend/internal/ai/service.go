@@ -74,10 +74,6 @@ type CreateInput struct {
 	Provider        string `json:"provider"`
 	Model           string `json:"model,omitempty"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	Mode            string `json:"mode,omitempty"`
-	Selection       string `json:"selection,omitempty"`
-	SelectionPrefix string `json:"selectionPrefix,omitempty"`
-	SelectionSuffix string `json:"selectionSuffix,omitempty"`
 	CorrelationID   string `json:"-"`
 }
 
@@ -188,12 +184,6 @@ func (service *Service) Start(ctx context.Context, projectID string, input Creat
 	if input.ReasoningEffort != "" && input.ReasoningEffort != "low" {
 		return operation.Operation{}, ErrInvalidContext
 	}
-	if input.Mode != "" && input.Mode != "inline" {
-		return operation.Operation{}, ErrInvalidContext
-	}
-	if input.Mode == "inline" && strings.TrimSpace(input.Selection) == "" {
-		return operation.Operation{}, ErrInvalidContext
-	}
 	service.mu.Lock()
 	manifest, ok := service.manifests[input.ReviewToken]
 	if ok {
@@ -230,10 +220,6 @@ func (service *Service) Start(ctx context.Context, projectID string, input Creat
 	}
 	operationInput, _ := json.Marshal(map[string]string{
 		"reasoningEffort": input.ReasoningEffort,
-		"mode":            input.Mode,
-		"selection":       input.Selection,
-		"selectionPrefix": input.SelectionPrefix,
-		"selectionSuffix": input.SelectionSuffix,
 	})
 	item, err := service.store.CreateOperation(ctx, operation.Operation{
 		ProjectID: projectID, Kind: operation.KindAI, Status: operation.StatusQueued,
@@ -293,16 +279,8 @@ func (service *Service) run(item operation.Operation, entries []resolvedEntry) {
 	defer done()
 	var operationInput struct {
 		ReasoningEffort string `json:"reasoningEffort"`
-		Mode            string `json:"mode"`
-		Selection       string `json:"selection"`
-		SelectionPrefix string `json:"selectionPrefix"`
-		SelectionSuffix string `json:"selectionSuffix"`
 	}
 	_ = json.Unmarshal([]byte(item.InputJSON), &operationInput)
-	if operationInput.Mode == "inline" {
-		service.runInline(ctx, item, entries, operationInput.Selection, operationInput.SelectionPrefix, operationInput.SelectionSuffix, operationInput.ReasoningEffort)
-		return
-	}
 	projectItem, err := service.store.Get(ctx, item.ProjectID)
 	if err != nil {
 		service.finish(item, operation.StatusFailed, "PROJECT_NOT_FOUND", err.Error(), "")
@@ -372,226 +350,6 @@ func (service *Service) run(item operation.Operation, entries []resolvedEntry) {
 	final := finalResponse(result.Stdout)
 	payload, _ := json.Marshal(map[string]any{"finalResponse": final, "files": diff})
 	service.finish(item, operation.StatusAwaitingReview, "", "", string(payload))
-}
-
-func (service *Service) runInline(
-	ctx context.Context,
-	item operation.Operation,
-	entries []resolvedEntry,
-	selection string,
-	selectionPrefix string,
-	selectionSuffix string,
-	reasoningEffort string,
-) {
-	var target *resolvedEntry
-	for index := range entries {
-		if entries[index].Included && entries[index].Source == "store" {
-			if target != nil {
-				service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", "Inline edit requires one Store file", "")
-				return
-			}
-			target = &entries[index]
-		}
-	}
-	if target == nil {
-		service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", "Selected fragment is missing or ambiguous", "")
-		return
-	}
-	before := string(target.content)
-	selectionStart, selectionEnd, ok := locateMarkdownSelection(before, selection, selectionPrefix, selectionSuffix)
-	if !ok {
-		service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", "Selected fragment is missing or ambiguous", "")
-		return
-	}
-
-	_, working, cleanup, err := createWorkspace(service.dataDir, item.ID, "", nil)
-	if err != nil {
-		service.finish(item, operation.StatusFailed, "AI_WORKSPACE_FAILED", err.Error(), "")
-		return
-	}
-	defer cleanup()
-	item.Status = operation.StatusRunning
-	item, _ = service.store.UpdateOperation(ctx, item)
-	_, _ = service.store.AddEvent(ctx, operation.Event{OperationID: item.ID, Type: "running", Payload: `{}`})
-
-	executable, err := providerPath(item.Provider)
-	if err != nil {
-		service.finish(item, operation.StatusFailed, "AI_PROVIDER_UNAVAILABLE", err.Error(), "")
-		return
-	}
-	args, err := providerArguments(item.Provider, item.Model, working, reasoningEffort, true)
-	if err != nil {
-		service.finish(item, operation.StatusFailed, "AI_PROVIDER_UNSUPPORTED", err.Error(), "")
-		return
-	}
-	result, runErr := service.runner.Run(ctx, processrunner.Command{
-		Executable: executable, Arguments: args, Directory: working,
-		Stdin:   inlinePrompt(target.Path, before, before[selectionStart:selectionEnd], selection, item.Prompt),
-		Timeout: service.timeout, MaxOutputBytes: 1 << 20,
-	})
-	_ = service.store.SaveAudit(context.Background(), operation.Audit{
-		OperationID: item.ID, Executable: filepath.Base(executable), Arguments: strings.Join(result.Arguments, " "),
-		ExitCode: result.ExitCode, StopReason: result.StopReason, StdoutBytes: int64(len(result.Stdout)),
-		StderrBytes: int64(len(result.Stderr)), DurationMS: result.Duration.Milliseconds(),
-	})
-	if runErr != nil {
-		service.finish(item, operation.StatusFailed, "AI_PROVIDER_FAILED", safeDiagnostic(result.Stderr), "")
-		return
-	}
-	for _, event := range normalizeProviderEvents(result.Stdout) {
-		event.OperationID = item.ID
-		_, _ = service.store.AddEvent(context.Background(), event)
-	}
-	item.Status = operation.StatusValidating
-	item, _ = service.store.UpdateOperation(context.Background(), item)
-	_, _ = service.store.AddEvent(context.Background(), operation.Event{
-		OperationID: item.ID, Type: "validating", Payload: `{}`,
-	})
-	replacement, err := parseInlineReplacement(finalResponse(result.Stdout))
-	if err != nil {
-		service.finish(item, operation.StatusFailed, "AI_INVALID_RESPONSE", "Agent returned an invalid inline edit", "")
-		return
-	}
-	after := before[:selectionStart] + replacement + before[selectionEnd:]
-	payload, _ := json.Marshal(map[string]any{
-		"finalResponse": replacement,
-		"files":         []fileDiff{{Path: target.Path, Before: before, After: after}},
-	})
-	service.finish(item, operation.StatusAwaitingReview, "", "", string(payload))
-}
-
-func inlinePrompt(path, markdown, sourceSelection, visualSelection, instruction string) string {
-	return "Выполни короткое редактирование текста без использования инструментов, shell и файлов.\n" +
-		"Ответь только одним JSON-объектом вида {\"replacement\":\"новый текст\"}.\n" +
-		"Поле replacement должно содержать только Markdown, заменяющий исходный Markdown-фрагмент. " +
-		"Сохрани структуру списков и форматирование, если инструкция не требует их изменить.\n\n" +
-		"ПУТЬ ФАЙЛА:\n" + path +
-		"\n\nПОЛНЫЙ MARKDOWN-ФАЙЛ:\n<<<FILE\n" + markdown + "\nFILE\n" +
-		"\nВЫДЕЛЕНИЕ В ВИЗУАЛЬНОМ РЕДАКТОРЕ:\n<<<SELECTION\n" + visualSelection + "\nSELECTION\n" +
-		"\nИСХОДНЫЙ MARKDOWN ВЫДЕЛЕННОГО ФРАГМЕНТА:\n<<<SOURCE\n" + sourceSelection + "\nSOURCE\n" +
-		"\nКОММЕНТАРИЙ К ИЗМЕНЕНИЮ:\n<<<COMMENT\n" + instruction + "\nCOMMENT"
-}
-
-func parseInlineReplacement(response string) (string, error) {
-	trimmed := strings.TrimSpace(response)
-	trimmed = strings.TrimPrefix(trimmed, "```json")
-	trimmed = strings.TrimPrefix(trimmed, "```")
-	trimmed = strings.TrimSuffix(trimmed, "```")
-	var payload struct {
-		Replacement string `json:"replacement"`
-	}
-	if json.Unmarshal([]byte(strings.TrimSpace(trimmed)), &payload) != nil || strings.TrimSpace(payload.Replacement) == "" {
-		return "", ErrInvalidContext
-	}
-	return payload.Replacement, nil
-}
-
-func locateMarkdownSelection(markdown, selection, selectionPrefix, selectionSuffix string) (int, int, bool) {
-	if strings.Count(markdown, selection) == 1 {
-		start := strings.Index(markdown, selection)
-		return start, start + len(selection), true
-	}
-	if strings.TrimSpace(selectionPrefix) != "" || strings.TrimSpace(selectionSuffix) != "" {
-		if start, end, ok := locateSelectionByContext(markdown, selection, selectionPrefix, selectionSuffix); ok {
-			return start, end, true
-		}
-	}
-	tokens := strings.Fields(selection)
-	if len(tokens) == 0 {
-		return 0, 0, false
-	}
-	parts := make([]string, len(tokens))
-	for index, token := range tokens {
-		parts[index] = markdownTokenPattern(token)
-	}
-	// The visual editor collapses Markdown line wrapping and hides lightweight inline
-	// and block markers. Permit formatting plus list, quote and heading prefixes only
-	// between the selected words, keeping arbitrary prose outside the match forbidden.
-	pattern := strings.Join(parts, "(?:\\s|[*_`~]|[-+>]\\s+|#{1,6}\\s+|\\d+[.)]\\s+)+")
-	matches := regexp.MustCompile(pattern).FindAllStringIndex(markdown, 2)
-	if len(matches) != 1 {
-		return 0, 0, false
-	}
-	return matches[0][0], matches[0][1], true
-}
-
-func markdownTokenPattern(token string) string {
-	const inlineMarkers = "[*_`~]*"
-	characters := make([]string, 0, len([]rune(token)))
-	for _, character := range token {
-		characters = append(characters, regexp.QuoteMeta(string(character)))
-	}
-	return inlineMarkers + strings.Join(characters, inlineMarkers) + inlineMarkers
-}
-
-func locateSelectionByContext(markdown, selection, selectionPrefix, selectionSuffix string) (int, int, bool) {
-	type candidate struct {
-		start int
-		score int
-	}
-	var candidates []candidate
-	for offset := 0; offset <= len(markdown)-len(selection); {
-		relative := strings.Index(markdown[offset:], selection)
-		if relative < 0 {
-			break
-		}
-		start := offset + relative
-		beforeStart := max(0, start-512)
-		afterEnd := min(len(markdown), start+len(selection)+512)
-		before := normalizeVisualContext(markdown[beforeStart:start])
-		after := normalizeVisualContext(markdown[start+len(selection) : afterEnd])
-		score := commonSuffixLength(before, normalizeVisualContext(selectionPrefix)) +
-			commonPrefixLength(after, normalizeVisualContext(selectionSuffix))
-		candidates = append(candidates, candidate{start: start, score: score})
-		offset = start + max(1, len(selection))
-	}
-	if len(candidates) == 0 {
-		return 0, 0, false
-	}
-	best := candidates[0]
-	unique := true
-	for _, current := range candidates[1:] {
-		if current.score > best.score {
-			best, unique = current, true
-		} else if current.score == best.score {
-			unique = false
-		}
-	}
-	if best.score == 0 || !unique {
-		return 0, 0, false
-	}
-	return best.start, best.start + len(selection), true
-}
-
-func normalizeVisualContext(value string) string {
-	value = strings.Map(func(char rune) rune {
-		switch char {
-		case '*', '_', '`', '~', '[', ']', '#', '>':
-			return -1
-		}
-		return char
-	}, value)
-	return strings.Join(strings.Fields(value), " ")
-}
-
-func commonPrefixLength(left, right string) int {
-	limit := min(len(left), len(right))
-	for index := 0; index < limit; index++ {
-		if left[index] != right[index] {
-			return index
-		}
-	}
-	return limit
-}
-
-func commonSuffixLength(left, right string) int {
-	limit := min(len(left), len(right))
-	for length := 0; length < limit; length++ {
-		if left[len(left)-1-length] != right[len(right)-1-length] {
-			return length
-		}
-	}
-	return limit
 }
 
 func (service *Service) finish(item operation.Operation, status operation.Status, code, message, result string) {
