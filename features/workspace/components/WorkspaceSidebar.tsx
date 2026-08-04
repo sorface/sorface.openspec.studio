@@ -11,7 +11,6 @@ interface WorkspaceSidebarProps {
   onClose: () => void;
   repositories: RepositoriesController;
   projectSelected: boolean;
-  gitAvailable: boolean;
   workspaceMode: WorkspaceMode;
   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
   onAddOpenSpecChange: () => void;
@@ -95,7 +94,6 @@ export function WorkspaceSidebar({
   onClose,
   repositories,
   projectSelected,
-  gitAvailable,
   workspaceMode,
   onWorkspaceModeChange,
   onAddOpenSpecChange,
@@ -163,14 +161,6 @@ export function WorkspaceSidebar({
         title={projectSelected ? "Подключённые Git-репозитории и контекст проекта" : "Сначала выберите проект"}
         onClick={() => onWorkspaceModeChange("context")}
       ><span>▱</span> Контекст <small>{repositories.repositories.length}</small></button>
-      <button
-        className={`nav-item ${workspaceMode === "git" ? "active" : ""}`}
-        type="button"
-        disabled={!projectSelected || !gitAvailable}
-        title={!projectSelected ? "Сначала выберите проект" : !gitAvailable ? "Git не обнаружен backend" : "Открыть Git status и diff Store"}
-        onClick={() => onWorkspaceModeChange("git")}
-      ><span>⌁</span> Git</button>
-
       {projectSelected && (
         <>
           <div className="sidebar-heading files-heading">

@@ -22,6 +22,7 @@ import (
 	"github.com/sorface/openspec-studio/backend/internal/repository"
 	"github.com/sorface/openspec-studio/backend/internal/storage"
 	"github.com/sorface/openspec-studio/backend/internal/storegit"
+	"github.com/sorface/openspec-studio/backend/internal/taskcontext"
 	"github.com/sorface/openspec-studio/backend/internal/web"
 )
 
@@ -58,6 +59,14 @@ func run() error {
 	projectService := project.NewService(store, storeService).WithContextImporter(repositoryService)
 	gitStatusService := gitstatus.NewService(projectService, storeService)
 	storeGitManager := storegit.NewManager(store, supervisor, storeService, gitStatusService)
+	taskContextManager := taskcontext.NewManager(store, filepath.Join(cfg.DataDir, "task-worktrees"))
+	publicationPreviews := filepath.Join(cfg.DataDir, "publication-previews")
+	if err := os.MkdirAll(publicationPreviews, 0o700); err != nil {
+		return err
+	}
+	publicationService := taskcontext.NewPublicationService(
+		store, storeGitManager, aiservice.NewCommitMessageGenerator(cfg.DataDir), publicationPreviews,
+	)
 	openSpecExecutable, _ := exec.LookPath("openspec")
 	if openSpecExecutable != "" && !filepath.IsAbs(openSpecExecutable) {
 		openSpecExecutable, _ = filepath.Abs(openSpecExecutable)
@@ -71,6 +80,8 @@ func run() error {
 		Repositories:    repositoryService,
 		GitStatus:       gitStatusService,
 		StoreGit:        storeGitManager,
+		TaskContext:     taskContextManager,
+		Publication:     publicationService,
 		AIOperations:    aiservice.NewService(store, supervisor, cfg.DataDir),
 		OpenSpec:        openSpecService,
 		OpenSpecActions: openspecworkflow.NewActionService(store, openSpecService, openSpecCLI, supervisor, cfg.DataDir),

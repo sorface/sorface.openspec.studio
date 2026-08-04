@@ -102,6 +102,7 @@ type gitOperationMetadata struct {
 	Remote       string `json:"remote,omitempty"`
 	Branch       string `json:"branch,omitempty"`
 	TargetBranch string `json:"targetBranch,omitempty"`
+	StorePath    string `json:"storePath,omitempty"`
 }
 
 func NewManager(store ManagerStore, supervisor *processrunner.Supervisor, validator StoreValidator, status StatusReader) *Manager {
@@ -252,7 +253,11 @@ func (manager *Manager) StartFetch(ctx context.Context, projectID string, input 
 	if !contains(status.Remotes, remote) {
 		return operation.Operation{}, ErrRemoteNotFound
 	}
-	return manager.startOperation(ctx, projectID, input.CorrelationID, gitOperationMetadata{Action: "fetch", Remote: remote})
+	path, err := manager.storePath(ctx, projectID)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	return manager.startOperation(ctx, projectID, input.CorrelationID, gitOperationMetadata{Action: "fetch", Remote: remote, StorePath: path})
 }
 
 func (manager *Manager) StartPush(ctx context.Context, projectID string, input PushInput) (operation.Operation, error) {
@@ -263,15 +268,15 @@ func (manager *Manager) StartPush(ctx context.Context, projectID string, input P
 	if status.Detached || status.Branch == "" {
 		return operation.Operation{}, ErrDetachedHead
 	}
-	meta := gitOperationMetadata{Action: "push", Branch: status.Branch}
+	path, pathErr := manager.storePath(ctx, projectID)
+	if pathErr != nil {
+		return operation.Operation{}, pathErr
+	}
+	meta := gitOperationMetadata{Action: "push", Branch: status.Branch, StorePath: path}
 	if status.Upstream == "" {
 		remote := strings.TrimSpace(input.Remote)
 		if !contains(status.Remotes, remote) {
 			return operation.Operation{}, ErrRemoteNotFound
-		}
-		path, pathErr := manager.storePath(ctx, projectID)
-		if pathErr != nil {
-			return operation.Operation{}, pathErr
 		}
 		target, branchErr := manager.validateBranch(ctx, path, input.TargetBranch)
 		if branchErr != nil {
@@ -280,6 +285,41 @@ func (manager *Manager) StartPush(ctx context.Context, projectID string, input P
 		meta.Remote, meta.TargetBranch = remote, target
 	}
 	return manager.startOperation(ctx, projectID, input.CorrelationID, meta)
+}
+
+func (manager *Manager) StartTaskPush(ctx context.Context, projectID, storePath, branch, correlationID string) (operation.Operation, error) {
+	path, err := manager.validator.Validate(ctx, storePath)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	branch, err = manager.validateBranch(ctx, path, branch)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	actual, err := manager.output(ctx, path, 10*time.Second, "branch", "--show-current")
+	if err != nil || strings.TrimSpace(actual) != branch {
+		return operation.Operation{}, ErrDetachedHead
+	}
+	remoteOutput, err := manager.output(ctx, path, 10*time.Second, "remote")
+	if err != nil {
+		return operation.Operation{}, ErrRemoteNotFound
+	}
+	remotes := strings.Fields(remoteOutput)
+	if len(remotes) == 0 {
+		return operation.Operation{}, ErrRemoteNotFound
+	}
+	meta := gitOperationMetadata{Action: "push", Branch: branch, StorePath: path}
+	if _, upstreamErr := manager.output(ctx, path, 10*time.Second, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); upstreamErr != nil {
+		meta.Remote = remotes[0]
+		for _, remote := range remotes {
+			if remote == "origin" {
+				meta.Remote = remote
+				break
+			}
+		}
+		meta.TargetBranch = branch
+	}
+	return manager.startOperation(ctx, projectID, correlationID, meta)
 }
 
 func (manager *Manager) Get(ctx context.Context, projectID, id string) (operation.Operation, error) {
@@ -344,9 +384,18 @@ func (manager *Manager) runOperation(item operation.Operation, meta gitOperation
 	item.Status = operation.StatusRunning
 	item, _ = manager.store.UpdateOperation(ctx, item)
 	_, _ = manager.store.AddEvent(ctx, operation.Event{OperationID: item.ID, Type: "running", Payload: `{}`})
-	path, err := manager.storePath(ctx, item.ProjectID)
+	path := strings.TrimSpace(meta.StorePath)
+	var err error
+	if path == "" {
+		path, err = manager.storePath(ctx, item.ProjectID)
+	}
 	if err != nil {
 		manager.finish(item, operation.StatusFailed, "INVALID_STORE", "Исправьте локальный Store проекта")
+		return
+	}
+	path, err = manager.validator.Validate(ctx, path)
+	if err != nil {
+		manager.finish(item, operation.StatusFailed, "INVALID_STORE", "Рабочее пространство задачи недоступно")
 		return
 	}
 	arguments := []string{"fetch", "--", meta.Remote}

@@ -126,11 +126,21 @@ func (service *DraftService) Write(
 	if set.Status == operation.DraftWritten {
 		return operation.DraftSet{}, ErrDraftAlreadyWritten
 	}
-	projectItem, err := service.store.Get(ctx, projectID)
+	operationItem, err := service.store.GetOperation(ctx, set.OperationID)
 	if err != nil {
 		return operation.DraftSet{}, err
 	}
-	root, err := filepath.EvalSymlinks(projectItem.StorePath)
+	var execution actionExecution
+	_ = json.Unmarshal([]byte(operationItem.InputJSON), &execution)
+	storePath := strings.TrimSpace(execution.StorePath)
+	if storePath == "" {
+		projectItem, projectErr := service.store.Get(ctx, projectID)
+		if projectErr != nil {
+			return operation.DraftSet{}, projectErr
+		}
+		storePath = projectItem.StorePath
+	}
+	root, err := filepath.EvalSymlinks(storePath)
 	if err != nil {
 		return operation.DraftSet{}, err
 	}

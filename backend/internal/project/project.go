@@ -26,7 +26,9 @@ type Project struct {
 	ID               string                `json:"id"`
 	Name             string                `json:"name"`
 	StorePath        string                `json:"storePath"`
+	BaseStorePath    string                `json:"-"`
 	ActiveWorktreeID *string               `json:"activeWorktreeId"`
+	ActiveTask       string                `json:"activeTask,omitempty"`
 	DefaultProvider  *string               `json:"defaultAiProvider"`
 	DefaultModel     *string               `json:"defaultModel"`
 	ContextImport    *ContextImportSummary `json:"contextImport,omitempty"`

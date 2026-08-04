@@ -92,6 +92,7 @@ type actionExecution struct {
 	Input        CreateActionInput `json:"input"`
 	Instructions Instructions      `json:"instructions,omitempty"`
 	Schema       string            `json:"schema"`
+	StorePath    string            `json:"storePath"`
 }
 
 func NewActionService(
@@ -135,7 +136,7 @@ func (service *ActionService) Start(ctx context.Context, projectID string, input
 		}
 	}
 
-	execution := actionExecution{Input: input}
+	execution := actionExecution{Input: input, StorePath: projectItem.StorePath}
 	switch input.Kind {
 	case ActionExplore:
 		execution.Schema = "explore"
@@ -255,12 +256,16 @@ func (service *ActionService) run(item operation.Operation) {
 		service.finish(item, operation.StatusFailed, "INVALID_OPENSPEC_ACTION", err.Error(), "")
 		return
 	}
-	projectItem, err := service.store.Get(ctx, item.ProjectID)
-	if err != nil {
-		service.finish(item, operation.StatusFailed, "PROJECT_NOT_FOUND", err.Error(), "")
-		return
+	storePath := strings.TrimSpace(execution.StorePath)
+	if storePath == "" {
+		projectItem, projectErr := service.store.Get(ctx, item.ProjectID)
+		if projectErr != nil {
+			service.finish(item, operation.StatusFailed, "PROJECT_NOT_FOUND", projectErr.Error(), "")
+			return
+		}
+		storePath = projectItem.StorePath
 	}
-	baseline, working, cleanup, err := createActionWorkspace(service.dataDir, item.ID, projectItem.StorePath)
+	baseline, working, cleanup, err := createActionWorkspace(service.dataDir, item.ID, storePath)
 	if err != nil {
 		service.finish(item, operation.StatusFailed, "OPENSPEC_WORKSPACE_FAILED", err.Error(), "")
 		return

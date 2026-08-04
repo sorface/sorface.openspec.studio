@@ -146,7 +146,7 @@ test("projects client и controller покрывают CRUD, lifecycle и под
   assert.match(switcher, /lastContextImport\.imported/);
 });
 
-test("Git feature управляет Store status, локальными mutations, ветками и network lifecycle", async () => {
+test("низкоуровневый Git feature остаётся доступен как внутренняя диагностика, но скрыт из основного workspace", async () => {
   const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, footer, diffParser] = await Promise.all([
     readFile(new URL("../features/git/api/git-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
@@ -195,11 +195,11 @@ test("Git feature управляет Store status, локальными mutation
   assert.match(panel, /event\.key === "Escape"/);
   assert.match(panel, /gitRecoveryHint/);
   assert.doesNotMatch(panel, /Только просмотр · commit/);
-  assert.match(workspace, /useGitStatusController/);
-  assert.match(workspace, /<GitPanel/);
-  assert.match(sidebar, /onWorkspaceModeChange\("git"\)/);
+  assert.doesNotMatch(workspace, /useGitStatusController/);
+  assert.doesNotMatch(workspace, /<GitPanel/);
+  assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("git"\)/);
   assert.doesNotMatch(sidebar, /Git-панель пока недоступна/);
-  assert.doesNotMatch(footer, /Commit & Push/);
+  assert.doesNotMatch(footer, /Git|Commit & Push/);
 
   const files = diffParser.parseUnifiedDiff(`# Unstaged
 diff --git a/openspec/changes/example/design.md b/openspec/changes/example/design.md
@@ -221,6 +221,49 @@ index 123..456 100644
       { kind: "context", oldLine: 5, newLine: 5 },
     ],
   );
+});
+
+test("task context связывает workspace с задачей и публикует только OpenSpec-артефакты", async () => {
+  const [client, controller, selector, dialog, workspace, header, documents, types, footer, css] = await Promise.all([
+    readFile(new URL("../features/task-context/api/task-context-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../features/task-context/hooks/useTaskContextController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../features/task-context/components/TaskContextSelector.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/task-context/components/PublicationDialog.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/documents/hooks/useDocumentsController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+  ]);
+
+  for (const method of ["getTaskWorkspaces", "openTaskWorkspace", "previewTaskPublication", "publishTaskArtifacts"]) {
+    assert.match(client, new RegExp(`function ${method}`));
+  }
+  assert.match(client, /task-publications\/preview/);
+  assert.match(controller, /setOverview\(await openTaskWorkspace/);
+  assert.match(controller, /setPreview\(await previewTaskPublication/);
+  assert.match(controller, /token: preview\.token/);
+  assert.match(selector, /Номер задачи или ветка/);
+  assert.match(selector, /active\?\.branch/);
+  assert.match(selector, /className="task-context-branch"/);
+  assert.match(selector, /aria-label=\{triggerLabel\}/);
+  assert.doesNotMatch(selector, /task-context-icon|task-context-copy|РАБОЧИЙ КОНТЕКСТ|Изменения каждой задачи сохраняются отдельно/);
+  assert.doesNotMatch(selector, /статус задачи|workflow/i);
+  assert.match(css, /\.task-context-trigger \{[^}]*height:\s*34px[^}]*border:\s*0[^}]*background:\s*transparent/s);
+  assert.match(css, /\.task-context-popover \{[^}]*width:\s*312px/s);
+  assert.match(dialog, /Опубликовать артефакты/);
+  assert.match(dialog, /предложено агентом/);
+  assert.match(dialog, /Предложить заново/);
+  assert.match(dialog, /preview\.excludedCount/);
+  assert.match(workspace, /useTaskContextController/);
+  assert.match(workspace, /workspaceContext/);
+  assert.match(workspace, /<PublicationDialog/);
+  assert.match(header, /<TaskContextSelector/);
+  assert.match(header, /className="publish-button"/);
+  assert.match(documents, /loadedWorkspaceContext/);
+  assert.doesNotMatch(types, /"git"/);
+  assert.match(footer, /изменения разделены по задачам/);
 });
 
 test("agent CLI settings используют capabilities и сохранённые настройки проекта", async () => {
