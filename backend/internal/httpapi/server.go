@@ -19,12 +19,15 @@ import (
 	"github.com/sorface/openspec-studio/backend/internal/document"
 	"github.com/sorface/openspec-studio/backend/internal/gitstatus"
 	openspecworkflow "github.com/sorface/openspec-studio/backend/internal/openspec"
+	"github.com/sorface/openspec-studio/backend/internal/operation"
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	"github.com/sorface/openspec-studio/backend/internal/repository"
 	"github.com/sorface/openspec-studio/backend/internal/storegit"
 	"github.com/sorface/openspec-studio/backend/internal/taskcontext"
 	"github.com/sorface/openspec-studio/backend/internal/tools"
 )
+
+const httpWriteTimeout = aiservice.CommitMessageTimeout + 15*time.Second
 
 type Server struct {
 	address              string
@@ -43,6 +46,7 @@ type Server struct {
 	openSpec             *openspecworkflow.Service
 	openSpecActions      *openspecworkflow.ActionService
 	openSpecDrafts       *openspecworkflow.DraftService
+	openSpecCreation     *openspecworkflow.CreationDraftService
 	ssePollInterval      time.Duration
 	sseHeartbeatInterval time.Duration
 }
@@ -63,6 +67,7 @@ type Options struct {
 	OpenSpec             *openspecworkflow.Service
 	OpenSpecActions      *openspecworkflow.ActionService
 	OpenSpecDrafts       *openspecworkflow.DraftService
+	OpenSpecCreation     *openspecworkflow.CreationDraftService
 	SSEPollInterval      time.Duration
 	SSEHeartbeatInterval time.Duration
 }
@@ -99,6 +104,7 @@ func New(options Options) *Server {
 		openSpec:             options.OpenSpec,
 		openSpecActions:      options.OpenSpecActions,
 		openSpecDrafts:       options.OpenSpecDrafts,
+		openSpecCreation:     options.OpenSpecCreation,
 		ssePollInterval:      pollInterval,
 		sseHeartbeatInterval: heartbeatInterval,
 	}
@@ -118,19 +124,24 @@ func (server *Server) Handler() http.Handler {
 	if server.taskContext != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/task-workspaces", server.listTaskWorkspaces)
 		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-workspaces", server.openTaskWorkspace)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-workspaces/sync", server.syncTaskWorkspace)
 	}
 	if server.publication != nil {
 		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-publications/preview", server.previewTaskPublication)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-publications/message", server.generateTaskPublicationMessage)
 		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-publications", server.confirmTaskPublication)
 	}
 	if server.documents != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/documents", server.listDocuments)
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/documents/content", server.getDocument)
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/documents/history", server.getDocumentHistory)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/documents/annotations", server.getDocumentAnnotations)
 		mux.HandleFunc("PUT /api/v1/projects/{projectId}/documents/content", server.writeDocument)
 	}
 	if server.repositories != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/repositories", server.listRepositories)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/repositories/{repositoryId}/branch-switches", server.switchRepositoryBranch)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/repositories/{repositoryId}/updates", server.updateRepository)
 		mux.HandleFunc("POST /api/v1/projects/{projectId}/repository-clones", server.createRepositoryClone)
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/repository-clones/{operationId}", server.getRepositoryClone)
 		mux.HandleFunc("DELETE /api/v1/projects/{projectId}/repository-clones/{operationId}", server.cancelRepositoryClone)
@@ -166,9 +177,15 @@ func (server *Server) Handler() http.Handler {
 	}
 	if server.openSpecActions != nil {
 		mux.HandleFunc("POST /api/v1/projects/{projectId}/openspec/actions", server.createOpenSpecAction)
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/openspec/operations", server.listOpenSpecOperations)
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/openspec/operations/{operationId}", server.getOpenSpecOperation)
 		mux.HandleFunc("DELETE /api/v1/projects/{projectId}/openspec/operations/{operationId}", server.cancelOpenSpecOperation)
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/openspec/operations/{operationId}/events", server.openSpecOperationEvents)
+	}
+	if server.openSpecCreation != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/openspec/change-creation-draft", server.getOpenSpecCreationDraft)
+		mux.HandleFunc("PUT /api/v1/projects/{projectId}/openspec/change-creation-draft", server.saveOpenSpecCreationDraft)
+		mux.HandleFunc("DELETE /api/v1/projects/{projectId}/openspec/change-creation-draft", server.deleteOpenSpecCreationDraft)
 	}
 	if server.openSpecDrafts != nil {
 		mux.HandleFunc("POST /api/v1/projects/{projectId}/openspec/operations/{operationId}/accept", server.acceptOpenSpecOperation)
@@ -201,6 +218,14 @@ func (server *Server) openTaskWorkspace(response http.ResponseWriter, request *h
 	writeJSON(response, http.StatusOK, result)
 }
 
+func (server *Server) syncTaskWorkspace(response http.ResponseWriter, request *http.Request) {
+	result, err := server.taskContext.Sync(request.Context(), request.PathValue("projectId"))
+	if !server.handleTaskContextError(response, request, err) {
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
 func (server *Server) handleTaskContextError(response http.ResponseWriter, request *http.Request, err error) bool {
 	switch {
 	case err == nil:
@@ -217,6 +242,12 @@ func (server *Server) handleTaskContextError(response http.ResponseWriter, reque
 		server.writeError(response, request, http.StatusConflict, "TASK_WORKSPACE_CONFLICT", "Ветка задачи уже открыта в другом рабочем пространстве", nil)
 	case errors.Is(err, taskcontext.ErrWorkspaceUnavailable):
 		server.writeError(response, request, http.StatusConflict, "TASK_WORKSPACE_UNAVAILABLE", "Не удалось открыть рабочее пространство задачи", nil)
+	case errors.Is(err, taskcontext.ErrSyncUpstream):
+		server.writeError(response, request, http.StatusConflict, "TASK_SYNC_UPSTREAM_UNAVAILABLE", "Для ветки задачи не настроен upstream", nil)
+	case errors.Is(err, taskcontext.ErrSyncConflict):
+		server.writeError(response, request, http.StatusConflict, "TASK_SYNC_CONFLICT", "Remote-изменения пересекаются с локальными правками или история ветки разошлась", nil)
+	case errors.Is(err, taskcontext.ErrSyncFailed):
+		server.writeError(response, request, http.StatusBadGateway, "TASK_SYNC_FAILED", "Не удалось получить изменения из remote", nil)
 	default:
 		server.writeError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Не удалось переключить задачу", nil)
 	}
@@ -225,6 +256,19 @@ func (server *Server) handleTaskContextError(response http.ResponseWriter, reque
 
 func (server *Server) previewTaskPublication(response http.ResponseWriter, request *http.Request) {
 	preview, err := server.publication.Preview(request.Context(), request.PathValue("projectId"))
+	if !server.handlePublicationError(response, request, err) {
+		return
+	}
+	writeJSON(response, http.StatusOK, preview)
+}
+
+func (server *Server) generateTaskPublicationMessage(response http.ResponseWriter, request *http.Request) {
+	var input taskcontext.GeneratePublicationMessageInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	preview, err := server.publication.GenerateMessage(request.Context(), request.PathValue("projectId"), input)
 	if !server.handlePublicationError(response, request, err) {
 		return
 	}
@@ -259,6 +303,8 @@ func (server *Server) handlePublicationError(response http.ResponseWriter, reque
 		server.writeError(response, request, http.StatusConflict, "PUBLICATION_STALE", "Артефакты изменились. Обновите публикацию", nil)
 	case errors.Is(err, taskcontext.ErrPublicationScope):
 		server.writeError(response, request, http.StatusBadRequest, "PUBLICATION_SCOPE_INVALID", "Публикация содержит недопустимый OpenSpec-файл", nil)
+	case errors.Is(err, taskcontext.ErrPublicationMessage):
+		server.writeError(response, request, http.StatusServiceUnavailable, "PUBLICATION_MESSAGE_UNAVAILABLE", "Не удалось сформировать сообщение. Можно продолжить вручную", nil)
 	case errors.Is(err, taskcontext.ErrPublicationRemote), errors.Is(err, storegit.ErrRemoteNotFound):
 		server.writeError(response, request, http.StatusConflict, "PUBLICATION_REMOTE_UNAVAILABLE", "Не удалось подключиться к хранилищу проекта", nil)
 	case errors.Is(err, taskcontext.ErrWorkspaceUnavailable), errors.Is(err, taskcontext.ErrWorkspaceConflict):
@@ -273,6 +319,41 @@ func (server *Server) handlePublicationError(response http.ResponseWriter, reque
 		server.writeError(response, request, http.StatusInternalServerError, "PUBLICATION_FAILED", "Не удалось опубликовать артефакты", nil)
 	}
 	return false
+}
+
+func (server *Server) getOpenSpecCreationDraft(response http.ResponseWriter, request *http.Request) {
+	item, err := server.openSpecCreation.Get(request.Context(), request.PathValue("projectId"))
+	if errors.Is(err, openspecworkflow.ErrCreationDraftNotFound) {
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		server.handleOpenSpecError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) saveOpenSpecCreationDraft(response http.ResponseWriter, request *http.Request) {
+	var input openspecworkflow.ChangeCreationDraft
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	item, err := server.openSpecCreation.Save(request.Context(), request.PathValue("projectId"), input)
+	if err != nil {
+		server.handleOpenSpecError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) deleteOpenSpecCreationDraft(response http.ResponseWriter, request *http.Request) {
+	if err := server.openSpecCreation.Delete(request.Context(), request.PathValue("projectId")); err != nil {
+		server.handleOpenSpecError(response, request, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 func (server *Server) acceptOpenSpecOperation(response http.ResponseWriter, request *http.Request) {
@@ -343,6 +424,19 @@ func (server *Server) getOpenSpecOperation(response http.ResponseWriter, request
 		return
 	}
 	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) listOpenSpecOperations(response http.ResponseWriter, request *http.Request) {
+	items, err := server.openSpecActions.List(
+		request.Context(), request.PathValue("projectId"), request.URL.Query().Get("change"),
+	)
+	if err != nil {
+		server.handleOpenSpecError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Items []operation.Operation `json:"items"`
+	}{Items: items})
 }
 
 func (server *Server) cancelOpenSpecOperation(response http.ResponseWriter, request *http.Request) {
@@ -458,6 +552,8 @@ func (server *Server) handleOpenSpecError(response http.ResponseWriter, request 
 	switch {
 	case errors.Is(err, project.ErrNotFound):
 		server.writeError(response, request, http.StatusNotFound, "PROJECT_NOT_FOUND", "Проект не найден", nil)
+	case errors.Is(err, openspecworkflow.ErrInvalidCreationDraft):
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_CHANGE_CREATION_DRAFT", "Черновик создания change некорректен", nil)
 	case errors.Is(err, openspecworkflow.ErrToolUnavailable):
 		server.writeError(response, request, http.StatusConflict, "TOOL_UNAVAILABLE", "OpenSpec CLI недоступен", nil)
 	case errors.Is(err, openspecworkflow.ErrVersionUnsupported):
@@ -734,6 +830,15 @@ func (server *Server) getDocumentHistory(response http.ResponseWriter, request *
 	writeJSON(response, http.StatusOK, map[string]any{"items": items})
 }
 
+func (server *Server) getDocumentAnnotations(response http.ResponseWriter, request *http.Request) {
+	items, err := server.documents.Annotations(request.Context(), request.PathValue("projectId"), request.URL.Query().Get("path"))
+	if err != nil {
+		server.handleDocumentError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"items": items})
+}
+
 func (server *Server) writeDocument(response http.ResponseWriter, request *http.Request) {
 	var input document.WriteInput
 	if err := decodeJSON(request.Body, &input); err != nil {
@@ -883,6 +988,33 @@ func (server *Server) listRepositories(response http.ResponseWriter, request *ht
 	writeJSON(response, http.StatusOK, map[string]any{"items": items})
 }
 
+func (server *Server) switchRepositoryBranch(response http.ResponseWriter, request *http.Request) {
+	var input repository.SwitchBranchInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	item, err := server.repositories.SwitchBranch(
+		request.Context(), request.PathValue("projectId"), request.PathValue("repositoryId"), input,
+	)
+	if err != nil {
+		server.handleRepositoryError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
+func (server *Server) updateRepository(response http.ResponseWriter, request *http.Request) {
+	item, err := server.repositories.Update(
+		request.Context(), request.PathValue("projectId"), request.PathValue("repositoryId"),
+	)
+	if err != nil {
+		server.handleRepositoryError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, item)
+}
+
 func (server *Server) createRepositoryClone(response http.ResponseWriter, request *http.Request) {
 	var input repository.CloneInput
 	if err := decodeJSON(request.Body, &input); err != nil {
@@ -967,6 +1099,22 @@ func (server *Server) handleRepositoryError(response http.ResponseWriter, reques
 		server.writeError(response, request, http.StatusBadRequest, "PATH_OUTSIDE_SCOPE", "Целевой путь не разрешён", nil)
 	case errors.Is(err, repository.ErrOperationConflict):
 		server.writeError(response, request, http.StatusConflict, "REPOSITORY_CLONE_CONFLICT", "Клонирование уже выполняется", nil)
+	case errors.Is(err, repository.ErrWorktreeDirty):
+		server.writeError(response, request, http.StatusConflict, "WORKTREE_DIRTY", "В репозитории есть локальные изменения. Сначала сохраните или отмените их вне OpenSpec Studio", nil)
+	case errors.Is(err, repository.ErrBranchNotFound):
+		server.writeError(response, request, http.StatusBadRequest, "GIT_BRANCH_NOT_FOUND", "Выбранная ветка больше недоступна. Обновите список веток", nil)
+	case errors.Is(err, repository.ErrBranchExists):
+		server.writeError(response, request, http.StatusConflict, "GIT_BRANCH_EXISTS", "Локальная ветка с таким именем уже существует", nil)
+	case errors.Is(err, repository.ErrUpstreamMissing):
+		server.writeError(response, request, http.StatusConflict, "GIT_UPSTREAM_MISSING", "Для текущей ветки не настроен upstream", nil)
+	case errors.Is(err, repository.ErrFastForward):
+		server.writeError(response, request, http.StatusConflict, "GIT_FAST_FORWARD_REQUIRED", "Ветки разошлись. Обновление без merge или rebase невозможно", nil)
+	case errors.Is(err, repository.ErrGitAuth):
+		server.writeError(response, request, http.StatusConflict, "GIT_AUTH_FAILED", "Git-аутентификация завершилась ошибкой", nil)
+	case errors.Is(err, repository.ErrGitTimeout):
+		server.writeError(response, request, http.StatusGatewayTimeout, "GIT_TIMEOUT", "Получение обновлений превысило допустимое время", nil)
+	case errors.Is(err, repository.ErrGitOperation):
+		server.writeError(response, request, http.StatusConflict, "GIT_OPERATION_FAILED", "Git-операция не выполнена", nil)
 	default:
 		server.writeError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Операция с репозиторием не выполнена", nil)
 	}
@@ -982,7 +1130,7 @@ func (server *Server) Listen(ctx context.Context) (string, error) {
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      httpWriteTimeout,
 		IdleTimeout:       60 * time.Second,
 	}
 	serverURL := "http://" + listener.Addr().String()

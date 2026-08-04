@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -21,11 +20,12 @@ import (
 )
 
 var (
-	ErrPublicationEmpty  = errors.New("task publication is empty")
-	ErrPublicationStale  = errors.New("task publication is stale")
-	ErrPublicationScope  = errors.New("task publication scope is invalid")
-	ErrPublicationRemote = errors.New("task publication remote is unavailable")
-	ErrPublicationFailed = errors.New("task publication failed")
+	ErrPublicationEmpty   = errors.New("task publication is empty")
+	ErrPublicationStale   = errors.New("task publication is stale")
+	ErrPublicationScope   = errors.New("task publication scope is invalid")
+	ErrPublicationRemote  = errors.New("task publication remote is unavailable")
+	ErrPublicationFailed  = errors.New("task publication failed")
+	ErrPublicationMessage = errors.New("task publication message generation failed")
 )
 
 const (
@@ -33,8 +33,6 @@ const (
 	maxPublicationDiff = 2 << 20
 	maxAgentDiff       = 192 << 10
 )
-
-var publicationSubject = regexp.MustCompile(`^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9][a-z0-9._/-]*\))?!?: .{1,200}$`)
 
 type MessageRequest struct {
 	Task     string
@@ -75,6 +73,14 @@ type PublicationPreview struct {
 	Head          string    `json:"-"`
 	WorkspaceID   string    `json:"-"`
 	StorePath     string    `json:"-"`
+	ProjectID     string    `json:"-"`
+	AgentDiff     string    `json:"-"`
+	Provider      string    `json:"-"`
+	Model         string    `json:"-"`
+}
+
+type GeneratePublicationMessageInput struct {
+	Token string `json:"token"`
 }
 
 type ConfirmPublicationInput struct {
@@ -129,34 +135,26 @@ func (service *PublicationService) Preview(ctx context.Context, projectID string
 	if err != nil {
 		return PublicationPreview{}, err
 	}
-	message := fallbackMessage(candidate.Task)
-	generatedBy := "fallback"
-	body := ""
 	diffForAgent := candidate.Diff
 	truncated := false
 	if len(diffForAgent) > maxAgentDiff {
 		diffForAgent = diffForAgent[:maxAgentDiff]
 		truncated = true
 	}
-	if service.generator != nil && projectItem.DefaultProvider != nil && strings.TrimSpace(*projectItem.DefaultProvider) != "" {
-		model := ""
-		if projectItem.DefaultModel != nil {
-			model = strings.TrimSpace(*projectItem.DefaultModel)
-		}
-		generated, generateErr := service.generator.Generate(ctx, MessageRequest{
-			Task: candidate.Task, Paths: candidate.Paths, Diff: diffForAgent,
-			Provider: strings.TrimSpace(*projectItem.DefaultProvider), Model: model,
-		})
-		if generateErr == nil && validCommitMessage(generated.Subject, generated.Body, candidate.Task) {
-			message, body, generatedBy = strings.TrimSpace(generated.Subject), strings.TrimSpace(generated.Body), "agent"
-		}
+	provider, model := "", ""
+	if projectItem.DefaultProvider != nil {
+		provider = strings.TrimSpace(*projectItem.DefaultProvider)
+	}
+	if projectItem.DefaultModel != nil {
+		model = strings.TrimSpace(*projectItem.DefaultModel)
 	}
 	preview := PublicationPreview{
 		Token: randomToken(), Task: candidate.Task, Paths: candidate.Paths,
-		ExcludedCount: candidate.ExcludedCount, Message: message, Body: body,
-		GeneratedBy: generatedBy, DiffTruncated: truncated,
+		ExcludedCount: candidate.ExcludedCount, Message: fallbackMessage(candidate.Task),
+		GeneratedBy: "manual", DiffTruncated: truncated,
 		ExpiresAt: time.Now().UTC().Add(publicationTTL), Fingerprint: candidate.Fingerprint,
 		Head: candidate.Head, WorkspaceID: candidate.WorkspaceID, StorePath: candidate.StorePath,
+		ProjectID: projectID, AgentDiff: diffForAgent, Provider: provider, Model: model,
 	}
 	service.mu.Lock()
 	service.cleanupExpiredLocked(time.Now().UTC())
@@ -165,11 +163,50 @@ func (service *PublicationService) Preview(ctx context.Context, projectID string
 	return preview, nil
 }
 
+func (service *PublicationService) GenerateMessage(ctx context.Context, projectID string, input GeneratePublicationMessageInput) (PublicationPreview, error) {
+	service.mu.Lock()
+	preview, ok := service.previews[strings.TrimSpace(input.Token)]
+	if ok && (time.Now().UTC().After(preview.ExpiresAt) || preview.ProjectID != projectID) {
+		if time.Now().UTC().After(preview.ExpiresAt) {
+			delete(service.previews, preview.Token)
+		}
+		ok = false
+	}
+	service.mu.Unlock()
+	if !ok {
+		return PublicationPreview{}, ErrPublicationStale
+	}
+	if service.generator == nil || preview.Provider == "" {
+		return PublicationPreview{}, ErrPublicationMessage
+	}
+	generated, err := service.generator.Generate(ctx, MessageRequest{
+		Task: preview.Task, Paths: preview.Paths, Diff: preview.AgentDiff,
+		Provider: preview.Provider, Model: preview.Model,
+	})
+	if err != nil || !validGeneratedMessage(generated.Subject, generated.Body, preview.Task) {
+		return PublicationPreview{}, ErrPublicationMessage
+	}
+	preview.Message = strings.TrimSpace(generated.Subject)
+	preview.Body = strings.TrimSpace(generated.Body)
+	preview.GeneratedBy = "agent"
+	service.mu.Lock()
+	stored, stillCurrent := service.previews[preview.Token]
+	if !stillCurrent || stored.Fingerprint != preview.Fingerprint || time.Now().UTC().After(stored.ExpiresAt) {
+		service.mu.Unlock()
+		return PublicationPreview{}, ErrPublicationStale
+	}
+	service.previews[preview.Token] = preview
+	service.mu.Unlock()
+	return preview, nil
+}
+
 func (service *PublicationService) Confirm(ctx context.Context, projectID string, input ConfirmPublicationInput) (PublicationResult, error) {
 	service.mu.Lock()
 	preview, ok := service.previews[strings.TrimSpace(input.Token)]
-	if ok && time.Now().UTC().After(preview.ExpiresAt) {
-		delete(service.previews, preview.Token)
+	if ok && (time.Now().UTC().After(preview.ExpiresAt) || preview.ProjectID != projectID) {
+		if time.Now().UTC().After(preview.ExpiresAt) {
+			delete(service.previews, preview.Token)
+		}
 		ok = false
 	}
 	service.mu.Unlock()
@@ -345,11 +382,31 @@ func validPublicationPath(root, value string) bool {
 
 func validCommitMessage(subject, body, task string) bool {
 	subject, body = strings.TrimSpace(subject), strings.TrimSpace(body)
-	return publicationSubject.MatchString(subject) && strings.Contains(subject, task) && len(subject) <= 240 && len(body) <= 16<<10
+	prefix := strings.TrimSpace(task) + ": "
+	return strings.HasPrefix(subject, prefix) && strings.TrimSpace(strings.TrimPrefix(subject, prefix)) != "" &&
+		!strings.ContainsAny(subject, "\r\n") && len(subject) <= 240 && len(body) <= 16<<10
+}
+
+func validGeneratedMessage(subject, body, task string) bool {
+	if !validCommitMessage(subject, body, task) || strings.TrimSpace(body) == "" {
+		return false
+	}
+	bullets := 0
+	for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "- ") || strings.TrimSpace(strings.TrimPrefix(line, "- ")) == "" {
+			return false
+		}
+		bullets++
+	}
+	return bullets > 0
 }
 
 func fallbackMessage(task string) string {
-	return "docs(openspec): publish " + task
+	return strings.TrimSpace(task) + ": публикация OpenSpec-артефактов"
 }
 
 func publicationFingerprint(task, head string, paths []string, diff string) string {

@@ -99,6 +99,10 @@ export interface OpenSpecOperation {
   updatedAt: string;
 }
 
+export interface OpenSpecOperationList {
+  items: OpenSpecOperation[];
+}
+
 export interface OpenSpecFileMutation {
   type: "create" | "update" | "delete" | "rename";
   path: string;
@@ -109,8 +113,49 @@ export interface OpenSpecFileMutation {
 
 export interface OpenSpecActionResult {
   finalResponse?: string;
+  exploration?: OpenSpecExplorationResult;
   files: OpenSpecFileMutation[];
   diagnostics: OpenSpecDiagnostic[];
+}
+
+export type OpenSpecQuestionKind = "text" | "single_choice" | "multi_choice";
+
+export interface OpenSpecExplorationQuestion {
+  id: string;
+  prompt: string;
+  why?: string;
+  kind: OpenSpecQuestionKind;
+  options?: string[];
+}
+
+export interface OpenSpecExplorationResult {
+  state: "needs_input" | "proposal_ready";
+  summary: string;
+  questions: OpenSpecExplorationQuestion[];
+  assumptions: string[];
+  proposal?: string;
+  suggestedNames: string[];
+}
+
+export type ChangeCreationStage = "intent" | "clarifying" | "proposal" | "naming" | "creating";
+
+export interface ChangeCreationDraft {
+  projectId?: string;
+  version: 1;
+  stage: ChangeCreationStage;
+  intent: string;
+  summary?: string;
+  questions: OpenSpecExplorationQuestion[];
+  answers: Record<string, string[]>;
+  assumptions: string[];
+  proposal?: string;
+  suggestedNames: string[];
+  proposalAccepted: boolean;
+  changeName?: string;
+  contextFingerprint?: string;
+  feedback?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface OpenSpecDraftMutation extends OpenSpecFileMutation {
@@ -131,6 +176,7 @@ export interface StartOpenSpecActionInput {
   change?: string;
   artifact?: string;
   goal?: string;
+  proposal?: string;
   provider?: string;
   model?: string;
   statusFingerprint?: string;

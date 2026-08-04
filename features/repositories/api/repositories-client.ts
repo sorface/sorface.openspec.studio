@@ -9,6 +9,24 @@ export async function listRepositories(projectId: string, signal?: AbortSignal):
   return response.items;
 }
 
+export function switchRepositoryBranch(
+  projectId: string,
+  repositoryId: string,
+  input: { branch: string; remote: boolean },
+): Promise<RepositoryLink> {
+  return apiRequest(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/repositories/${encodeURIComponent(repositoryId)}/branch-switches`,
+    { method: "POST", body: input },
+  );
+}
+
+export function updateRepository(projectId: string, repositoryId: string): Promise<RepositoryLink> {
+  return apiRequest(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/repositories/${encodeURIComponent(repositoryId)}/updates`,
+    { method: "POST" },
+  );
+}
+
 export function startRepositoryClone(
   projectId: string,
   input: { url: string },

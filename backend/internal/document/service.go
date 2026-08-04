@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +21,7 @@ import (
 
 const MaxDocumentSize int64 = 2 << 20
 const maxHistoryOutput int64 = 256 << 10
+const maxBlameOutput int64 = 16 << 20
 
 var (
 	ErrPathOutsideScope = errors.New("document path is outside allowed scope")
@@ -63,6 +65,29 @@ type HistoryEntry struct {
 	Author      string `json:"author"`
 	CommittedAt string `json:"committedAt"`
 	Subject     string `json:"subject"`
+}
+
+type AnnotationEntry struct {
+	StartLine   int      `json:"startLine"`
+	EndLine     int      `json:"endLine"`
+	Hash        string   `json:"hash,omitempty"`
+	ShortHash   string   `json:"shortHash,omitempty"`
+	Author      string   `json:"author"`
+	AuthorEmail string   `json:"authorEmail,omitempty"`
+	AuthoredAt  string   `json:"authoredAt,omitempty"`
+	Subject     string   `json:"subject"`
+	Lines       []string `json:"lines"`
+	Local       bool     `json:"local"`
+}
+
+type blameLine struct {
+	line        int
+	hash        string
+	author      string
+	authorEmail string
+	authoredAt  string
+	subject     string
+	content     string
 }
 
 type Service struct {
@@ -252,6 +277,53 @@ func (service *Service) History(ctx context.Context, projectID, relativePath str
 	return parseHistory(result.Stdout), nil
 }
 
+func (service *Service) Annotations(ctx context.Context, projectID, relativePath string) ([]AnnotationEntry, error) {
+	if service.gitPath == "" {
+		return nil, project.ErrGitUnavailable
+	}
+	item, err := service.projects.Get(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	cleanPath, target, err := resolveDocument(item.StorePath, relativePath)
+	if err != nil {
+		return nil, err
+	}
+	storeRoot, err := trustedStoreRoot(item.StorePath)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = service.runner.Run(ctx, processrunner.Command{
+		Executable: service.gitPath,
+		Arguments:  []string{"rev-parse", "--verify", "HEAD"},
+		Directory:  storeRoot,
+		Timeout:    10 * time.Second,
+	}); err != nil {
+		return localAnnotations(target)
+	}
+	if _, err = service.runner.Run(ctx, processrunner.Command{
+		Executable: service.gitPath,
+		Arguments:  []string{"cat-file", "-e", "HEAD:" + cleanPath},
+		Directory:  storeRoot,
+		Timeout:    10 * time.Second,
+	}); err != nil {
+		return localAnnotations(target)
+	}
+
+	result, err := service.runner.Run(ctx, processrunner.Command{
+		Executable:     service.gitPath,
+		Arguments:      []string{"blame", "--line-porcelain", "--", cleanPath},
+		Directory:      storeRoot,
+		Timeout:        30 * time.Second,
+		MaxOutputBytes: maxBlameOutput,
+	})
+	if err != nil {
+		return nil, project.ErrInvalidStore
+	}
+	return groupBlameLines(parseBlame(result.Stdout)), nil
+}
+
 func parseHistory(output string) []HistoryEntry {
 	entries := make([]HistoryEntry, 0)
 	for _, rawRecord := range strings.Split(output, "\x1e") {
@@ -272,6 +344,122 @@ func parseHistory(output string) []HistoryEntry {
 		})
 	}
 	return entries
+}
+
+func parseBlame(output string) []blameLine {
+	lines := make([]blameLine, 0)
+	var current *blameLine
+	for _, raw := range strings.Split(output, "\n") {
+		if strings.HasPrefix(raw, "\t") {
+			if current != nil {
+				current.content = strings.TrimPrefix(raw, "\t")
+				lines = append(lines, *current)
+				current = nil
+			}
+			continue
+		}
+		fields := strings.Fields(raw)
+		if len(fields) >= 3 && isGitHash(fields[0]) {
+			line, parseErr := strconv.Atoi(fields[2])
+			if parseErr == nil {
+				current = &blameLine{line: line, hash: fields[0]}
+			}
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(raw, "author "):
+			current.author = strings.TrimPrefix(raw, "author ")
+		case strings.HasPrefix(raw, "author-mail "):
+			current.authorEmail = strings.Trim(strings.TrimPrefix(raw, "author-mail "), "<>")
+		case strings.HasPrefix(raw, "author-time "):
+			seconds, parseErr := strconv.ParseInt(strings.TrimPrefix(raw, "author-time "), 10, 64)
+			if parseErr == nil && seconds > 0 {
+				current.authoredAt = time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+			}
+		case strings.HasPrefix(raw, "summary "):
+			current.subject = strings.TrimPrefix(raw, "summary ")
+		}
+	}
+	return lines
+}
+
+func groupBlameLines(lines []blameLine) []AnnotationEntry {
+	entries := make([]AnnotationEntry, 0)
+	for _, line := range lines {
+		local := isZeroHash(line.hash)
+		hash := line.hash
+		shortHash := ""
+		author := line.author
+		authorEmail := line.authorEmail
+		authoredAt := line.authoredAt
+		subject := line.subject
+		if local {
+			hash = ""
+			author = "Локальные изменения"
+			authorEmail = ""
+			authoredAt = ""
+			subject = "Ещё не сохранено в Git"
+		} else {
+			shortHash = hash
+			if len(shortHash) > 8 {
+				shortHash = shortHash[:8]
+			}
+		}
+		if len(entries) > 0 {
+			last := &entries[len(entries)-1]
+			if last.EndLine+1 == line.line && last.Hash == hash && last.Author == author &&
+				last.AuthoredAt == authoredAt && last.Subject == subject {
+				last.EndLine = line.line
+				last.Lines = append(last.Lines, line.content)
+				continue
+			}
+		}
+		entries = append(entries, AnnotationEntry{
+			StartLine: line.line, EndLine: line.line, Hash: hash, ShortHash: shortHash,
+			Author: author, AuthorEmail: authorEmail, AuthoredAt: authoredAt,
+			Subject: subject, Lines: []string{line.content}, Local: local,
+		})
+	}
+	return entries
+}
+
+func localAnnotations(target string) ([]AnnotationEntry, error) {
+	data, err := readDocument(target)
+	if err != nil {
+		return nil, err
+	}
+	content := strings.TrimSuffix(string(data), "\n")
+	if content == "" {
+		return []AnnotationEntry{}, nil
+	}
+	lines := strings.Split(content, "\n")
+	return []AnnotationEntry{{
+		StartLine: 1,
+		EndLine:   len(lines),
+		Author:    "Локальные изменения",
+		Subject:   "Ещё не сохранено в Git",
+		Lines:     lines,
+		Local:     true,
+	}}, nil
+}
+
+func isGitHash(value string) bool {
+	if len(value) < 40 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isZeroHash(value string) bool {
+	return value != "" && strings.Trim(value, "0") == ""
 }
 
 func trustedStoreRoot(storePath string) (string, error) {

@@ -16,6 +16,13 @@ export interface TaskWorkspaceOverview {
   active?: TaskWorkspace;
 }
 
+export interface TaskSyncResult {
+  task: string;
+  updated: boolean;
+  previousHead: string;
+  head: string;
+}
+
 export interface PublicationPreview {
   token: string;
   task: string;
@@ -23,7 +30,7 @@ export interface PublicationPreview {
   excludedCount: number;
   message: string;
   body?: string;
-  generatedBy: "agent" | "fallback";
+  generatedBy: "agent" | "manual";
   diffTruncated: boolean;
   expiresAt: string;
 }

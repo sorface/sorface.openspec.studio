@@ -176,6 +176,61 @@ func TestDocumentHistory(t *testing.T) {
 	}
 }
 
+func TestDocumentAnnotations(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	root, service := fixture(t)
+	proposalPath := filepath.Join(root, "openspec", "changes", "add-test", "proposal.md")
+	if err := os.WriteFile(proposalPath, []byte("# Proposal\nShared context\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{
+		{"init"},
+		{"add", "."},
+		{"-c", "user.name=Test Analyst", "-c", "user.email=analyst@example.com", "commit", "-m", "initial artifacts"},
+	} {
+		command := exec.Command("git", append([]string{"-C", root}, arguments...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(proposalPath, []byte("# Updated proposal\nShared context\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{
+		{"add", "openspec/changes/add-test/proposal.md"},
+		{"-c", "user.name=Test Developer", "-c", "user.email=developer@example.com", "commit", "-m", "refine proposal"},
+	} {
+		command := exec.Command("git", append([]string{"-C", root}, arguments...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	if err := os.WriteFile(proposalPath, []byte("# Updated proposal\nShared context\nLocal note\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := service.Annotations(context.Background(), "project-1", "openspec/changes/add-test/proposal.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("annotation length = %d, entries = %#v", len(entries), entries)
+	}
+	if entries[0].StartLine != 1 || entries[0].Author != "Test Developer" || entries[0].Subject != "refine proposal" ||
+		entries[0].ShortHash == "" || entries[0].AuthoredAt == "" || entries[0].Lines[0] != "# Updated proposal" {
+		t.Fatalf("unexpected updated annotation: %#v", entries[0])
+	}
+	if entries[1].StartLine != 2 || entries[1].Author != "Test Analyst" || entries[1].Lines[0] != "Shared context" {
+		t.Fatalf("unexpected original annotation: %#v", entries[1])
+	}
+	if entries[2].StartLine != 3 || !entries[2].Local || entries[2].Hash != "" ||
+		entries[2].Author != "Локальные изменения" || entries[2].Lines[0] != "Local note" {
+		t.Fatalf("unexpected local annotation: %#v", entries[2])
+	}
+}
+
 func TestRejectsUnsafeAndInvalidDocuments(t *testing.T) {
 	root, service := fixture(t)
 	for _, path := range []string{"../secret.md", "/tmp/secret.md", "README.md", "openspec/specs/example/ignore.txt"} {
@@ -184,6 +239,9 @@ func TestRejectsUnsafeAndInvalidDocuments(t *testing.T) {
 		}
 		if _, err := service.History(context.Background(), "project-1", path); !errors.Is(err, document.ErrPathOutsideScope) {
 			t.Fatalf("%s: expected history path error, got %v", path, err)
+		}
+		if _, err := service.Annotations(context.Background(), "project-1", path); !errors.Is(err, document.ErrPathOutsideScope) {
+			t.Fatalf("%s: expected annotations path error, got %v", path, err)
 		}
 	}
 	invalidPath := filepath.Join(root, "openspec", "specs", "example", "invalid.md")

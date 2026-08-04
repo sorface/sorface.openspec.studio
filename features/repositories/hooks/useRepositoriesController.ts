@@ -8,6 +8,8 @@ import {
   getRepositoryClone,
   listRepositories,
   startRepositoryClone,
+  switchRepositoryBranch,
+  updateRepository,
 } from "@/features/repositories/api/repositories-client";
 import type { CloneOperation, RepositoryLink } from "@/features/repositories/model/repository-types";
 import { isCloneTerminal, reduceCloneStatus, type CloneEventName } from "@/features/repositories/model/repository-operation";
@@ -16,9 +18,13 @@ export interface RepositoriesController {
   repositories: RepositoryLink[];
   operation: CloneOperation | null;
   loading: boolean;
+  busyRepositoryId: string | null;
+  busyAction: "switch" | "update" | null;
   error: ApiError | null;
   startClone: (url: string) => Promise<void>;
   cancel: () => Promise<void>;
+  switchBranch: (repositoryId: string, branch: string, remote: boolean) => Promise<void>;
+  update: (repositoryId: string) => Promise<void>;
   retry: () => void;
 }
 
@@ -26,6 +32,8 @@ export function useRepositoriesController(projectId?: string): RepositoriesContr
   const [repositories, setRepositories] = useState<RepositoryLink[]>([]);
   const [operation, setOperation] = useState<CloneOperation | null>(null);
   const [loading, setLoading] = useState(false);
+  const [busyRepositoryId, setBusyRepositoryId] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<"switch" | "update" | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [version, setVersion] = useState(0);
 
@@ -117,5 +125,47 @@ export function useRepositoriesController(projectId?: string): RepositoriesContr
     setOperation(await cancelRepositoryClone(projectId, operation.id));
   }, [operation, projectId]);
 
-  return { repositories, operation, loading, error, startClone, cancel, retry: () => setVersion((value) => value + 1) };
+  const applyRepository = useCallback((next: RepositoryLink) => {
+    setRepositories((current) => current.map((item) => item.id === next.id ? next : item));
+  }, []);
+
+  const switchBranch = useCallback(async (repositoryId: string, branch: string, remote: boolean) => {
+    if (!projectId) return;
+    setBusyRepositoryId(repositoryId);
+    setBusyAction("switch");
+    setError(null);
+    try {
+      applyRepository(await switchRepositoryBranch(projectId, repositoryId, { branch, remote }));
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause : new ApiError(0, {
+        code: "UNKNOWN_ERROR", message: "Не удалось переключить ветку",
+      }));
+      throw cause;
+    } finally {
+      setBusyRepositoryId(null);
+      setBusyAction(null);
+    }
+  }, [applyRepository, projectId]);
+
+  const update = useCallback(async (repositoryId: string) => {
+    if (!projectId) return;
+    setBusyRepositoryId(repositoryId);
+    setBusyAction("update");
+    setError(null);
+    try {
+      applyRepository(await updateRepository(projectId, repositoryId));
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause : new ApiError(0, {
+        code: "UNKNOWN_ERROR", message: "Не удалось получить обновления",
+      }));
+    } finally {
+      setBusyRepositoryId(null);
+      setBusyAction(null);
+    }
+  }, [applyRepository, projectId]);
+
+  return {
+    repositories, operation, loading, busyRepositoryId, busyAction, error,
+    startClone, cancel, switchBranch, update, retry: () => setVersion((value) => value + 1),
+  };
 }

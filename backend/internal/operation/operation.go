@@ -61,19 +61,24 @@ type Event struct {
 }
 
 type RepositoryLink struct {
-	ID            string    `json:"id"`
-	ProjectID     string    `json:"projectId"`
-	Name          string    `json:"name"`
-	Path          string    `json:"path"`
-	RemoteURL     string    `json:"remoteUrl"`
-	Fingerprint   string    `json:"fingerprint"`
-	Branch        string    `json:"branch,omitempty"`
-	CommitSHA     string    `json:"commitSha"`
-	Dirty         bool      `json:"dirty"`
-	Available     bool      `json:"available"`
-	ReadOnlyForAI bool      `json:"readOnlyForAi"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID             string    `json:"id"`
+	ProjectID      string    `json:"projectId"`
+	Name           string    `json:"name"`
+	Path           string    `json:"path"`
+	RemoteURL      string    `json:"remoteUrl"`
+	Fingerprint    string    `json:"fingerprint"`
+	Branch         string    `json:"branch,omitempty"`
+	CommitSHA      string    `json:"commitSha"`
+	Dirty          bool      `json:"dirty"`
+	Available      bool      `json:"available"`
+	ReadOnlyForAI  bool      `json:"readOnlyForAi"`
+	Upstream       string    `json:"upstream,omitempty"`
+	Ahead          int       `json:"ahead"`
+	Behind         int       `json:"behind"`
+	LocalBranches  []string  `json:"localBranches"`
+	RemoteBranches []string  `json:"remoteBranches"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 type ContextEntry struct {

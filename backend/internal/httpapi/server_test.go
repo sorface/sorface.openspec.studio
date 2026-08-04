@@ -47,6 +47,15 @@ type fakeTaskPusher struct {
 	branch    string
 }
 
+type fakePublicationMessageGenerator struct{}
+
+func (fakePublicationMessageGenerator) Generate(_ context.Context, request taskcontext.MessageRequest) (taskcontext.CommitMessage, error) {
+	return taskcontext.CommitMessage{
+		Subject: request.Task + ": обновить OpenSpec-артефакты",
+		Body:    "- Обновлена спецификация публикации",
+	}, nil
+}
+
 func (pusher *fakeTaskPusher) StartTaskPush(
 	_ context.Context, projectID, storePath, branch, correlationID string,
 ) (operation.Operation, error) {
@@ -482,6 +491,14 @@ func TestTaskWorkspaceContractsAndCSRF(t *testing.T) {
 		t.Fatalf("csrf: %d %s", withoutCSRF.Code, withoutCSRF.Body)
 	}
 	token := csrfToken(t, handler)
+	withoutSyncCSRF := request(handler, http.MethodPost, base+"/sync", nil, "")
+	if withoutSyncCSRF.Code != http.StatusForbidden || !bytes.Contains(withoutSyncCSRF.Body.Bytes(), []byte("CSRF_REJECTED")) {
+		t.Fatalf("sync csrf: %d %s", withoutSyncCSRF.Code, withoutSyncCSRF.Body)
+	}
+	syncWithoutUpstream := request(handler, http.MethodPost, base+"/sync", nil, token)
+	if syncWithoutUpstream.Code != http.StatusConflict || !bytes.Contains(syncWithoutUpstream.Body.Bytes(), []byte("TASK_SYNC_UPSTREAM_UNAVAILABLE")) {
+		t.Fatalf("sync upstream: %d %s", syncWithoutUpstream.Code, syncWithoutUpstream.Body)
+	}
 	pathInput := request(handler, http.MethodPost, base, []byte(`{"branch":"BILL-1842","path":"/tmp/outside"}`), token)
 	if pathInput.Code != http.StatusBadRequest || !bytes.Contains(pathInput.Body.Bytes(), []byte("INVALID_REQUEST")) {
 		t.Fatalf("path input: %d %s", pathInput.Code, pathInput.Body)
@@ -522,6 +539,11 @@ func TestTaskPublicationPreviewAndConfirmContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	provider := "codex"
+	item, err = database.Update(context.Background(), item.ID, project.UpdateInput{DefaultProvider: &provider})
+	if err != nil {
+		t.Fatal(err)
+	}
 	taskManager := taskcontext.NewManager(database, filepath.Join(t.TempDir(), "task-worktrees"))
 	if _, err := taskManager.Open(context.Background(), item.ID, taskcontext.OpenInput{Branch: "BILL-1842"}); err != nil {
 		t.Fatal(err)
@@ -537,7 +559,7 @@ func TestTaskPublicationPreviewAndConfirmContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	pusher := &fakeTaskPusher{}
-	publication := taskcontext.NewPublicationService(database, pusher, nil, t.TempDir())
+	publication := taskcontext.NewPublicationService(database, pusher, fakePublicationMessageGenerator{}, t.TempDir())
 	projectService := project.NewService(database, storegit.NewService())
 	handler := httpapi.New(httpapi.Options{
 		Address: "127.0.0.1:0", Projects: projectService, TaskContext: taskManager,
@@ -558,9 +580,23 @@ func TestTaskPublicationPreviewAndConfirmContract(t *testing.T) {
 	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if preview.Task != "BILL-1842" || preview.Message != "docs(openspec): publish BILL-1842" ||
+	if preview.Task != "BILL-1842" || preview.Message != "BILL-1842: публикация OpenSpec-артефактов" || preview.GeneratedBy != "manual" ||
 		preview.ExcludedCount != 1 || len(preview.Paths) != 1 || preview.Paths[0] != "openspec/spec.md" {
 		t.Fatalf("unexpected preview: %#v", preview)
+	}
+	messageBody, err := json.Marshal(taskcontext.GeneratePublicationMessageInput{Token: preview.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedResponse := request(handler, http.MethodPost, base+"/message", messageBody, token)
+	if generatedResponse.Code != http.StatusOK {
+		t.Fatalf("generate message: %d %s", generatedResponse.Code, generatedResponse.Body)
+	}
+	if err := json.Unmarshal(generatedResponse.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.GeneratedBy != "agent" || preview.Message != "BILL-1842: обновить OpenSpec-артефакты" || preview.Body == "" {
+		t.Fatalf("generated preview: %#v", preview)
 	}
 	confirmBody, err := json.Marshal(taskcontext.ConfirmPublicationInput{Token: preview.Token, Message: preview.Message})
 	if err != nil {
@@ -905,7 +941,7 @@ func TestOpenSpecExploreAPIIsReadOnly(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"message\":\"Контекст исследован\"}'\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"message\":\"{\\\"state\\\":\\\"needs_input\\\",\\\"summary\\\":\\\"Контекст исследован\\\",\\\"questions\\\":[{\\\"id\\\":\\\"scope\\\",\\\"prompt\\\":\\\"Что входит?\\\",\\\"kind\\\":\\\"text\\\"}],\\\"assumptions\\\":[],\\\"suggestedNames\\\":[]}\"}'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -972,6 +1008,66 @@ func TestOpenSpecExploreAPIIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestOpenSpecChangeCreationDraftAPI(t *testing.T) {
+	root := t.TempDir()
+	database, err := storage.Open(filepath.Join(root, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	projectItem, err := database.Create(context.Background(), project.CreateInput{Name: "OpenSpec", StorePath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectService := project.NewService(database)
+	handler := httpapi.New(httpapi.Options{
+		Address: "127.0.0.1:0", Projects: projectService,
+		OpenSpecCreation: openspecworkflow.NewCreationDraftService(database),
+		Static:           http.NotFoundHandler(),
+	}).Handler()
+	path := "/api/v1/projects/" + projectItem.ID + "/openspec/change-creation-draft"
+
+	empty := request(handler, http.MethodGet, path, nil, "")
+	if empty.Code != http.StatusNoContent {
+		t.Fatalf("empty: %d %s", empty.Code, empty.Body)
+	}
+	body, _ := json.Marshal(openspecworkflow.ChangeCreationDraft{
+		Version:   openspecworkflow.CreationDraftVersion,
+		Stage:     openspecworkflow.CreationStageClarifying,
+		Intent:    "# Замысел",
+		Questions: []openspecworkflow.ExplorationQuestion{{ID: "scope", Prompt: "Что входит?", Kind: "text"}},
+		Answers:   map[string][]string{"scope": {"Только новый мастер"}},
+	})
+	saved := request(handler, http.MethodPut, path, body, csrfToken(t, handler))
+	if saved.Code != http.StatusOK || !bytes.Contains(saved.Body.Bytes(), []byte(`"stage":"clarifying"`)) {
+		t.Fatalf("save: %d %s", saved.Code, saved.Body)
+	}
+	loaded := request(handler, http.MethodGet, path, nil, "")
+	if loaded.Code != http.StatusOK || !bytes.Contains(loaded.Body.Bytes(), []byte("Только новый мастер")) {
+		t.Fatalf("load: %d %s", loaded.Code, loaded.Body)
+	}
+
+	invalidBody, _ := json.Marshal(openspecworkflow.ChangeCreationDraft{
+		Version: openspecworkflow.CreationDraftVersion,
+		Stage:   openspecworkflow.CreationStageNaming,
+		Intent:  "# Замысел",
+	})
+	invalid := request(handler, http.MethodPut, path, invalidBody, csrfToken(t, handler))
+	if invalid.Code != http.StatusBadRequest || !bytes.Contains(invalid.Body.Bytes(), []byte("INVALID_CHANGE_CREATION_DRAFT")) {
+		t.Fatalf("invalid: %d %s", invalid.Code, invalid.Body)
+	}
+
+	deleted := request(handler, http.MethodDelete, path, nil, csrfToken(t, handler))
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", deleted.Code, deleted.Body)
+	}
+	missingProject := request(handler, http.MethodGet,
+		"/api/v1/projects/missing/openspec/change-creation-draft", nil, "")
+	if missingProject.Code != http.StatusNotFound {
+		t.Fatalf("missing project: %d %s", missingProject.Code, missingProject.Body)
+	}
+}
+
 func TestRejectsUnknownJSONFields(t *testing.T) {
 	handler := newHandler(t)
 	response := request(handler, http.MethodPost, "/api/v1/projects", []byte(`{"name":"Test","unknown":true}`), csrfToken(t, handler))
@@ -1032,6 +1128,12 @@ func TestDocumentContracts(t *testing.T) {
 		!bytes.Contains(history.Body.Bytes(), []byte(`"author":"API Test"`)) {
 		t.Fatalf("history: %d %s", history.Code, history.Body)
 	}
+	annotations := request(handler, http.MethodGet, base+"/annotations?path=openspec%2Fspecs%2Fexample%2Fspec.md", nil, "")
+	if annotations.Code != http.StatusOK || !bytes.Contains(annotations.Body.Bytes(), []byte(`"author":"API Test"`)) ||
+		!bytes.Contains(annotations.Body.Bytes(), []byte(`"subject":"add specification"`)) ||
+		!bytes.Contains(annotations.Body.Bytes(), []byte(`"lines":["# Original"]`)) {
+		t.Fatalf("annotations: %d %s", annotations.Code, annotations.Body)
+	}
 	writeBody, err := json.Marshal(document.WriteInput{
 		Path: current.Path, Content: "# Updated\n", BaseContentHash: current.ContentHash,
 	})
@@ -1081,6 +1183,76 @@ func TestRepositoryCloneContracts(t *testing.T) {
 		[]byte(`{"url":"https://example.test/code.git"}`), "")
 	if withoutCSRF.Code != http.StatusForbidden {
 		t.Fatalf("csrf: %d %s", withoutCSRF.Code, withoutCSRF.Body)
+	}
+}
+
+func TestContextRepositoryBranchAndUpdateContracts(t *testing.T) {
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	storeRoot := filepath.Join(projectsRoot, "project-space", "store")
+	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "source")
+	runGitCommand := func(directory string, arguments ...string) {
+		t.Helper()
+		command := exec.Command("git", arguments...)
+		command.Dir = directory
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, err, output)
+		}
+	}
+	runGitCommand(root, "init", "-b", "main", source)
+	runGitCommand(source, "config", "user.email", "api@example.com")
+	runGitCommand(source, "config", "user.name", "API Test")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("context\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCommand(source, "add", ".")
+	runGitCommand(source, "commit", "-m", "context")
+	runGitCommand(source, "switch", "-c", "feature/context")
+	runGitCommand(source, "switch", "main")
+	remote := filepath.Join(root, "remote.git")
+	runGitCommand(root, "clone", "--bare", source, remote)
+
+	db, err := storage.Open(filepath.Join(root, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	projectItem, err := db.Create(context.Background(), project.CreateInput{Name: "Context", StorePath: storeRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryService := repository.NewService(db, processrunner.NewSupervisor(), projectsRoot)
+	if summary := repositoryService.ImportContext(context.Background(), projectItem, []string{remote}); summary.Imported != 1 {
+		t.Fatalf("import summary=%#v", summary)
+	}
+	handler := httpapi.New(httpapi.Options{
+		Address: "127.0.0.1:0", Projects: project.NewService(db), Repositories: repositoryService,
+		Static: http.NotFoundHandler(),
+	}).Handler()
+	list := request(handler, http.MethodGet, "/api/v1/projects/"+projectItem.ID+"/repositories", nil, "")
+	var payload struct {
+		Items []operation.RepositoryLink `json:"items"`
+	}
+	if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &payload) != nil || len(payload.Items) != 1 || len(payload.Items[0].RemoteBranches) == 0 {
+		t.Fatalf("list: %d %s", list.Code, list.Body)
+	}
+	base := "/api/v1/projects/" + projectItem.ID + "/repositories/" + payload.Items[0].ID
+	input := []byte(`{"branch":"origin/feature/context","remote":true}`)
+	withoutCSRF := request(handler, http.MethodPost, base+"/branch-switches", input, "")
+	if withoutCSRF.Code != http.StatusForbidden {
+		t.Fatalf("branch switch without CSRF: %d %s", withoutCSRF.Code, withoutCSRF.Body)
+	}
+	token := csrfToken(t, handler)
+	switched := request(handler, http.MethodPost, base+"/branch-switches", input, token)
+	if switched.Code != http.StatusOK || !bytes.Contains(switched.Body.Bytes(), []byte(`"branch":"feature/context"`)) {
+		t.Fatalf("switch: %d %s", switched.Code, switched.Body)
+	}
+	updated := request(handler, http.MethodPost, base+"/updates", nil, token)
+	if updated.Code != http.StatusOK || !bytes.Contains(updated.Body.Bytes(), []byte(`"upstream":"origin/feature/context"`)) {
+		t.Fatalf("update: %d %s", updated.Code, updated.Body)
 	}
 }
 

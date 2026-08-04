@@ -47,17 +47,17 @@ Manager строит target как `<dataDir>/task-worktrees/<project-id>/<works
 
 Команда имеет короткий timeout, bounded output и массив аргументов без shell. Ошибка после создания каталога удаляет только новый каталог текущей операции через `git worktree remove` или узко ограниченный cleanup после проверки target root.
 
-### 4. Publication preview является неизменяемым capability token
+### 4. Publication preview является быстрым неизменяемым capability token
 
-`POST .../task-publications/preview` вычисляет текущие task branch и HEAD, собирает только поддерживаемые OpenSpec paths (`openspec/**`, `.openspec.yaml` внутри change при наличии), формирует bounded unified diff, paths и SHA-256 fingerprint. Preview хранится в памяти с TTL как token, аналогично AI manifests, и возвращает task, paths, truncated, message и `generatedBy`.
+`POST .../task-publications/preview` вычисляет текущие task branch и HEAD, собирает только поддерживаемые OpenSpec paths (`openspec/**`, `.openspec.yaml` внутри change при наличии), формирует bounded unified diff, paths и SHA-256 fingerprint. Preview хранится в памяти с TTL как token, аналогично AI manifests, и немедленно возвращает task, paths, truncated и детерминированный редактируемый subject `<branch>: публикация OpenSpec-артефактов`, не запуская provider.
 
-Agent message generator получает task, paths и diff в read-only режиме через выбранный project provider. Prompt требует один JSON `{subject, body}` и запрещает инструменты/файлы. Subject должен пройти existing conventional commit validation и содержать task branch. Любая ошибка даёт fallback `docs(openspec): publish <task>`; agent не является availability dependency публикации.
+`POST .../task-publications/message` принимает только preview token и по явному действию пользователя запускает выбранный project provider. Agent message generator получает сохранённые task, paths и bounded diff в read-only режиме. Prompt требует один JSON `{subject, body}` на русском языке и запрещает инструменты/файлы. Subject должен иметь формат `<branch>: <короткое сообщение>`, body — маркированный список фактических изменений. Любая ошибка сохраняет пользовательский текст dialog и не является availability dependency публикации.
 
 Перед commit service повторяет сборку и сравнивает workspace ID, branch, HEAD, paths и fingerprint. Для точного состава используется временный Git index (`GIT_INDEX_FILE`) либо эквивалентный изолированный index flow, чтобы не захватить внешние staged files. После commit выполняется обычный push; без upstream используется существующий `origin` либо первый remote и `HEAD:refs/heads/<task>`. Force flags отсутствуют.
 
 ### 5. Публикация синхронно создаёт commit и запускает отслеживаемый push
 
-Preview остаётся коротким HTTP request, включая bounded agent generation с отдельным небольшим timeout. Подтверждение создаёт commit после optimistic checks и запускает существующую Store Git operation для push, возвращая publication result с operation ID. UI закрывает dialog после commit и отображает progress push через существующий polling.
+Preview остаётся коротким HTTP request без agent generation. Отдельная необязательная генерация имеет собственный loading state и bounded timeout. Подтверждение создаёт commit после optimistic checks и запускает существующую Store Git operation для push, возвращая publication result с operation ID. UI закрывает dialog после commit и отображает progress push через существующий polling.
 
 Agent timeout и Git local mutation используют context запроса. Push использует supervisor cancellation и сетевой timeout. Audit сохраняет task, paths count, fingerprint, provider result code, commit SHA и operation ID, но не полный diff.
 
@@ -65,7 +65,7 @@ Agent timeout и Git local mutation используют context запроса.
 
 Новый `features/task-context` содержит API, модели, controller, selector и publication dialog. Controller загружает task context и Git status для компактного dirty indicator независимо от workspace mode, выполняет switch/open, после успеха вызывает общий project/documents/OpenSpec refresh key.
 
-`WorkspaceHeader` получает selector между project switcher и spacer и кнопку «Опубликовать». Закрытый selector является одной компактной строкой: только номер задачи, спокойный local-change indicator и chevron — без декоративной иконки, подписи категории и карточной рамки. Popover имеет одно input, компактный список workspaces и inline error без вводного описания Git-механики. Dialog показывает task, file count и message; ручная правка и regeneration вторичны. Git mode удаляется из sidebar/footer и `WorkspaceMode`, но `features/git` и endpoints сохраняются для диагностики и обратной совместимости.
+`WorkspaceHeader` получает selector между project switcher и spacer. Icon-only действие «Опубликовать» размещается в центральной `workspace-status` группе рядом с «Локальный server» и состоянием сохранения файла; доступное имя и tooltip сохраняют понятность без постоянной текстовой кнопки справа. Закрытый selector является одной компактной строкой: семантическая branch-иконка, номер задачи, спокойный local-change indicator и chevron — без подписи категории, лишнего декоративного знака и карточной рамки. Popover имеет одно input, компактный список workspaces и inline error без вводного описания Git-механики. Dialog открывается сразу после diff preview, сохраняет редактируемые subject/body и запускает agent только отдельной вторичной кнопкой; поле списка изменений по умолчанию вмещает шесть строк и остаётся растягиваемым по вертикали. Progress генерации не блокирует чтение состава публикации. Git mode удаляется из sidebar/footer и `WorkspaceMode`, но `features/git` и endpoints сохраняются для диагностики и обратной совместимости.
 
 Визуальный язык использует существующие tokens: белая поверхность, мягкая граница только у раскрытого popover, green accent только для primary action, 8–10 px radii, короткие labels и responsive wrapping. На узком viewport provider/server details скрываются раньше task selector.
 
@@ -80,9 +80,10 @@ Agent timeout и Git local mutation используют context запроса.
 1. Header загружает `GET .../task-workspaces` и status активного Store.
 2. Пользователь выбирает branch; backend валидирует base Store, создаёт/проверяет worktree и атомарно сохраняет active ID.
 3. Frontend перечитывает project и зависимые document/OpenSpec controllers; другие task worktree не меняются.
-4. «Опубликовать» запрашивает preview; backend собирает разрешённый diff и просит agent сформировать message либо применяет fallback.
-5. Пользователь подтверждает token; backend повторяет fingerprint, создаёт точный commit и запускает обычный push.
-6. UI показывает progress и после terminal state обновляет local-change indicator.
+4. «Опубликовать» запрашивает быстрый preview; backend собирает разрешённый diff и возвращает редактируемое сообщение без запуска agent.
+5. При желании пользователь отдельно просит agent сформировать русский message и может отредактировать результат.
+6. Пользователь подтверждает token; backend повторяет fingerprint, создаёт точный commit и запускает обычный push.
+7. UI показывает progress и после terminal state обновляет local-change indicator.
 
 ## Path validation, cancellation, timeout и аудит
 
@@ -90,6 +91,7 @@ Agent timeout и Git local mutation используют context запроса.
 - HTTP не принимает filesystem path, refspec, Git flags или executable.
 - Branch передаётся только после `check-ref-format`, а worktree target строится из backend UUID внутри configured data root.
 - Worktree creation и preview имеют короткие deadlines; agent generation ограничена по времени и размеру; push отменяется через supervisor.
+- HTTP write timeout MUST превышать deadline синхронной agent-генерации, чтобы backend успевал вернуть успешный результат либо предметную `PUBLICATION_MESSAGE_UNAVAILABLE` ошибку вместо разрыва соединения.
 - Cleanup применяется только к target, созданному текущей неуспешной операцией, после проверки parent root и workspace ID.
 - Audit хранит task/workspace IDs, action, duration, result code, counts и hashes без diff, credentials и absolute paths.
 
@@ -97,7 +99,7 @@ Agent timeout и Git local mutation используют context запроса.
 
 - [Существующие operation services местами перечитывают Project при run] → Сохранить workspace metadata в input при Start и постепенно перевести run paths на immutable snapshot; покрыть переключение интеграционными тестами.
 - [Git запрещает одну ветку одновременно в двух worktree] → Переиспользовать зарегистрированный worktree и возвращать предметный conflict для внешнего незарегистрированного checkout.
-- [Agent увеличивает latency preview] → Малый timeout, loading state и немедленный deterministic fallback.
+- [Agent может отвечать долго] → Не запускать его в preview; отдельная генерация имеет собственный timeout/loading и не блокирует ручное подтверждение.
 - [Внешний terminal меняет index] → Изолированный index и повторная проверка HEAD/fingerprint перед commit.
 - [Низкоуровневые Git endpoints остаются доступны] → Убрать их из основной навигации, сохранить backend для совместимости и диагностических инструментов.
 - [Dirty indicator считает несвязанные файлы] → Основной indicator строить по разрешённой publication scope, а полный status показывать только в диагностике.
@@ -106,7 +108,7 @@ Agent timeout и Git local mutation используют context запроса.
 
 1. Добавить additive SQLite schema и repository methods; существующие projects получают исходный Store как fallback до первого task open.
 2. Подключить effective Store resolution и task workspace API, сохранив прежние project/Git contracts.
-3. Добавить publication preview/confirm и agent fallback без удаления legacy endpoints.
+3. Добавить publication preview/confirm и опциональную agent-генерацию без удаления legacy endpoints.
 4. Переключить header/sidebar/footer на task-first UI и убрать Git mode из основной навигации.
 5. Пройти backend, frontend, integration и browser проверки; existing users начинают с фактической текущей ветки как task context.
 

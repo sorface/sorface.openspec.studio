@@ -22,14 +22,15 @@ import (
 )
 
 var (
-	ErrStatusStale         = errors.New("openspec status stale")
-	ErrActionBlocked       = errors.New("openspec action blocked")
-	ErrOperationConflict   = errors.New("openspec operation conflict")
-	ErrProviderUnavailable = errors.New("openspec provider unavailable")
-	ErrScopeViolation      = errors.New("openspec action scope violation")
-	ErrValidationFailed    = errors.New("openspec post validation failed")
-	ErrArtifactIncomplete  = errors.New("openspec artifact incomplete")
-	ErrDeleteConfirmation  = errors.New("openspec delete confirmation mismatch")
+	ErrStatusStale          = errors.New("openspec status stale")
+	ErrActionBlocked        = errors.New("openspec action blocked")
+	ErrOperationConflict    = errors.New("openspec operation conflict")
+	ErrProviderUnavailable  = errors.New("openspec provider unavailable")
+	ErrScopeViolation       = errors.New("openspec action scope violation")
+	ErrValidationFailed     = errors.New("openspec post validation failed")
+	ErrArtifactIncomplete   = errors.New("openspec artifact incomplete")
+	ErrDeleteConfirmation   = errors.New("openspec delete confirmation mismatch")
+	ErrInvalidExploreResult = errors.New("invalid structured explore result")
 )
 
 type ActionKind string
@@ -47,6 +48,7 @@ type CreateActionInput struct {
 	Change            string     `json:"change"`
 	Artifact          string     `json:"artifact,omitempty"`
 	Goal              string     `json:"goal,omitempty"`
+	Proposal          string     `json:"proposal,omitempty"`
 	Provider          string     `json:"provider,omitempty"`
 	Model             string     `json:"model,omitempty"`
 	StatusFingerprint string     `json:"statusFingerprint,omitempty"`
@@ -62,15 +64,17 @@ type FileMutation struct {
 }
 
 type ActionResult struct {
-	FinalResponse string         `json:"finalResponse,omitempty"`
-	Files         []FileMutation `json:"files"`
-	Diagnostics   []Diagnostic   `json:"diagnostics"`
+	FinalResponse string             `json:"finalResponse,omitempty"`
+	Exploration   *ExplorationResult `json:"exploration,omitempty"`
+	Files         []FileMutation     `json:"files"`
+	Diagnostics   []Diagnostic       `json:"diagnostics"`
 }
 
 type ActionStore interface {
 	Get(context.Context, string) (project.Project, error)
 	CreateOperation(context.Context, operation.Operation) (operation.Operation, error)
 	GetOperation(context.Context, string) (operation.Operation, error)
+	ListOpenSpecOperations(context.Context, string, string, int) ([]operation.Operation, error)
 	UpdateOperation(context.Context, operation.Operation) (operation.Operation, error)
 	HasActiveOperation(context.Context, string, operation.Kind) (bool, error)
 	AddEvent(context.Context, operation.Event) (operation.Event, error)
@@ -112,11 +116,15 @@ func (service *ActionService) Start(ctx context.Context, projectID string, input
 	input.Change = strings.TrimSpace(input.Change)
 	input.Artifact = strings.TrimSpace(input.Artifact)
 	input.Goal = strings.TrimSpace(input.Goal)
+	input.Proposal = strings.TrimSpace(input.Proposal)
 	input.Provider = strings.ToLower(strings.TrimSpace(input.Provider))
 	if input.Kind != ActionExplore && !validChangeName(input.Change) {
 		return operation.Operation{}, ErrInvalidChange
 	}
-	if input.Kind != ActionArchive && input.Goal == "" {
+	if (input.Kind == ActionExplore || input.Kind == ActionPrepare || input.Kind == ActionFix) && input.Goal == "" {
+		return operation.Operation{}, ErrActionBlocked
+	}
+	if input.Kind == ActionCreate && (input.Proposal == "" || len(input.Proposal) > maxCreationProposal) {
 		return operation.Operation{}, ErrActionBlocked
 	}
 	projectItem, err := service.store.Get(ctx, projectID)
@@ -191,7 +199,7 @@ func (service *ActionService) Start(ctx context.Context, projectID string, input
 	default:
 		return operation.Operation{}, ErrActionBlocked
 	}
-	if input.Kind != ActionArchive {
+	if input.Kind == ActionExplore || input.Kind == ActionPrepare || input.Kind == ActionFix {
 		if _, err := actionProviderPath(input.Provider); err != nil {
 			return operation.Operation{}, err
 		}
@@ -225,6 +233,17 @@ func (service *ActionService) Get(ctx context.Context, projectID, id string) (op
 		return operation.Operation{}, project.ErrNotFound
 	}
 	return item, nil
+}
+
+func (service *ActionService) List(ctx context.Context, projectID, change string) ([]operation.Operation, error) {
+	change = strings.TrimSpace(change)
+	if !validChangeName(change) {
+		return nil, ErrInvalidChange
+	}
+	if _, err := service.store.Get(ctx, projectID); err != nil {
+		return nil, err
+	}
+	return service.store.ListOpenSpecOperations(ctx, projectID, change, 50)
 }
 
 func (service *ActionService) Events(ctx context.Context, projectID, id string, after int64) ([]operation.Event, error) {
@@ -276,9 +295,16 @@ func (service *ActionService) run(item operation.Operation) {
 	_, _ = service.store.AddEvent(ctx, operation.Event{OperationID: item.ID, Type: "running", Payload: `{}`})
 
 	finalResponse := ""
+	var exploration *ExplorationResult
 	switch execution.Input.Kind {
 	case ActionExplore:
 		finalResponse, err = service.runProvider(ctx, item, working, execution)
+		if err == nil {
+			exploration, err = ParseExplorationResult(finalResponse)
+			if err == nil {
+				finalResponse = exploration.Summary
+			}
+		}
 	case ActionCreate:
 		finalResponse, err = service.createInitialChange(ctx, item, working, execution)
 	case ActionPrepare, ActionFix:
@@ -348,7 +374,10 @@ func (service *ActionService) run(item operation.Operation) {
 		)
 		return
 	}
-	result, _ := json.Marshal(ActionResult{FinalResponse: finalResponse, Files: mutations, Diagnostics: diagnostics})
+	result, _ := json.Marshal(ActionResult{
+		FinalResponse: finalResponse, Exploration: exploration,
+		Files: mutations, Diagnostics: diagnostics,
+	})
 	service.finish(item, operation.StatusAwaitingReview, "", "", string(result))
 }
 
@@ -361,47 +390,21 @@ func (service *ActionService) createInitialChange(
 	if err := service.adapter.NewChange(ctx, working, execution.Input.Change); err != nil {
 		return "", err
 	}
-
-	responses := make([]string, 0, 2)
-	artifacts := []string{"proposal"}
-	for index := 0; index < len(artifacts); index++ {
-		artifact := artifacts[index]
-		instructions, err := service.adapter.Instructions(ctx, working, execution.Input.Change, artifact)
-		if err != nil {
-			return "", err
-		}
-		execution.Instructions = instructions
-		response, err := service.runProvider(ctx, item, working, execution)
-		if err != nil {
-			return "", err
-		}
-		responses = append(responses, response)
-
-		status, err := service.adapter.Status(ctx, working, execution.Input.Change)
-		if err != nil {
-			return "", err
-		}
-		if !statusArtifactDone(status, artifact) {
-			return "", fmt.Errorf("%w: %s", ErrArtifactIncomplete, artifact)
-		}
-		if artifact == "proposal" {
-			specsArtifact := initialSpecsArtifact(status)
-			if specsArtifact == "" {
-				return "", fmt.Errorf("%w: specs", ErrArtifactIncomplete)
-			}
-			artifacts = append(artifacts, specsArtifact)
-		}
+	instructions, err := service.adapter.Instructions(ctx, working, execution.Input.Change, "proposal")
+	if err != nil {
+		return "", err
 	}
-	return strings.Join(responses, "\n\n"), nil
-}
-
-func initialSpecsArtifact(status Status) string {
-	for _, artifact := range status.Artifacts {
-		if (artifact.ID == "specs" || artifact.ID == "spec") && artifact.Status == "ready" {
-			return artifact.ID
-		}
+	output, err := proposalOutputPath(working, execution.Input.Change, instructions)
+	if err != nil {
+		return "", err
 	}
-	return ""
+	if err := os.MkdirAll(filepath.Dir(output), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(output, []byte(execution.Input.Proposal+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return "Proposal принят и подготовлен для именованного change.", nil
 }
 
 func statusArtifactDone(status Status, expected string) bool {
@@ -583,34 +586,76 @@ func BuildActionPrompt(goal string, instructions Instructions, root string) (str
 		if !dependency.Done || dependency.Path == "" {
 			continue
 		}
-		path := dependency.Path
-		if !filepath.IsAbs(path) {
-			base := root
-			if instructions.ChangeDir != "" {
-				base = instructions.ChangeDir
-				if !filepath.IsAbs(base) {
-					base = filepath.Join(root, filepath.Clean(base))
-				}
-			}
-			path = filepath.Join(base, filepath.Clean(path))
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil || relative == ".." || filepath.IsAbs(relative) {
-			return "", ErrScopeViolation
-		}
-		content, err := os.ReadFile(path)
+		paths, err := resolveInstructionDependencyPaths(root, instructions.ChangeDir, dependency.Path)
 		if err != nil {
 			return "", err
 		}
-		if len(content) > 1<<20 {
-			return "", ErrActionBlocked
-		}
-		fmt.Fprintf(&builder, "\n--- %s ---\n%s\n", filepath.ToSlash(relative), content)
-		if builder.Len() > 4<<20 {
-			return "", ErrActionBlocked
+		for _, path := range paths {
+			relative, err := filepath.Rel(root, path)
+			if err != nil || pathEscapesRoot(relative) {
+				return "", ErrScopeViolation
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return "", err
+			}
+			if len(content) > 1<<20 {
+				return "", ErrActionBlocked
+			}
+			fmt.Fprintf(&builder, "\n--- %s ---\n%s\n", filepath.ToSlash(relative), content)
+			if builder.Len() > 4<<20 {
+				return "", ErrActionBlocked
+			}
 		}
 	}
 	return builder.String(), nil
+}
+
+func resolveInstructionDependencyPaths(root, changeDir, value string) ([]string, error) {
+	path := value
+	if !filepath.IsAbs(path) {
+		base := root
+		if changeDir != "" {
+			base = changeDir
+			if !filepath.IsAbs(base) {
+				base = filepath.Join(root, filepath.Clean(base))
+			}
+		}
+		path = filepath.Join(base, filepath.Clean(path))
+	}
+	relativePattern, err := filepath.Rel(root, path)
+	if err != nil || pathEscapesRoot(relativePattern) {
+		return nil, ErrScopeViolation
+	}
+	paths := []string{path}
+	if strings.ContainsAny(path, "*?[") {
+		paths, err = filepath.Glob(path)
+		if err != nil {
+			return nil, ErrScopeViolation
+		}
+		if len(paths) == 0 {
+			return nil, os.ErrNotExist
+		}
+	}
+	sort.Strings(paths)
+	for _, candidate := range paths {
+		relative, relErr := filepath.Rel(root, candidate)
+		info, statErr := os.Lstat(candidate)
+		if relErr != nil || pathEscapesRoot(relative) || statErr != nil {
+			if statErr != nil {
+				return nil, statErr
+			}
+			return nil, ErrScopeViolation
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, ErrScopeViolation
+		}
+	}
+	return paths, nil
+}
+
+func pathEscapesRoot(relative string) bool {
+	return relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative)
 }
 
 func BuildExplorePrompt(goal string) (string, error) {
@@ -621,9 +666,142 @@ func BuildExplorePrompt(goal string) (string, error) {
 	return "SYSTEM ACTION BOUNDARY:\n" +
 		"Explore the task using the current OpenSpec Store and available read-only context. " +
 		"Do not create, edit, rename, or delete any files. Do not run arbitrary project scripts.\n" +
-		"Return a concise research summary in Russian: the clarified problem, affected capabilities, " +
-		"constraints, risks, open questions, and a recommended scope for a future change.\n\n" +
+		"Read openspec/config.yaml and relevant baseline specs before deciding. " +
+		"Ask only questions that materially affect scope, observable behavior, capabilities, security, or compatibility. " +
+		"Return exactly one JSON object without commentary or Markdown fences. The contract is: " +
+		`{"state":"needs_input|proposal_ready","summary":"Russian summary","questions":[{"id":"stable-kebab-id","prompt":"Russian question","why":"why it matters","kind":"text|single_choice|multi_choice","options":[]}],"assumptions":[],"proposal":"OpenSpec proposal Markdown when ready","suggestedNames":["kebab-case-name"]}. ` +
+		"Use needs_input with 1-5 questions when essential answers are missing. " +
+		"Use proposal_ready with no questions, a complete Russian OpenSpec proposal, visible assumptions, and 1-5 kebab-case names when ready.\n\n" +
 		"USER TASK:\n" + goal + "\n", nil
+}
+
+func ParseExplorationResult(raw string) (*ExplorationResult, error) {
+	value := strings.TrimSpace(raw)
+	if strings.HasPrefix(value, "```") {
+		lines := strings.Split(value, "\n")
+		if len(lines) >= 3 && strings.HasPrefix(lines[0], "```") && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+			value = strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+		}
+	}
+	start, end := strings.Index(value, "{"), strings.LastIndex(value, "}")
+	if start < 0 || end < start {
+		return nil, ErrInvalidExploreResult
+	}
+	decoder := json.NewDecoder(strings.NewReader(value[start : end+1]))
+	decoder.DisallowUnknownFields()
+	var result ExplorationResult
+	if err := decoder.Decode(&result); err != nil {
+		return nil, ErrInvalidExploreResult
+	}
+	result.Summary = strings.TrimSpace(result.Summary)
+	result.Proposal = strings.TrimSpace(result.Proposal)
+	if result.Questions == nil {
+		result.Questions = []ExplorationQuestion{}
+	}
+	if result.Assumptions == nil {
+		result.Assumptions = []string{}
+	}
+	if result.SuggestedNames == nil {
+		result.SuggestedNames = []string{}
+	}
+	if err := validateExplorationResult(result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func validateExplorationResult(result ExplorationResult) error {
+	if result.Summary == "" || len(result.Summary) > 16<<10 ||
+		len(result.Questions) > maxCreationQuestions || len(result.Assumptions) > 20 ||
+		len(result.Proposal) > maxCreationProposal || len(result.SuggestedNames) > 5 {
+		return ErrInvalidExploreResult
+	}
+	ids := map[string]bool{}
+	for _, question := range result.Questions {
+		if err := validateExplorationQuestion(question); err != nil || ids[question.ID] {
+			return ErrInvalidExploreResult
+		}
+		ids[question.ID] = true
+	}
+	for _, assumption := range result.Assumptions {
+		if strings.TrimSpace(assumption) == "" || len(assumption) > 2<<10 {
+			return ErrInvalidExploreResult
+		}
+	}
+	for _, name := range result.SuggestedNames {
+		if !validChangeName(name) {
+			return ErrInvalidExploreResult
+		}
+	}
+	switch result.State {
+	case "needs_input":
+		if len(result.Questions) == 0 || result.Proposal != "" {
+			return ErrInvalidExploreResult
+		}
+	case "proposal_ready":
+		if len(result.Questions) != 0 || result.Proposal == "" || len(result.SuggestedNames) == 0 {
+			return ErrInvalidExploreResult
+		}
+	default:
+		return ErrInvalidExploreResult
+	}
+	return nil
+}
+
+func proposalOutputPath(root, change string, instructions Instructions) (string, error) {
+	changeRoot := filepath.Join(root, "openspec", "changes", change)
+	output := instructions.ResolvedOutputPath
+	if !filepath.IsAbs(output) {
+		base := root
+		if instructions.ChangeDir != "" {
+			base = instructions.ChangeDir
+			if !filepath.IsAbs(base) {
+				base = filepath.Join(root, base)
+			}
+		}
+		output = filepath.Join(base, output)
+	}
+	output = filepath.Clean(output)
+	canonicalChangeRoot, err := canonicalProspectivePath(changeRoot)
+	if err != nil {
+		return "", ErrScopeViolation
+	}
+	canonicalOutput, err := canonicalProspectivePath(output)
+	if err != nil {
+		return "", ErrScopeViolation
+	}
+	relative, err := filepath.Rel(canonicalChangeRoot, canonicalOutput)
+	if err != nil || filepath.IsAbs(relative) || filepath.ToSlash(relative) != "proposal.md" {
+		return "", ErrScopeViolation
+	}
+	return output, nil
+}
+
+func canonicalProspectivePath(value string) (string, error) {
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	current := absolute
+	missing := make([]string, 0, 4)
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(resolveErr, os.ErrNotExist) {
+			return "", resolveErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", resolveErr
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
 }
 
 func normalizeInstructionPaths(root string, instructions *Instructions) {
@@ -860,7 +1038,9 @@ func artifactPathAllowed(changeRoot, artifact, path string) bool {
 	case "tasks":
 		return path == changeRoot+"tasks.md"
 	case "specs", "spec":
-		return strings.HasPrefix(path, changeRoot+"specs/") || strings.HasPrefix(path, changeRoot+"spec/")
+		return path == changeRoot+"proposal.md" ||
+			strings.HasPrefix(path, changeRoot+"specs/") ||
+			strings.HasPrefix(path, changeRoot+"spec/")
 	default:
 		return strings.HasPrefix(path, changeRoot)
 	}
@@ -868,8 +1048,7 @@ func artifactPathAllowed(changeRoot, artifact, path string) bool {
 
 func artifactCompleted(status Status, input CreateActionInput) bool {
 	if input.Kind == ActionCreate {
-		return statusArtifactDone(status, "proposal") &&
-			(statusArtifactDone(status, "specs") || statusArtifactDone(status, "spec"))
+		return statusArtifactDone(status, "proposal")
 	}
 	expected := input.Artifact
 	for _, artifact := range status.Artifacts {
@@ -967,6 +1146,8 @@ func actionErrorCode(err error) string {
 		return "OPENSPEC_VALIDATION_FAILED"
 	case errors.Is(err, ErrArtifactIncomplete):
 		return "OPENSPEC_ARTIFACT_INCOMPLETE"
+	case errors.Is(err, ErrInvalidExploreResult):
+		return "AI_RESULT_INVALID"
 	default:
 		return "OPENSPEC_ACTION_FAILED"
 	}
@@ -982,6 +1163,8 @@ func safeActionDiagnostic(err error) string {
 		return "Результат не прошёл проверку OpenSpec"
 	case errors.Is(err, ErrArtifactIncomplete):
 		return "Agent не создал обязательный артефакт OpenSpec. Повторите операцию или уточните задачу"
+	case errors.Is(err, ErrInvalidExploreResult):
+		return "Agent вернул некорректный результат исследования. Повторите запрос — введённые данные сохранены"
 	default:
 		return "OpenSpec action завершился с ошибкой"
 	}

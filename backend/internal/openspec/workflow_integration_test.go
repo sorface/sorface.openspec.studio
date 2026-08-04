@@ -151,14 +151,22 @@ func TestAgentWorkflowCreatesAllArtifactsAndArchivesOnlyAfterWrite(t *testing.T)
 	defer database.Close()
 
 	runAndWriteWorkflowAction(t, actionService, draftService, workflow, projectItem.ID, CreateActionInput{
-		Kind: ActionCreate, Change: "agent-flow", Goal: "Create proposal and specs", Provider: "codex",
+		Kind: ActionCreate, Change: "agent-flow", Proposal: "## Why\n\nAccepted proposal",
 	})
 	createdStatus, err := workflow.adapter.Status(context.Background(), storeRoot, "agent-flow")
-	if err != nil || !artifactDone(createdStatus, "proposal") || !artifactDone(createdStatus, "specs") {
-		t.Fatalf("create must prepare proposal and specs: status=%#v err=%v", createdStatus, err)
+	if err != nil || !artifactDone(createdStatus, "proposal") || artifactDone(createdStatus, "specs") {
+		t.Fatalf("create must prepare only proposal: status=%#v err=%v", createdStatus, err)
 	}
+	details, err := workflow.Details(context.Background(), projectItem.ID, "agent-flow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAndWriteWorkflowAction(t, actionService, draftService, workflow, projectItem.ID, CreateActionInput{
+		Kind: ActionPrepare, Change: "agent-flow", Artifact: "specs",
+		Goal: "Prepare specs", Provider: "codex", StatusFingerprint: details.Fingerprint,
+	})
 	for _, artifact := range []string{"design", "tasks"} {
-		details, err := workflow.Details(context.Background(), projectItem.ID, "agent-flow")
+		details, err = workflow.Details(context.Background(), projectItem.ID, "agent-flow")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +180,7 @@ func TestAgentWorkflowCreatesAllArtifactsAndArchivesOnlyAfterWrite(t *testing.T)
 		}
 	}
 
-	details, err := workflow.Details(context.Background(), projectItem.ID, "agent-flow")
+	details, err = workflow.Details(context.Background(), projectItem.ID, "agent-flow")
 	if err != nil || !details.Complete {
 		t.Fatalf("details=%#v err=%v", details, err)
 	}

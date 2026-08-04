@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,14 @@ var (
 	ErrTargetNotEmpty    = errors.New("clone target is not empty")
 	ErrPathOutsideScope  = errors.New("path outside scope")
 	ErrOperationConflict = errors.New("operation conflict")
+	ErrWorktreeDirty     = errors.New("repository worktree is dirty")
+	ErrBranchNotFound    = errors.New("repository branch not found")
+	ErrBranchExists      = errors.New("repository local branch exists")
+	ErrUpstreamMissing   = errors.New("repository upstream missing")
+	ErrFastForward       = errors.New("repository fast-forward required")
+	ErrGitAuth           = errors.New("repository git authentication failed")
+	ErrGitTimeout        = errors.New("repository git operation timed out")
+	ErrGitOperation      = errors.New("repository git operation failed")
 )
 
 type Store interface {
@@ -35,12 +44,18 @@ type Store interface {
 	AddEvent(context.Context, operation.Event) (operation.Event, error)
 	ListEvents(context.Context, string, int64) ([]operation.Event, error)
 	CreateRepository(context.Context, operation.RepositoryLink) (operation.RepositoryLink, error)
+	UpdateRepository(context.Context, operation.RepositoryLink) (operation.RepositoryLink, error)
 	ListRepositories(context.Context, string) ([]operation.RepositoryLink, error)
 }
 
 type CloneInput struct {
 	URL           string `json:"url"`
 	CorrelationID string `json:"-"`
+}
+
+type SwitchBranchInput struct {
+	Branch string `json:"branch"`
+	Remote bool   `json:"remote"`
 }
 
 type cloneMetadata struct {
@@ -67,7 +82,8 @@ func NewService(store Store, supervisor *processrunner.Supervisor, managedRoots 
 }
 
 func (service *Service) List(ctx context.Context, projectID string) ([]operation.RepositoryLink, error) {
-	if _, err := service.store.Get(ctx, projectID); err != nil {
+	projectItem, err := service.store.Get(ctx, projectID)
+	if err != nil {
 		return nil, err
 	}
 	items, err := service.store.ListRepositories(ctx, projectID)
@@ -75,10 +91,104 @@ func (service *Service) List(ctx context.Context, projectID string) ([]operation
 		return nil, err
 	}
 	for index := range items {
-		info, statErr := os.Stat(items[index].Path)
-		items[index].Available = statErr == nil && info.IsDir()
+		current, inspectErr := service.inspect(projectItem, items[index].RemoteURL, items[index].Path)
+		if inspectErr != nil {
+			items[index].Available = false
+			items[index].LocalBranches = []string{}
+			items[index].RemoteBranches = []string{}
+			continue
+		}
+		current.ID = items[index].ID
+		current.ProjectID = items[index].ProjectID
+		current.CreatedAt = items[index].CreatedAt
+		current.UpdatedAt = items[index].UpdatedAt
+		items[index] = current
+		if updated, updateErr := service.store.UpdateRepository(ctx, current); updateErr == nil {
+			items[index].UpdatedAt = updated.UpdatedAt
+		}
 	}
 	return items, nil
+}
+
+func (service *Service) SwitchBranch(
+	ctx context.Context,
+	projectID, repositoryID string,
+	input SwitchBranchInput,
+) (operation.RepositoryLink, error) {
+	projectItem, stored, path, err := service.repositoryPath(ctx, projectID, repositoryID)
+	if err != nil {
+		return operation.RepositoryLink{}, err
+	}
+	current, err := service.inspect(projectItem, stored.RemoteURL, path)
+	if err != nil {
+		return operation.RepositoryLink{}, ErrGitOperation
+	}
+	if current.Dirty {
+		return operation.RepositoryLink{}, ErrWorktreeDirty
+	}
+	branch := strings.TrimSpace(input.Branch)
+	if branch == "" {
+		return operation.RepositoryLink{}, ErrBranchNotFound
+	}
+	arguments := []string{"switch", branch}
+	if input.Remote {
+		if !contains(current.RemoteBranches, branch) {
+			return operation.RepositoryLink{}, ErrBranchNotFound
+		}
+		_, local, found := strings.Cut(branch, "/")
+		if !found || local == "" {
+			return operation.RepositoryLink{}, ErrBranchNotFound
+		}
+		if contains(current.LocalBranches, local) {
+			return operation.RepositoryLink{}, ErrBranchExists
+		}
+		arguments = []string{"switch", "--track", "-c", local, branch}
+	} else if !contains(current.LocalBranches, branch) {
+		return operation.RepositoryLink{}, ErrBranchNotFound
+	}
+	result, runErr := service.runRepositoryGit(ctx, path, 30*time.Second, arguments...)
+	if runErr != nil {
+		return operation.RepositoryLink{}, classifyRepositoryGitError(result.Stderr, runErr)
+	}
+	return service.refreshAndPersist(ctx, projectItem, stored, path)
+}
+
+func (service *Service) Update(
+	ctx context.Context,
+	projectID, repositoryID string,
+) (operation.RepositoryLink, error) {
+	projectItem, stored, path, err := service.repositoryPath(ctx, projectID, repositoryID)
+	if err != nil {
+		return operation.RepositoryLink{}, err
+	}
+	current, err := service.inspect(projectItem, stored.RemoteURL, path)
+	if err != nil {
+		return operation.RepositoryLink{}, ErrGitOperation
+	}
+	if current.Dirty {
+		return operation.RepositoryLink{}, ErrWorktreeDirty
+	}
+	result, runErr := service.runRepositoryGit(ctx, path, 25*time.Second, "fetch", "--prune")
+	if runErr != nil {
+		return operation.RepositoryLink{}, classifyRepositoryGitError(result.Stderr, runErr)
+	}
+	current, err = service.inspect(projectItem, stored.RemoteURL, path)
+	if err != nil {
+		return operation.RepositoryLink{}, ErrGitOperation
+	}
+	if current.Upstream == "" {
+		return operation.RepositoryLink{}, ErrUpstreamMissing
+	}
+	if current.Ahead > 0 && current.Behind > 0 {
+		return operation.RepositoryLink{}, ErrFastForward
+	}
+	if current.Behind > 0 {
+		result, runErr = service.runRepositoryGit(ctx, path, 25*time.Second, "pull", "--ff-only")
+		if runErr != nil {
+			return operation.RepositoryLink{}, classifyRepositoryGitError(result.Stderr, runErr)
+		}
+	}
+	return service.refreshAndPersist(ctx, projectItem, stored, path)
 }
 
 func (service *Service) ValidateContextRepositories(values []string) ([]string, error) {
@@ -335,6 +445,137 @@ func (service *Service) finish(item operation.Operation, status operation.Status
 	}
 }
 
+func (service *Service) repositoryPath(
+	ctx context.Context,
+	projectID, repositoryID string,
+) (project.Project, operation.RepositoryLink, string, error) {
+	projectItem, err := service.store.Get(ctx, projectID)
+	if err != nil {
+		return project.Project{}, operation.RepositoryLink{}, "", err
+	}
+	items, err := service.store.ListRepositories(ctx, projectID)
+	if err != nil {
+		return project.Project{}, operation.RepositoryLink{}, "", err
+	}
+	var stored operation.RepositoryLink
+	for _, item := range items {
+		if item.ID == repositoryID {
+			stored = item
+			break
+		}
+	}
+	if stored.ID == "" {
+		return project.Project{}, operation.RepositoryLink{}, "", project.ErrNotFound
+	}
+	root := service.projectRepositoriesRoot(projectItem)
+	canonicalRoot, rootErr := filepath.EvalSymlinks(root)
+	canonicalPath, pathErr := filepath.EvalSymlinks(stored.Path)
+	if rootErr != nil || pathErr != nil ||
+		(canonicalPath != canonicalRoot && !strings.HasPrefix(canonicalPath, canonicalRoot+string(filepath.Separator))) {
+		return project.Project{}, operation.RepositoryLink{}, "", ErrPathOutsideScope
+	}
+	repositoryRoot, rootErr := gitOutput(service.gitPath, canonicalPath, "rev-parse", "--show-toplevel")
+	if rootErr != nil {
+		return project.Project{}, operation.RepositoryLink{}, "", ErrGitOperation
+	}
+	repositoryRoot, rootErr = filepath.EvalSymlinks(repositoryRoot)
+	if rootErr != nil || repositoryRoot != canonicalPath {
+		return project.Project{}, operation.RepositoryLink{}, "", ErrPathOutsideScope
+	}
+	return projectItem, stored, canonicalPath, nil
+}
+
+func (service *Service) refreshAndPersist(
+	ctx context.Context,
+	projectItem project.Project,
+	stored operation.RepositoryLink,
+	path string,
+) (operation.RepositoryLink, error) {
+	current, err := service.inspect(projectItem, stored.RemoteURL, path)
+	if err != nil {
+		return operation.RepositoryLink{}, ErrGitOperation
+	}
+	current.ID = stored.ID
+	current.ProjectID = stored.ProjectID
+	current.CreatedAt = stored.CreatedAt
+	current.UpdatedAt = stored.UpdatedAt
+	updated, err := service.store.UpdateRepository(ctx, current)
+	if err != nil {
+		return operation.RepositoryLink{}, err
+	}
+	current.UpdatedAt = updated.UpdatedAt
+	return current, nil
+}
+
+func (service *Service) runRepositoryGit(
+	ctx context.Context,
+	path string,
+	timeout time.Duration,
+	arguments ...string,
+) (processrunner.Result, error) {
+	return service.runner.Run(ctx, processrunner.Command{
+		Executable: service.gitPath, Arguments: arguments, Directory: path,
+		Environment: gitCloneEnvironment(), Timeout: timeout, MaxOutputBytes: 1 << 20,
+	})
+}
+
+func classifyRepositoryGitError(stderr string, runErr error) error {
+	if errors.Is(runErr, context.DeadlineExceeded) {
+		return ErrGitTimeout
+	}
+	lower := strings.ToLower(stderr)
+	switch {
+	case strings.Contains(lower, "authentication failed"),
+		strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "could not read username"),
+		strings.Contains(lower, "publickey"),
+		strings.Contains(lower, "could not read from remote repository"):
+		return ErrGitAuth
+	case strings.Contains(lower, "not possible to fast-forward"),
+		strings.Contains(lower, "divergent branches"),
+		strings.Contains(lower, "non-fast-forward"):
+		return ErrFastForward
+	default:
+		return ErrGitOperation
+	}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func gitLines(executable, directory string, arguments ...string) []string {
+	output, err := gitOutput(executable, directory, arguments...)
+	if err != nil || output == "" {
+		return []string{}
+	}
+	lines := strings.Split(output, "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasSuffix(line, "/HEAD") {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+func gitRemoteBranches(executable, directory string) []string {
+	values := gitLines(executable, directory, "for-each-ref", "--format=%(refname:short)", "refs/remotes")
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.Contains(value, "/") {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 func (service *Service) inspect(_ project.Project, remote, target string) (operation.RepositoryLink, error) {
 	canonical, err := filepath.EvalSymlinks(target)
 	if err != nil {
@@ -351,11 +592,25 @@ func (service *Service) inspect(_ project.Project, remote, target string) (opera
 	sha, _ := gitOutput(service.gitPath, canonical, "rev-parse", "HEAD")
 	branch, _ := gitOutput(service.gitPath, target, "branch", "--show-current")
 	status, _ := gitOutput(service.gitPath, target, "status", "--porcelain")
+	upstream, _ := gitOutput(service.gitPath, target, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+	ahead, behind := 0, 0
+	if upstream != "" {
+		if divergence, divergenceErr := gitOutput(service.gitPath, target, "rev-list", "--left-right", "--count", "HEAD..."+upstream); divergenceErr == nil {
+			parts := strings.Fields(divergence)
+			if len(parts) == 2 {
+				ahead, _ = strconv.Atoi(parts[0])
+				behind, _ = strconv.Atoi(parts[1])
+			}
+		}
+	}
 	sum := sha256.Sum256([]byte(canonical + "\x00" + remote + "\x00" + sha))
 	return operation.RepositoryLink{
 		Name: filepath.Base(strings.TrimSuffix(remote, ".git")), Path: canonical,
 		RemoteURL: remote, Fingerprint: hex.EncodeToString(sum[:]), Branch: branch,
 		CommitSHA: sha, Dirty: status != "", Available: true, ReadOnlyForAI: true,
+		Upstream: upstream, Ahead: ahead, Behind: behind,
+		LocalBranches:  gitLines(service.gitPath, target, "for-each-ref", "--format=%(refname:short)", "refs/heads"),
+		RemoteBranches: gitRemoteBranches(service.gitPath, target),
 	}, nil
 }
 

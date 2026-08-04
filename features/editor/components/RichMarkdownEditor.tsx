@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { AgentEditResult } from "@/features/editor/model/agent-edit";
+import type { AgentEditResult, AgentEditSelection } from "@/features/editor/model/agent-edit";
 import { historyShortcut } from "@/features/system/model/platform-shortcuts";
 
 interface RichMarkdownEditorProps {
@@ -10,13 +10,16 @@ interface RichMarkdownEditorProps {
   markdown: string;
   agentAvailable: boolean;
   agentPending: boolean;
+  toolbarActions?: ReactNode;
   onBlur: () => void;
   onChange: (markdown: string) => void;
-  onAgentEdit: (selection: string, instruction: string) => Promise<AgentEditResult>;
+  onAgentEdit: (selection: AgentEditSelection, instruction: string) => Promise<AgentEditResult>;
 }
 
 interface AgentRequest {
   selection: string;
+  prefix?: string;
+  suffix?: string;
   from?: number;
   to?: number;
   top: number;
@@ -39,7 +42,7 @@ const agentActionIcon = `
   </svg>`;
 
 export function RichMarkdownEditor({
-  documentId, markdown, agentAvailable, agentPending, onBlur, onChange, onAgentEdit,
+  documentId, markdown, agentAvailable, agentPending, toolbarActions, onBlur, onChange, onAgentEdit,
 }: RichMarkdownEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const onBlurRef = useRef(onBlur);
@@ -53,6 +56,7 @@ export function RichMarkdownEditor({
   const [agentInstruction, setAgentInstruction] = useState("");
   const [agentError, setAgentError] = useState("");
   const [agentSubmitting, setAgentSubmitting] = useState(false);
+  const [toolbarTarget, setToolbarTarget] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     onBlurRef.current = onBlur;
@@ -73,7 +77,11 @@ export function RichMarkdownEditor({
       showProcessingRef.current({ from: agentRequest.from, to: agentRequest.to });
     }
     try {
-      const result = await onAgentEdit(agentRequest.selection, agentInstruction.trim());
+      const result = await onAgentEdit({
+        text: agentRequest.selection,
+        prefix: agentRequest.prefix,
+        suffix: agentRequest.suffix,
+      }, agentInstruction.trim());
       const range = agentRequest.from !== undefined && agentRequest.to !== undefined
         ? { from: agentRequest.from, to: agentRequest.to }
         : null;
@@ -95,6 +103,7 @@ export function RichMarkdownEditor({
     let disposed = false;
     let destroy: (() => void) | undefined;
     let removeSelectionListener: (() => void) | undefined;
+    let headingSelectorObserver: MutationObserver | undefined;
 
     async function initialize() {
       const root = rootRef.current;
@@ -183,6 +192,18 @@ export function RichMarkdownEditor({
         });
 
         await editor.create();
+        const nextToolbarTarget = root.querySelector<HTMLElement>(".milkdown-top-bar .top-bar-inner");
+        if (nextToolbarTarget) {
+          const syncHeadingSelectorWeight = () => {
+            const button = nextToolbarTarget.querySelector<HTMLElement>(".top-bar-heading-button");
+            const label = button?.querySelector<HTMLElement>(".top-bar-heading-label");
+            button?.classList.toggle("heading-active", /^Heading [1-6]$/.test(label?.textContent?.trim() ?? ""));
+          };
+          headingSelectorObserver = new MutationObserver(syncHeadingSelectorWeight);
+          headingSelectorObserver.observe(nextToolbarTarget, { childList: true, characterData: true, subtree: true });
+          syncHeadingSelectorWeight();
+          setToolbarTarget(nextToolbarTarget);
+        }
         applyAgentEditRef.current = (result, range) => {
           if (!range || result.replacement.includes("\n")) {
             editor.editor.action(replaceAll(result.markdown));
@@ -228,6 +249,8 @@ export function RichMarkdownEditor({
               if (from !== to && view.state.doc.textBetween(from, to, "\n").trim() === selection) {
                 candidate.from = from;
                 candidate.to = to;
+                candidate.prefix = view.state.doc.textBetween(0, from, "\n").slice(-160);
+                candidate.suffix = view.state.doc.textBetween(to, view.state.doc.content.size, "\n").slice(0, 160);
               }
             });
           }
@@ -239,14 +262,17 @@ export function RichMarkdownEditor({
         editorReady = true;
         if (disposed) {
           removeSelectionListener();
+          headingSelectorObserver?.disconnect();
           editor.destroy();
           return;
         }
         destroy = () => {
           removeSelectionListener?.();
+          headingSelectorObserver?.disconnect();
           root.removeEventListener("keydown", handleHistoryShortcut, true);
           applyAgentEditRef.current = () => undefined;
           showProcessingRef.current = () => undefined;
+          setToolbarTarget((current) => current === nextToolbarTarget ? null : current);
           editor.destroy();
         };
         setStatus("ready");
@@ -276,6 +302,10 @@ export function RichMarkdownEditor({
         <div className="editor-error" role="alert">
           Редактор не загрузился. Обновите страницу — черновик не потерян.
         </div>
+      )}
+      {toolbarTarget && toolbarActions && createPortal(
+        <div className="rich-editor-context-actions">{toolbarActions}</div>,
+        toolbarTarget,
       )}
       {typeof document !== "undefined" && createPortal(<>
         {agentCandidate && !agentRequest && (
@@ -313,12 +343,17 @@ export function RichMarkdownEditor({
             onSubmit={submitAgentEdit}
             onKeyDown={(event) => {
               if (event.key === "Escape" && !agentSubmitting) setAgentRequest(null);
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.currentTarget.requestSubmit();
+              }
             }}
           >
-            <input
+            <textarea
               autoFocus
               aria-label="Как изменить выделенный текст?"
               placeholder="Как изменить выделенный текст?"
+              rows={2}
               value={agentInstruction}
               onChange={(event) => setAgentInstruction(event.target.value)}
               disabled={agentSubmitting || agentPending}

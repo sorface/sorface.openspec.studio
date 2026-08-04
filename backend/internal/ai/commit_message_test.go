@@ -17,14 +17,14 @@ func TestCommitMessageGeneratorParsesStructuredResponse(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	bin := t.TempDir()
-	writeExecutable(t, filepath.Join(bin, "codex"), "#!/bin/sh\nprintf '%s\\n' '{\"message\":\"{\\\"subject\\\":\\\"docs(openspec): BILL-1842 clarify billing rules\\\",\\\"body\\\":\\\"Updated spec.\\\"}\"}'\n")
+	writeExecutable(t, filepath.Join(bin, "codex"), "#!/bin/sh\nprintf '%s\\n' '{\"message\":\"{\\\"subject\\\":\\\"BILL-1842: уточнить правила биллинга\\\",\\\"body\\\":\\\"- Обновлена спецификация\\\"}\"}'\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	generator := NewCommitMessageGenerator(t.TempDir())
 	message, err := generator.Generate(context.Background(), taskcontext.MessageRequest{
 		Task: "BILL-1842", Paths: []string{"openspec/spec.md"}, Diff: "diff --git a/openspec/spec.md b/openspec/spec.md",
 		Provider: "codex",
 	})
-	if err != nil || message.Subject != "docs(openspec): BILL-1842 clarify billing rules" || message.Body != "Updated spec." {
+	if err != nil || message.Subject != "BILL-1842: уточнить правила биллинга" || message.Body != "- Обновлена спецификация" {
 		t.Fatalf("message = %#v, %v", message, err)
 	}
 }

@@ -32,5 +32,22 @@ export interface DocumentHistoryResponse {
   items: DocumentHistoryEntry[];
 }
 
+export interface DocumentAnnotationEntry {
+  startLine: number;
+  endLine: number;
+  hash?: string;
+  shortHash?: string;
+  author: string;
+  authorEmail?: string;
+  authoredAt?: string;
+  subject: string;
+  lines: string[];
+  local: boolean;
+}
+
+export interface DocumentAnnotationsResponse {
+  items: DocumentAnnotationEntry[];
+}
+
 export type DocumentHistoryStatus = "idle" | "loading" | "ready" | "empty" | "error";
 export type DocumentViewStatus = "idle" | "loading" | "ready" | "empty" | "error" | "unavailable";

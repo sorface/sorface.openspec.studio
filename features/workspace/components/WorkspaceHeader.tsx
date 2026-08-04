@@ -13,11 +13,12 @@ interface WorkspaceHeaderProps {
   draftSaved: boolean;
   onAgentSettingsToggle: () => void;
   onPublish: () => void;
+  onReceive: () => void;
   projects: ProjectsController;
   tasks: TaskContextController;
 }
 
-export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettingsToggle, onPublish, projects, tasks }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
   const serverStatus = useSystemStatus();
   const activeProject = projects.activeProject;
   const provider = activeProject?.defaultAiProvider;
@@ -39,7 +40,29 @@ export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettings
       </div>
 
       <ProjectSwitcher controller={projects} />
-      <TaskContextSelector controller={tasks} projectSelected={!!activeProject} />
+      <div className="task-context-publish-group">
+        <TaskContextSelector controller={tasks} projectSelected={!!activeProject} />
+        <button
+          className="publish-icon-button receive-icon-button"
+          type="button"
+          aria-label={tasks.syncing ? "Получаем remote-изменения" : "Получить изменения текущей задачи из remote"}
+          disabled={!activeProject || !tasks.overview?.active || tasks.switching || tasks.syncing || tasks.preparing || tasks.publishing}
+          title={!activeProject ? "Сначала выберите проект" : !tasks.overview?.active ? "Сначала откройте задачу" : tasks.syncing ? "Получаем изменения…" : "Получить remote-изменения текущей задачи"}
+          onClick={onReceive}
+        >
+          <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 3.2v9.2m0 0 3.3-3.3M9 12.4 5.7 9.1M4 13v.5A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5V13" /></svg>
+        </button>
+        <button
+          className="publish-icon-button"
+          type="button"
+          aria-label={tasks.preparing ? "Готовим публикацию" : "Опубликовать артефакты текущей задачи"}
+          disabled={!activeProject || !tasks.overview?.active || tasks.switching || tasks.syncing || tasks.preparing || tasks.publishing}
+          title={!activeProject ? "Сначала выберите проект" : !tasks.overview?.active ? "Сначала откройте задачу" : tasks.preparing ? "Готовим публикацию…" : "Опубликовать OpenSpec-артефакты текущей задачи"}
+          onClick={onPublish}
+        >
+          <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 12.8V3.6m0 0L5.7 6.9M9 3.6l3.3 3.3M4 11.4v2.1A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-2.1" /></svg>
+        </button>
+      </div>
 
       <div className="workspace-status">
         <span className={`server-status ${serverStatus}`}>
@@ -49,16 +72,6 @@ export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettings
       </div>
 
       <div className="top-actions">
-        <button
-          className="publish-button"
-          type="button"
-          disabled={!activeProject || !tasks.overview?.active || tasks.switching || tasks.preparing || tasks.publishing}
-          title={!activeProject ? "Сначала выберите проект" : !tasks.overview?.active ? "Сначала откройте задачу" : "Опубликовать OpenSpec-артефакты текущей задачи"}
-          onClick={onPublish}
-        >
-          <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 12.8V3.6m0 0L5.7 6.9M9 3.6l3.3 3.3M4 11.4v2.1A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-2.1" /></svg>
-          {tasks.preparing ? "Готовим…" : "Опубликовать"}
-        </button>
         <div className="provider-settings">
           <button
             className="provider-button"

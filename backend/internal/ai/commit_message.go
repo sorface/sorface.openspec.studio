@@ -18,8 +18,10 @@ type CommitMessageGenerator struct {
 	timeout time.Duration
 }
 
+const CommitMessageTimeout = 45 * time.Second
+
 func NewCommitMessageGenerator(dataDir string) *CommitMessageGenerator {
-	return &CommitMessageGenerator{dataDir: dataDir, timeout: 45 * time.Second}
+	return &CommitMessageGenerator{dataDir: dataDir, timeout: CommitMessageTimeout}
 }
 
 func (generator *CommitMessageGenerator) Generate(ctx context.Context, input taskcontext.MessageRequest) (taskcontext.CommitMessage, error) {
@@ -40,10 +42,11 @@ func (generator *CommitMessageGenerator) Generate(ctx context.Context, input tas
 		return taskcontext.CommitMessage{}, err
 	}
 	paths, _ := json.Marshal(input.Paths)
-	prompt := "Сформируй сообщение conventional commit по точному diff OpenSpec-артефактов. " +
+	prompt := "Сформируй на русском языке сообщение commit по точному diff OpenSpec-артефактов. " +
 		"Не используй инструменты, shell или файлы. Не добавляй факты, которых нет в diff. " +
 		"Ответь только JSON-объектом {\"subject\":\"...\",\"body\":\"...\"}. " +
-		"Subject должен начинаться с docs(openspec):, быть не длиннее 200 символов и содержать точный номер задачи " + input.Task + ".\n\n" +
+		"Subject должен иметь точный формат \"" + input.Task + ": <короткое сообщение>\" и быть не длиннее 240 символов. " +
+		"Body должен быть непустым маркированным списком фактических изменений, каждая строка начинается с \"- \".\n\n" +
 		"ЗАДАЧА: " + input.Task + "\nPATHS: " + string(paths) + "\nDIFF:\n" + input.Diff
 	result, runErr := generator.runner.Run(ctx, processrunner.Command{
 		Executable: executable, Arguments: arguments, Directory: working, Stdin: prompt,

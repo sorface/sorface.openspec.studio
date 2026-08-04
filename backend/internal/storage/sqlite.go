@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -130,8 +131,16 @@ CREATE TABLE IF NOT EXISTS draft_mutations (
 	after_content TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS draft_mutations_set_idx ON draft_mutations(set_id);
+CREATE TABLE IF NOT EXISTS openspec_change_drafts (
+	project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+	payload_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
 VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 `
 
 type SQLite struct {
@@ -518,6 +527,39 @@ func (store *SQLite) GetOperation(ctx context.Context, id string) (operation.Ope
 	return scanOperation(row)
 }
 
+func (store *SQLite) ListOpenSpecOperations(
+	ctx context.Context,
+	projectID string,
+	change string,
+	limit int,
+) ([]operation.Operation, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, project_id, kind, status, provider, model, prompt, input_json,
+		       result_json, error_code, error_message, correlation_id, openspec_action,
+		       openspec_change, openspec_schema, openspec_artifact, openspec_fingerprint,
+		       created_at, updated_at
+		FROM operations
+		WHERE project_id = ? AND kind = ? AND openspec_change = ?
+		ORDER BY created_at DESC
+		LIMIT ?`, projectID, operation.KindOpenSpec, change, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]operation.Operation, 0)
+	for rows.Next() {
+		item, scanErr := scanOperation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (store *SQLite) UpdateOperation(ctx context.Context, item operation.Operation) (operation.Operation, error) {
 	current, err := store.GetOperation(ctx, item.ID)
 	if err != nil {
@@ -604,6 +646,21 @@ func (store *SQLite) CreateRepository(ctx context.Context, item operation.Reposi
 		item.Fingerprint, item.Branch, item.CommitSHA, item.Dirty,
 		formatTime(now), formatTime(now))
 	return item, err
+}
+
+func (store *SQLite) UpdateRepository(ctx context.Context, item operation.RepositoryLink) (operation.RepositoryLink, error) {
+	result, err := store.db.ExecContext(ctx, `
+		UPDATE repositories
+		SET fingerprint=?, branch=?, commit_sha=?, dirty=?
+		WHERE id=? AND project_id=?`,
+		item.Fingerprint, item.Branch, item.CommitSHA, item.Dirty, item.ID, item.ProjectID)
+	if err != nil {
+		return operation.RepositoryLink{}, err
+	}
+	if affected, affectedErr := result.RowsAffected(); affectedErr != nil || affected != 1 {
+		return operation.RepositoryLink{}, project.ErrNotFound
+	}
+	return item, nil
 }
 
 func (store *SQLite) ListRepositories(ctx context.Context, projectID string) ([]operation.RepositoryLink, error) {
@@ -787,6 +844,74 @@ func (store *SQLite) UpdateDraftSetStatus(
 		return operation.DraftSet{}, project.ErrNotFound
 	}
 	return store.GetDraftSet(ctx, id)
+}
+
+func (store *SQLite) GetChangeCreationDraft(
+	ctx context.Context,
+	projectID string,
+) (operation.ChangeCreationDraft, error) {
+	var payload, created, updated string
+	err := store.db.QueryRowContext(ctx, `
+		SELECT payload_json, created_at, updated_at
+		FROM openspec_change_drafts WHERE project_id=?`, projectID).Scan(&payload, &created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return operation.ChangeCreationDraft{}, operation.ErrChangeCreationDraftNotFound
+	}
+	if err != nil {
+		return operation.ChangeCreationDraft{}, err
+	}
+	var item operation.ChangeCreationDraft
+	if err := json.Unmarshal([]byte(payload), &item); err != nil {
+		return operation.ChangeCreationDraft{}, err
+	}
+	item.ProjectID = projectID
+	item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return operation.ChangeCreationDraft{}, err
+	}
+	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+	return item, err
+}
+
+func (store *SQLite) UpsertChangeCreationDraft(
+	ctx context.Context,
+	item operation.ChangeCreationDraft,
+) (operation.ChangeCreationDraft, error) {
+	now := time.Now().UTC()
+	createdAt := item.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	item.CreatedAt = createdAt
+	item.UpdatedAt = now
+	payload, err := json.Marshal(item)
+	if err != nil {
+		return operation.ChangeCreationDraft{}, err
+	}
+	_, err = store.db.ExecContext(ctx, `
+		INSERT INTO openspec_change_drafts(project_id, payload_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(project_id) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at`,
+		item.ProjectID, string(payload), formatTime(createdAt), formatTime(now))
+	if err != nil {
+		return operation.ChangeCreationDraft{}, err
+	}
+	return store.GetChangeCreationDraft(ctx, item.ProjectID)
+}
+
+func (store *SQLite) DeleteChangeCreationDraft(ctx context.Context, projectID string) error {
+	result, err := store.db.ExecContext(ctx, "DELETE FROM openspec_change_drafts WHERE project_id=?", projectID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return operation.ErrChangeCreationDraftNotFound
+	}
+	return nil
 }
 
 func (store *SQLite) ListContext(ctx context.Context, operationID string) ([]operation.ContextEntry, error) {

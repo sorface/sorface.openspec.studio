@@ -20,6 +20,8 @@ export function createAiOperation(
     reasoningEffort?: "low";
     mode?: "inline";
     selection?: string;
+    selectionPrefix?: string;
+    selectionSuffix?: string;
   },
 ): Promise<AiOperation> {
   return apiRequest(`${projectPath(projectId)}/operations`, { method: "POST", body: input });

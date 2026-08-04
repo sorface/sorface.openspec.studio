@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/features/api/api-client";
-import { getDocumentHistory } from "@/features/documents/api/documents-client";
+import { getDocumentAnnotations, getDocumentHistory } from "@/features/documents/api/documents-client";
 import type {
+  DocumentAnnotationEntry,
   DocumentHistoryEntry,
   DocumentHistoryStatus,
 } from "@/features/documents/model/document-types";
@@ -12,6 +13,7 @@ export interface DocumentHistoryController {
   open: boolean;
   status: DocumentHistoryStatus;
   items: DocumentHistoryEntry[];
+  annotations: DocumentAnnotationEntry[];
   error: ApiError | null;
   show: () => void;
   close: () => void;
@@ -22,7 +24,7 @@ function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) return error;
   return new ApiError(0, {
     code: "UNKNOWN_ERROR",
-    message: "Не удалось загрузить историю файла",
+    message: "Не удалось загрузить Git-данные файла",
     details: error,
   });
 }
@@ -35,6 +37,7 @@ export function useDocumentHistoryController(
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<DocumentHistoryStatus>("idle");
   const [items, setItems] = useState<DocumentHistoryEntry[]>([]);
+  const [annotations, setAnnotations] = useState<DocumentAnnotationEntry[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
   const requestRef = useRef<AbortController | null>(null);
 
@@ -46,15 +49,20 @@ export function useDocumentHistoryController(
     setOpen(true);
     setStatus("loading");
     setError(null);
-    void getDocumentHistory(projectId, path, request.signal)
-      .then((history) => {
+    void Promise.all([
+      getDocumentAnnotations(projectId, path, request.signal),
+      getDocumentHistory(projectId, path, request.signal),
+    ])
+      .then(([annotationItems, history]) => {
         if (request.signal.aborted) return;
+        setAnnotations(annotationItems);
         setItems(history);
-        setStatus(history.length > 0 ? "ready" : "empty");
+        setStatus(annotationItems.length > 0 || history.length > 0 ? "ready" : "empty");
       })
       .catch((cause) => {
         if (request.signal.aborted) return;
         setItems([]);
+        setAnnotations([]);
         setError(toApiError(cause));
         setStatus("error");
       });
@@ -73,6 +81,7 @@ export function useDocumentHistoryController(
       setOpen(false);
       setStatus("idle");
       setItems([]);
+      setAnnotations([]);
       setError(null);
     });
     return () => requestRef.current?.abort();
@@ -82,9 +91,10 @@ export function useDocumentHistoryController(
     open,
     status,
     items,
+    annotations,
     error,
     show: load,
     close,
     retry: load,
-  }), [close, error, items, load, open, status]);
+  }), [annotations, close, error, items, load, open, status]);
 }

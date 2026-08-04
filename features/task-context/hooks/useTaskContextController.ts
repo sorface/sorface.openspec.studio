@@ -3,14 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@/features/api/api-client";
 import {
+  generateTaskPublicationMessage,
   getTaskWorkspaces,
   openTaskWorkspace,
   previewTaskPublication,
   publishTaskArtifacts,
+  syncTaskWorkspace,
 } from "@/features/task-context/api/task-context-client";
 import type {
   PublicationPreview,
   PublicationResult,
+  TaskSyncResult,
   TaskWorkspaceOverview,
 } from "@/features/task-context/model/task-context-types";
 
@@ -18,14 +21,18 @@ export interface TaskContextController {
   overview: TaskWorkspaceOverview | null;
   status: "idle" | "loading" | "ready" | "error";
   switching: boolean;
+  syncing: boolean;
   preparing: boolean;
+  generating: boolean;
   publishing: boolean;
   preview: PublicationPreview | null;
   result: PublicationResult | null;
   error: ApiError | null;
   openTask: (branch: string) => Promise<void>;
+  receiveRemoteChanges: () => Promise<TaskSyncResult>;
   refresh: () => void;
   preparePublication: () => Promise<void>;
+  generatePublicationMessage: () => Promise<PublicationPreview>;
   publish: (message: string, body: string) => Promise<PublicationResult>;
   dismissPublication: () => void;
   clearError: () => void;
@@ -41,7 +48,9 @@ export function useTaskContextController(projectId?: string): TaskContextControl
   const [overview, setOverview] = useState<TaskWorkspaceOverview | null>(null);
   const [status, setStatus] = useState<TaskContextController["status"]>(projectId ? "loading" : "idle");
   const [switching, setSwitching] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [preview, setPreview] = useState<PublicationPreview | null>(null);
   const [result, setResult] = useState<PublicationResult | null>(null);
@@ -101,6 +110,29 @@ export function useTaskContextController(projectId?: string): TaskContextControl
 
   const refresh = useCallback(() => setReloadVersion((current) => current + 1), []);
 
+  const receiveRemoteChanges = useCallback(async () => {
+    if (!projectId || mutationInFlight.current) {
+      throw new ApiError(409, { code: "TASK_SYNC_UNAVAILABLE", message: "Синхронизация задачи сейчас недоступна" });
+    }
+    mutationInFlight.current = true;
+    setSyncing(true);
+    setError(null);
+    setPreview(null);
+    try {
+      const next = await syncTaskWorkspace(projectId);
+      setReloadVersion((current) => current + 1);
+      setResult(null);
+      return next;
+    } catch (cause) {
+      const next = toApiError(cause, "Не удалось получить изменения из remote");
+      setError(next);
+      throw next;
+    } finally {
+      mutationInFlight.current = false;
+      setSyncing(false);
+    }
+  }, [projectId]);
+
   const preparePublication = useCallback(async () => {
     if (!projectId || mutationInFlight.current) return;
     mutationInFlight.current = true;
@@ -117,6 +149,27 @@ export function useTaskContextController(projectId?: string): TaskContextControl
       setPreparing(false);
     }
   }, [projectId]);
+
+  const generatePublicationMessage = useCallback(async () => {
+    if (!projectId || !preview || mutationInFlight.current) {
+      throw new ApiError(409, { code: "PUBLICATION_UNAVAILABLE", message: "Публикация уже изменилась" });
+    }
+    mutationInFlight.current = true;
+    setGenerating(true);
+    setError(null);
+    try {
+      const next = await generateTaskPublicationMessage(projectId, preview.token);
+      setPreview(next);
+      return next;
+    } catch (cause) {
+      const next = toApiError(cause, "Не удалось сформировать сообщение. Можно продолжить вручную");
+      setError(next);
+      throw next;
+    } finally {
+      mutationInFlight.current = false;
+      setGenerating(false);
+    }
+  }, [preview, projectId]);
 
   const publish = useCallback(async (message: string, body: string) => {
     if (!projectId || !preview || mutationInFlight.current) {
@@ -146,24 +199,28 @@ export function useTaskContextController(projectId?: string): TaskContextControl
   }, [preview, projectId]);
 
   const dismissPublication = useCallback(() => {
-    if (!publishing) setPreview(null);
-  }, [publishing]);
+    if (!generating && !publishing) setPreview(null);
+  }, [generating, publishing]);
   const clearError = useCallback(() => setError(null), []);
 
   return useMemo(() => ({
     overview,
     status,
     switching,
+    syncing,
     preparing,
+    generating,
     publishing,
     preview,
     result,
     error,
     openTask,
+    receiveRemoteChanges,
     refresh,
     preparePublication,
+    generatePublicationMessage,
     publish,
     dismissPublication,
     clearError,
-  }), [clearError, dismissPublication, error, openTask, overview, preparePublication, preparing, preview, publish, publishing, refresh, result, status, switching]);
+  }), [clearError, dismissPublication, error, generatePublicationMessage, generating, openTask, overview, preparePublication, preparing, preview, publish, publishing, receiveRemoteChanges, refresh, result, status, switching, syncing]);
 }

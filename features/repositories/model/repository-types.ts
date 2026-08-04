@@ -10,6 +10,11 @@ export interface RepositoryLink {
   dirty: boolean;
   available: boolean;
   readOnlyForAi: true;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  localBranches: string[];
+  remoteBranches: string[];
 }
 
 export type OperationStatus =

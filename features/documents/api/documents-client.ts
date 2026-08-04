@@ -1,5 +1,6 @@
 import { apiRequest } from "@/features/api/api-client";
 import type {
+  DocumentAnnotationsResponse,
   DocumentContent,
   DocumentHistoryResponse,
   DocumentListResponse,
@@ -11,6 +12,16 @@ const documentsPath = (projectId: string) =>
 
 export async function listDocuments(projectId: string, signal?: AbortSignal): Promise<DocumentListResponse["items"]> {
   const response = await apiRequest<DocumentListResponse>(documentsPath(projectId), { signal });
+  return response.items;
+}
+
+export async function getDocumentAnnotations(
+  projectId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<DocumentAnnotationsResponse["items"]> {
+  const query = new URLSearchParams({ path });
+  const response = await apiRequest<DocumentAnnotationsResponse>(`${documentsPath(projectId)}/annotations?${query}`, { signal });
   return response.items;
 }
 

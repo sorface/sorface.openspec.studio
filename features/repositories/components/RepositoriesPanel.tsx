@@ -3,11 +3,104 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { RepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 import { cloneRecoveryHint } from "@/features/repositories/model/repository-operation";
+import type { RepositoryLink } from "@/features/repositories/model/repository-types";
+
+function RepositoryCard({ repository, controller }: {
+  repository: RepositoryLink;
+  controller: RepositoriesController;
+}) {
+  const [target, setTarget] = useState(`local:${repository.branch ?? ""}`);
+  const busy = controller.busyRepositoryId === repository.id;
+  const remote = target.startsWith("remote:");
+  const branch = target.slice(target.indexOf(":") + 1);
+  const currentTarget = `local:${repository.branch ?? ""}`;
+  const selectableRemoteBranches = repository.remoteBranches.filter((item) => {
+    const localName = item.slice(item.indexOf("/") + 1);
+    return !repository.localBranches.includes(localName);
+  });
+
+  const switchBranch = async () => {
+    try {
+      await controller.switchBranch(repository.id, branch, remote);
+      const localBranch = remote ? branch.slice(branch.indexOf("/") + 1) : branch;
+      setTarget(`local:${localBranch}`);
+    } catch {
+      // Safe API error is rendered by the parent panel.
+    }
+  };
+
+  return (
+    <article className="repository-card">
+      <i className="repo-icon">◆</i>
+      <div className="repository-card-info">
+        <b>{repository.name}</b>
+        <code>{repository.remoteUrl}</code>
+        <small>
+          {repository.available
+            ? `${repository.branch || "detached"} · ${repository.dirty ? "есть локальные изменения" : "чисто"}`
+            : "Репозиторий недоступен"}
+          {repository.upstream && ` · ${repository.upstream}`}
+          {(repository.ahead > 0 || repository.behind > 0) && ` · ↑${repository.ahead} ↓${repository.behind}`}
+        </small>
+      </div>
+      <span className={`repository-access ${repository.available ? "available" : "unavailable"}`}>
+        {repository.available ? "AI: read-only" : "offline"}
+      </span>
+      {repository.available && (
+        <div className="repository-card-controls">
+          <label>
+            <span>Ветка</span>
+            <select
+              aria-label={`Ветка репозитория ${repository.name}`}
+              value={target}
+              disabled={busy || repository.dirty}
+              onChange={(event) => setTarget(event.target.value)}
+            >
+              <optgroup label="Локальные ветки">
+                {repository.localBranches.map((item) => (
+                  <option key={`local:${item}`} value={`local:${item}`}>{item}</option>
+                ))}
+              </optgroup>
+              {selectableRemoteBranches.length > 0 && (
+                <optgroup label="Remote branches">
+                  {selectableRemoteBranches.map((item) => (
+                    <option key={`remote:${item}`} value={`remote:${item}`}>{item}</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={busy || repository.dirty || !branch || target === currentTarget}
+            title={repository.dirty ? "Сначала сохраните локальные изменения" : "Переключить существующую ветку"}
+            onClick={() => void switchBranch()}
+          >
+            {busy && controller.busyAction === "switch" ? "Переключение…" : "Перейти"}
+          </button>
+          <button
+            type="button"
+            className="repository-update-button"
+            disabled={busy || repository.dirty || !repository.upstream}
+            title={repository.upstream ? `Получить обновления из ${repository.upstream}` : "Для ветки не настроен upstream"}
+            onClick={() => void controller.update(repository.id)}
+          >
+            {busy && controller.busyAction === "update" ? "Получение…" : "↓ Получить обновления"}
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
 
 export function RepositoriesPanel({ controller, enabled }: { controller: RepositoriesController; enabled: boolean }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
   const active = controller.operation && !["completed", "cancelled", "failed"].includes(controller.operation.status);
+  const repositoryActionError = controller.error && [
+    "WORKTREE_DIRTY", "GIT_BRANCH_NOT_FOUND", "GIT_BRANCH_EXISTS", "GIT_UPSTREAM_MISSING",
+    "GIT_FAST_FORWARD_REQUIRED", "GIT_TIMEOUT", "GIT_OPERATION_FAILED",
+  ].includes(controller.error.code);
 
   const closeDialog = useCallback(() => setOpen(false), []);
 
@@ -63,7 +156,7 @@ export function RepositoriesPanel({ controller, enabled }: { controller: Reposit
                   <h3>Подключённые репозитории</h3>
                   <span>{controller.repositories.length}</span>
                 </div>
-                <button type="button" onClick={controller.retry} disabled={controller.loading}>↻ Обновить</button>
+                <button type="button" onClick={controller.retry} disabled={controller.loading}>↻ Перечитать</button>
               </header>
 
               {controller.loading && !active && <div className="repositories-state">Загрузка репозиториев…</div>}
@@ -75,21 +168,7 @@ export function RepositoriesPanel({ controller, enabled }: { controller: Reposit
               )}
               <div className="repositories-grid">
                 {controller.repositories.map((repository) => (
-                  <article className="repository-card" key={repository.id}>
-                    <i className="repo-icon">◆</i>
-                    <div>
-                      <b>{repository.name}</b>
-                      <code>{repository.remoteUrl}</code>
-                      <small>
-                        {repository.available
-                          ? `${repository.branch || "detached"} · ${repository.dirty ? "есть локальные изменения" : "чисто"}`
-                          : "Репозиторий недоступен"}
-                      </small>
-                    </div>
-                    <span className={repository.available ? "available" : "unavailable"}>
-                      {repository.available ? "read-only" : "offline"}
-                    </span>
-                  </article>
+                  <RepositoryCard key={repository.id} repository={repository} controller={controller} />
                 ))}
               </div>
               {controller.error && (
@@ -97,7 +176,9 @@ export function RepositoriesPanel({ controller, enabled }: { controller: Reposit
                   <b>{controller.error.message}</b>
                   <small>{cloneRecoveryHint(controller.error.code)}</small>
                   {controller.error.correlationId && <small>Correlation ID: {controller.error.correlationId}</small>}
-                  <button type="button" onClick={() => setOpen(true)}>Исправить и повторить</button>
+                  <button type="button" onClick={repositoryActionError ? controller.retry : () => setOpen(true)}>
+                    {repositoryActionError ? "Перечитать состояние" : "Исправить и повторить"}
+                  </button>
                 </div>
               )}
               {active && (

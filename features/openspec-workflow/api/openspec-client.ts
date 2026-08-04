@@ -1,9 +1,11 @@
 import { apiRequest } from "@/features/api/api-client";
 import type {
+  ChangeCreationDraft,
   DeleteOpenSpecChangeResult,
   OpenSpecChangeDetails,
   OpenSpecDraftSet,
   OpenSpecOperation,
+  OpenSpecOperationList,
   OpenSpecOverview,
   OpenSpecValidation,
   StartOpenSpecActionInput,
@@ -52,11 +54,45 @@ export function startOpenSpecAction(
   return apiRequest(`${projectPath(projectId)}/actions`, { method: "POST", body: input });
 }
 
+export async function getChangeCreationDraft(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ChangeCreationDraft | null> {
+  const value = await apiRequest<ChangeCreationDraft | undefined>(
+    `${projectPath(projectId)}/change-creation-draft`,
+    { signal },
+  );
+  return value ?? null;
+}
+
+export function saveChangeCreationDraft(
+  projectId: string,
+  draft: ChangeCreationDraft,
+): Promise<ChangeCreationDraft> {
+  return apiRequest(`${projectPath(projectId)}/change-creation-draft`, {
+    method: "PUT",
+    body: draft,
+  });
+}
+
+export function deleteChangeCreationDraft(projectId: string): Promise<void> {
+  return apiRequest(`${projectPath(projectId)}/change-creation-draft`, { method: "DELETE" });
+}
+
 export function getOpenSpecOperation(
   projectId: string,
   operationId: string,
 ): Promise<OpenSpecOperation> {
   return apiRequest(`${projectPath(projectId)}/operations/${encodeURIComponent(operationId)}`);
+}
+
+export function getOpenSpecOperations(
+  projectId: string,
+  change: string,
+  signal?: AbortSignal,
+): Promise<OpenSpecOperationList> {
+  const query = new URLSearchParams({ change });
+  return apiRequest(`${projectPath(projectId)}/operations?${query.toString()}`, { signal });
 }
 
 export function cancelOpenSpecOperation(

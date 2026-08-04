@@ -116,18 +116,70 @@ func TestBuildActionPromptResolvesDependencyFromChangeDirectory(t *testing.T) {
 	}
 }
 
-func TestCreateCompletionRequiresProposalAndSpecs(t *testing.T) {
+func TestBuildActionPromptExpandsTaskSpecDependencies(t *testing.T) {
+	root := t.TempDir()
+	changeDir := filepath.Join(root, "openspec", "changes", "add-proxy-logging")
+	for path, content := range map[string]string{
+		"specs/browser-authentication/spec.md": "# Browser authentication spec",
+		"specs/identity-management/spec.md":    "# Identity management spec",
+		"design.md":                            "# Design",
+	} {
+		target := filepath.Join(changeDir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prompt, err := BuildActionPrompt("Create tasks", Instructions{
+		ArtifactID: "tasks", ChangeDir: changeDir,
+		ResolvedOutputPath: filepath.Join(changeDir, "tasks.md"),
+		Dependencies: []InstructionDependency{
+			{ID: "specs", Done: true, Path: "specs/**/*.md"},
+			{ID: "design", Done: true, Path: "design.md"},
+		},
+	}, root)
+	if err != nil || !strings.Contains(prompt, "# Browser authentication spec") ||
+		!strings.Contains(prompt, "# Identity management spec") || !strings.Contains(prompt, "# Design") ||
+		!strings.Contains(prompt, "openspec/changes/add-proxy-logging/specs/browser-authentication/spec.md") {
+		t.Fatalf("prompt=%q err=%v", prompt, err)
+	}
+}
+
+func TestBuildActionPromptRejectsDependencyGlobOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "*.md")
+	_, err := BuildActionPrompt("Create tasks", Instructions{
+		ArtifactID: "tasks", Dependencies: []InstructionDependency{{ID: "specs", Done: true, Path: outside}},
+	}, root)
+	if !errors.Is(err, ErrScopeViolation) {
+		t.Fatalf("outside glob error = %v", err)
+	}
+}
+
+func TestCreateCompletionRequiresOnlyAcceptedProposal(t *testing.T) {
 	input := CreateActionInput{Kind: ActionCreate}
 	status := Status{Artifacts: []Artifact{
 		{ID: "proposal", Status: "done"},
 		{ID: "specs", Status: "blocked"},
 	}}
-	if artifactCompleted(status, input) {
-		t.Fatal("create must remain incomplete while specs are blocked")
-	}
-	status.Artifacts[1].Status = "done"
 	if !artifactCompleted(status, input) {
-		t.Fatal("create must complete after proposal and specs are done")
+		t.Fatal("create must complete after proposal without generating specs")
+	}
+	status.Artifacts[0].Status = "ready"
+	if artifactCompleted(status, input) {
+		t.Fatal("create must remain incomplete while proposal is missing")
+	}
+}
+
+func TestCreateRequiresAcceptedProposalBeforeStarting(t *testing.T) {
+	service := &ActionService{}
+	_, err := service.Start(context.Background(), "project", CreateActionInput{
+		Kind: ActionCreate, Change: "add-guided-workflow",
+	})
+	if !errors.Is(err, ErrActionBlocked) {
+		t.Fatalf("expected empty proposal to be blocked, got %v", err)
 	}
 }
 
@@ -135,11 +187,82 @@ func TestBuildExplorePromptIsReadOnly(t *testing.T) {
 	prompt, err := BuildExplorePrompt("Исследовать импорт проекта")
 	if err != nil || !strings.Contains(prompt, "Do not create, edit, rename, or delete any files") ||
 		!strings.Contains(prompt, "USER TASK:\nИсследовать импорт проекта") ||
-		!strings.Contains(prompt, "research summary in Russian") {
+		!strings.Contains(prompt, `"state":"needs_input|proposal_ready"`) {
 		t.Fatalf("prompt=%s err=%v", prompt, err)
 	}
 	if _, err := BuildExplorePrompt("  "); !errors.Is(err, ErrActionBlocked) {
 		t.Fatalf("expected blocked empty prompt, got %v", err)
+	}
+}
+
+func TestParseExplorationResultSupportsQuestionsAndProposal(t *testing.T) {
+	questions, err := ParseExplorationResult(`{
+  "state":"needs_input",
+  "summary":"Нужно определить аудиторию.",
+  "questions":[{"id":"audience","prompt":"Для кого доступен сценарий?","why":"Меняет права","kind":"single_choice","options":["Все","Администраторы"]}],
+  "assumptions":[],
+  "suggestedNames":[]
+}`)
+	if err != nil || questions.State != "needs_input" || len(questions.Questions) != 1 {
+		t.Fatalf("questions=%#v err=%v", questions, err)
+	}
+	ready, err := ParseExplorationResult("```json\n" + `{
+  "state":"proposal_ready",
+  "summary":"Scope согласован.",
+  "questions":[],
+  "assumptions":["Только desktop"],
+  "proposal":"## Why\n\nНужен новый workflow.",
+  "suggestedNames":["add-guided-workflow"]
+}` + "\n```")
+	if err != nil || ready.State != "proposal_ready" || !strings.Contains(ready.Proposal, "## Why") {
+		t.Fatalf("ready=%#v err=%v", ready, err)
+	}
+}
+
+func TestParseExplorationResultRejectsInvalidContract(t *testing.T) {
+	cases := []string{
+		`{"state":"needs_input","summary":"x","questions":[],"assumptions":[],"suggestedNames":[]}`,
+		`{"state":"proposal_ready","summary":"x","questions":[],"assumptions":[],"proposal":"","suggestedNames":["Bad Name"]}`,
+		`{"state":"proposal_ready","summary":"x","questions":[],"assumptions":[],"proposal":"# P","suggestedNames":["add-good"],"secret":"reasoning"}`,
+		`plain text`,
+	}
+	for _, value := range cases {
+		if _, err := ParseExplorationResult(value); !errors.Is(err, ErrInvalidExploreResult) {
+			t.Fatalf("expected invalid result for %q, got %v", value, err)
+		}
+	}
+}
+
+func TestProposalOutputPathRejectsPathsOutsideNamedChange(t *testing.T) {
+	root := t.TempDir()
+	valid, err := proposalOutputPath(root, "add-auth", Instructions{
+		ResolvedOutputPath: filepath.Join(root, "openspec", "changes", "add-auth", "proposal.md"),
+	})
+	if err != nil || !strings.HasSuffix(valid, "openspec/changes/add-auth/proposal.md") {
+		t.Fatalf("valid=%q err=%v", valid, err)
+	}
+	_, err = proposalOutputPath(root, "add-auth", Instructions{
+		ResolvedOutputPath: filepath.Join(root, "openspec", "changes", "other", "proposal.md"),
+	})
+	if !errors.Is(err, ErrScopeViolation) {
+		t.Fatalf("expected scope violation, got %v", err)
+	}
+}
+
+func TestProposalOutputPathAcceptsCanonicalEquivalentRoot(t *testing.T) {
+	parent := t.TempDir()
+	realRoot := filepath.Join(parent, "real-store")
+	if err := os.MkdirAll(filepath.Join(realRoot, "openspec", "changes", "add-auth"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := filepath.Join(parent, "store-alias")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	output := filepath.Join(realRoot, "openspec", "changes", "add-auth", "proposal.md")
+	resolved, err := proposalOutputPath(aliasRoot, "add-auth", Instructions{ResolvedOutputPath: output})
+	if err != nil || resolved != output {
+		t.Fatalf("resolved=%q err=%v", resolved, err)
 	}
 }
 
@@ -152,6 +275,31 @@ func TestExploreScopeRequiresEmptyDiff(t *testing.T) {
 	}})
 	if !errors.Is(err, ErrScopeViolation) {
 		t.Fatalf("expected scope violation, got %v", err)
+	}
+}
+
+func TestSpecsScopeIncludesCurrentProposalAndDeltaSpecsOnly(t *testing.T) {
+	changeRoot := "openspec/changes/add-auth/"
+	allowed := []string{
+		changeRoot + "proposal.md",
+		changeRoot + "specs/browser-authentication/spec.md",
+		changeRoot + "spec/browser-authentication/spec.md",
+	}
+	for _, artifact := range []string{"spec", "specs"} {
+		for _, path := range allowed {
+			if !artifactPathAllowed(changeRoot, artifact, path) {
+				t.Fatalf("artifact %q must allow %q", artifact, path)
+			}
+		}
+		for _, path := range []string{
+			changeRoot + "design.md",
+			changeRoot + "tasks.md",
+			"openspec/changes/other/proposal.md",
+		} {
+			if artifactPathAllowed(changeRoot, artifact, path) {
+				t.Fatalf("artifact %q must reject %q", artifact, path)
+			}
+		}
 	}
 }
 
@@ -296,7 +444,7 @@ func TestOpenSpecExploreReturnsResearchWithoutDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeCodex := filepath.Join(bin, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf '%s\\n' '{\"message\":\"Исследование готово\"}'\n"), 0o700); err != nil {
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf '%s\\n' '{\"message\":\"{\\\"state\\\":\\\"needs_input\\\",\\\"summary\\\":\\\"Исследование готово\\\",\\\"questions\\\":[{\\\"id\\\":\\\"scope\\\",\\\"prompt\\\":\\\"Что входит в scope?\\\",\\\"kind\\\":\\\"text\\\"}],\\\"assumptions\\\":[],\\\"suggestedNames\\\":[]}\"}'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -358,7 +506,7 @@ func TestOpenSpecExploreHasNoConfiguredTimeout(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"turn.started\"}'\nsleep 0.12\nprintf '%s\\n' '{\"message\":\"Исследование завершено\"}'\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"turn.started\"}'\nsleep 0.12\nprintf '%s\\n' '{\"message\":\"{\\\"state\\\":\\\"proposal_ready\\\",\\\"summary\\\":\\\"Исследование завершено\\\",\\\"questions\\\":[],\\\"assumptions\\\":[],\\\"proposal\\\":\\\"## Why\\\\n\\\\nГотово\\\",\\\"suggestedNames\\\":[\\\"add-guided-workflow\\\"]}\"}'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -436,7 +584,7 @@ func TestOpenSpecExploreRejectsProviderAndMutations(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf 'changed' > openspec/explore.md\nprintf '%s\\n' '{\"message\":\"done\"}'\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nprintf 'changed' > openspec/explore.md\nprintf '%s\\n' '{\"message\":\"{\\\"state\\\":\\\"needs_input\\\",\\\"summary\\\":\\\"done\\\",\\\"questions\\\":[{\\\"id\\\":\\\"scope\\\",\\\"prompt\\\":\\\"Scope?\\\",\\\"kind\\\":\\\"text\\\"}],\\\"assumptions\\\":[],\\\"suggestedNames\\\":[]}\"}'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

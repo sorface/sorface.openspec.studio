@@ -36,3 +36,7 @@
 
 - [x] 6.1 Выполнить `npm run check` и исправить frontend, backend и strict OpenSpec validation failures.
 - [x] 6.2 Выполнить `npm run build`, запустить автономный бинарник и проверить health endpoint и встроенный frontend с новым Store Git workflow.
+
+## 7. Управление веткой репозитория контекста
+
+- [x] 7.1 Добавить live branch/upstream read model подключённых репозиториев, CSRF-protected switch existing branch и fast-forward update endpoints с canonical project/repository validation, dirty/non-fast-forward/auth error mapping; добавить branch selector и «Получить обновления» в карточку, покрыть backend, controller/source-contract тестами и browser smoke.

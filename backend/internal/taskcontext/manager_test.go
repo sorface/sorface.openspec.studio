@@ -78,6 +78,99 @@ func TestManagerReusesExistingLocalBranch(t *testing.T) {
 	}
 }
 
+func TestManagerSyncFastForwardsAndPreservesLocalChanges(t *testing.T) {
+	root := createStore(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if output, err := exec.Command("git", "init", "--bare", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init remote: %v\n%s", err, output)
+	}
+	runGit(t, root, "remote", "add", "origin", remote)
+	runGit(t, root, "push", "-u", "origin", "main")
+	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+	updater := filepath.Join(t.TempDir(), "updater")
+	if output, err := exec.Command("git", "clone", remote, updater).CombinedOutput(); err != nil {
+		t.Fatalf("clone updater: %v\n%s", err, output)
+	}
+	runGit(t, updater, "config", "user.name", "Updater")
+	runGit(t, updater, "config", "user.email", "updater@example.com")
+	if err := os.WriteFile(filepath.Join(updater, "openspec", "remote.md"), []byte("remote\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, updater, "add", "openspec/remote.md")
+	runGit(t, updater, "commit", "-m", "docs: remote")
+	runGit(t, updater, "push")
+
+	database, err := storage.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	item, err := database.Create(context.Background(), project.CreateInput{Name: "Store", StorePath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := taskcontext.NewManager(database, filepath.Join(t.TempDir(), "task-worktrees"))
+	if _, err := manager.List(context.Background(), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(root, "openspec", "local.md")
+	if err := os.WriteFile(localPath, []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.Sync(context.Background(), item.ID)
+	if err != nil || !result.Updated || result.Task != "main" || result.Head == result.PreviousHead {
+		t.Fatalf("sync = %#v, %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "openspec", "remote.md")); err != nil {
+		t.Fatalf("remote file missing: %v", err)
+	}
+	if content, err := os.ReadFile(localPath); err != nil || string(content) != "local\n" {
+		t.Fatalf("local change lost: %q, %v", content, err)
+	}
+	result, err = manager.Sync(context.Background(), item.ID)
+	if err != nil || result.Updated || result.Head != result.PreviousHead {
+		t.Fatalf("no-op sync = %#v, %v", result, err)
+	}
+
+	localSpec := filepath.Join(root, "openspec", "spec.md")
+	if err := os.WriteFile(localSpec, []byte("# Local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(updater, "openspec", "spec.md"), []byte("# Remote\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, updater, "add", "openspec/spec.md")
+	runGit(t, updater, "commit", "-m", "docs: conflicting remote")
+	runGit(t, updater, "push")
+	if _, err := manager.Sync(context.Background(), item.ID); !errors.Is(err, taskcontext.ErrSyncConflict) {
+		t.Fatalf("conflicting sync error = %v", err)
+	}
+	if content, err := os.ReadFile(localSpec); err != nil || string(content) != "# Local\n" {
+		t.Fatalf("conflicting local change lost: %q, %v", content, err)
+	}
+}
+
+func TestManagerSyncRequiresUpstream(t *testing.T) {
+	root := createStore(t)
+	database, err := storage.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	item, err := database.Create(context.Background(), project.CreateInput{Name: "Store", StorePath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := taskcontext.NewManager(database, filepath.Join(t.TempDir(), "task-worktrees"))
+	if _, err := manager.List(context.Background(), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Sync(context.Background(), item.ID); !errors.Is(err, taskcontext.ErrSyncUpstream) {
+		t.Fatalf("missing upstream error = %v", err)
+	}
+}
+
 func createStore(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "store")

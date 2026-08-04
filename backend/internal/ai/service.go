@@ -76,6 +76,8 @@ type CreateInput struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	Mode            string `json:"mode,omitempty"`
 	Selection       string `json:"selection,omitempty"`
+	SelectionPrefix string `json:"selectionPrefix,omitempty"`
+	SelectionSuffix string `json:"selectionSuffix,omitempty"`
 	CorrelationID   string `json:"-"`
 }
 
@@ -230,6 +232,8 @@ func (service *Service) Start(ctx context.Context, projectID string, input Creat
 		"reasoningEffort": input.ReasoningEffort,
 		"mode":            input.Mode,
 		"selection":       input.Selection,
+		"selectionPrefix": input.SelectionPrefix,
+		"selectionSuffix": input.SelectionSuffix,
 	})
 	item, err := service.store.CreateOperation(ctx, operation.Operation{
 		ProjectID: projectID, Kind: operation.KindAI, Status: operation.StatusQueued,
@@ -291,10 +295,12 @@ func (service *Service) run(item operation.Operation, entries []resolvedEntry) {
 		ReasoningEffort string `json:"reasoningEffort"`
 		Mode            string `json:"mode"`
 		Selection       string `json:"selection"`
+		SelectionPrefix string `json:"selectionPrefix"`
+		SelectionSuffix string `json:"selectionSuffix"`
 	}
 	_ = json.Unmarshal([]byte(item.InputJSON), &operationInput)
 	if operationInput.Mode == "inline" {
-		service.runInline(ctx, item, entries, operationInput.Selection, operationInput.ReasoningEffort)
+		service.runInline(ctx, item, entries, operationInput.Selection, operationInput.SelectionPrefix, operationInput.SelectionSuffix, operationInput.ReasoningEffort)
 		return
 	}
 	projectItem, err := service.store.Get(ctx, item.ProjectID)
@@ -373,6 +379,8 @@ func (service *Service) runInline(
 	item operation.Operation,
 	entries []resolvedEntry,
 	selection string,
+	selectionPrefix string,
+	selectionSuffix string,
 	reasoningEffort string,
 ) {
 	var target *resolvedEntry
@@ -390,7 +398,7 @@ func (service *Service) runInline(
 		return
 	}
 	before := string(target.content)
-	selectionStart, selectionEnd, ok := locateMarkdownSelection(before, selection)
+	selectionStart, selectionEnd, ok := locateMarkdownSelection(before, selection, selectionPrefix, selectionSuffix)
 	if !ok {
 		service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", "Selected fragment is missing or ambiguous", "")
 		return
@@ -418,7 +426,8 @@ func (service *Service) runInline(
 	}
 	result, runErr := service.runner.Run(ctx, processrunner.Command{
 		Executable: executable, Arguments: args, Directory: working,
-		Stdin: inlinePrompt(item.Prompt, selection), Timeout: service.timeout, MaxOutputBytes: 1 << 20,
+		Stdin:   inlinePrompt(target.Path, before, before[selectionStart:selectionEnd], selection, item.Prompt),
+		Timeout: service.timeout, MaxOutputBytes: 1 << 20,
 	})
 	_ = service.store.SaveAudit(context.Background(), operation.Audit{
 		OperationID: item.ID, Executable: filepath.Base(executable), Arguments: strings.Join(result.Arguments, " "),
@@ -451,11 +460,16 @@ func (service *Service) runInline(
 	service.finish(item, operation.StatusAwaitingReview, "", "", string(payload))
 }
 
-func inlinePrompt(prompt, selection string) string {
+func inlinePrompt(path, markdown, sourceSelection, visualSelection, instruction string) string {
 	return "Выполни короткое редактирование текста без использования инструментов, shell и файлов.\n" +
 		"Ответь только одним JSON-объектом вида {\"replacement\":\"новый текст\"}.\n" +
-		"Поле replacement должно содержать только замену выделенного фрагмента, без пояснений и Markdown-ограждений.\n\n" +
-		"ВЫДЕЛЕННЫЙ ФРАГМЕНТ:\n" + selection + "\n\nИНСТРУКЦИЯ:\n" + prompt
+		"Поле replacement должно содержать только Markdown, заменяющий исходный Markdown-фрагмент. " +
+		"Сохрани структуру списков и форматирование, если инструкция не требует их изменить.\n\n" +
+		"ПУТЬ ФАЙЛА:\n" + path +
+		"\n\nПОЛНЫЙ MARKDOWN-ФАЙЛ:\n<<<FILE\n" + markdown + "\nFILE\n" +
+		"\nВЫДЕЛЕНИЕ В ВИЗУАЛЬНОМ РЕДАКТОРЕ:\n<<<SELECTION\n" + visualSelection + "\nSELECTION\n" +
+		"\nИСХОДНЫЙ MARKDOWN ВЫДЕЛЕННОГО ФРАГМЕНТА:\n<<<SOURCE\n" + sourceSelection + "\nSOURCE\n" +
+		"\nКОММЕНТАРИЙ К ИЗМЕНЕНИЮ:\n<<<COMMENT\n" + instruction + "\nCOMMENT"
 }
 
 func parseInlineReplacement(response string) (string, error) {
@@ -472,10 +486,15 @@ func parseInlineReplacement(response string) (string, error) {
 	return payload.Replacement, nil
 }
 
-func locateMarkdownSelection(markdown, selection string) (int, int, bool) {
+func locateMarkdownSelection(markdown, selection, selectionPrefix, selectionSuffix string) (int, int, bool) {
 	if strings.Count(markdown, selection) == 1 {
 		start := strings.Index(markdown, selection)
 		return start, start + len(selection), true
+	}
+	if strings.TrimSpace(selectionPrefix) != "" || strings.TrimSpace(selectionSuffix) != "" {
+		if start, end, ok := locateSelectionByContext(markdown, selection, selectionPrefix, selectionSuffix); ok {
+			return start, end, true
+		}
 	}
 	tokens := strings.Fields(selection)
 	if len(tokens) == 0 {
@@ -483,16 +502,96 @@ func locateMarkdownSelection(markdown, selection string) (int, int, bool) {
 	}
 	parts := make([]string, len(tokens))
 	for index, token := range tokens {
-		parts[index] = regexp.QuoteMeta(token)
+		parts[index] = markdownTokenPattern(token)
 	}
 	// The visual editor collapses Markdown line wrapping and hides lightweight inline
-	// markers. Permit only whitespace and those markers between the selected words.
-	pattern := strings.Join(parts, "(?:\\s|[*_`~])+")
+	// and block markers. Permit formatting plus list, quote and heading prefixes only
+	// between the selected words, keeping arbitrary prose outside the match forbidden.
+	pattern := strings.Join(parts, "(?:\\s|[*_`~]|[-+>]\\s+|#{1,6}\\s+|\\d+[.)]\\s+)+")
 	matches := regexp.MustCompile(pattern).FindAllStringIndex(markdown, 2)
 	if len(matches) != 1 {
 		return 0, 0, false
 	}
 	return matches[0][0], matches[0][1], true
+}
+
+func markdownTokenPattern(token string) string {
+	const inlineMarkers = "[*_`~]*"
+	characters := make([]string, 0, len([]rune(token)))
+	for _, character := range token {
+		characters = append(characters, regexp.QuoteMeta(string(character)))
+	}
+	return inlineMarkers + strings.Join(characters, inlineMarkers) + inlineMarkers
+}
+
+func locateSelectionByContext(markdown, selection, selectionPrefix, selectionSuffix string) (int, int, bool) {
+	type candidate struct {
+		start int
+		score int
+	}
+	var candidates []candidate
+	for offset := 0; offset <= len(markdown)-len(selection); {
+		relative := strings.Index(markdown[offset:], selection)
+		if relative < 0 {
+			break
+		}
+		start := offset + relative
+		beforeStart := max(0, start-512)
+		afterEnd := min(len(markdown), start+len(selection)+512)
+		before := normalizeVisualContext(markdown[beforeStart:start])
+		after := normalizeVisualContext(markdown[start+len(selection) : afterEnd])
+		score := commonSuffixLength(before, normalizeVisualContext(selectionPrefix)) +
+			commonPrefixLength(after, normalizeVisualContext(selectionSuffix))
+		candidates = append(candidates, candidate{start: start, score: score})
+		offset = start + max(1, len(selection))
+	}
+	if len(candidates) == 0 {
+		return 0, 0, false
+	}
+	best := candidates[0]
+	unique := true
+	for _, current := range candidates[1:] {
+		if current.score > best.score {
+			best, unique = current, true
+		} else if current.score == best.score {
+			unique = false
+		}
+	}
+	if best.score == 0 || !unique {
+		return 0, 0, false
+	}
+	return best.start, best.start + len(selection), true
+}
+
+func normalizeVisualContext(value string) string {
+	value = strings.Map(func(char rune) rune {
+		switch char {
+		case '*', '_', '`', '~', '[', ']', '#', '>':
+			return -1
+		}
+		return char
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func commonPrefixLength(left, right string) int {
+	limit := min(len(left), len(right))
+	for index := 0; index < limit; index++ {
+		if left[index] != right[index] {
+			return index
+		}
+	}
+	return limit
+}
+
+func commonSuffixLength(left, right string) int {
+	limit := min(len(left), len(right))
+	for length := 0; length < limit; length++ {
+		if left[len(left)-1-length] != right[len(right)-1-length] {
+			return length
+		}
+	}
+	return limit
 }
 
 func (service *Service) finish(item operation.Operation, status operation.Status, code, message, result string) {

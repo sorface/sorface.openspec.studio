@@ -74,19 +74,20 @@ func run() error {
 	openSpecCLI := openspecworkflow.NewCLI(openSpecExecutable, nil)
 	openSpecService := openspecworkflow.NewService(projectService, openSpecCLI)
 	server := httpapi.New(httpapi.Options{
-		Address:         cfg.Address,
-		Projects:        projectService,
-		Documents:       document.NewService(projectService),
-		Repositories:    repositoryService,
-		GitStatus:       gitStatusService,
-		StoreGit:        storeGitManager,
-		TaskContext:     taskContextManager,
-		Publication:     publicationService,
-		AIOperations:    aiservice.NewService(store, supervisor, cfg.DataDir),
-		OpenSpec:        openSpecService,
-		OpenSpecActions: openspecworkflow.NewActionService(store, openSpecService, openSpecCLI, supervisor, cfg.DataDir),
-		OpenSpecDrafts:  openspecworkflow.NewDraftService(store, cfg.DataDir),
-		Static:          web.Handler(),
+		Address:          cfg.Address,
+		Projects:         projectService,
+		Documents:        document.NewService(projectService),
+		Repositories:     repositoryService,
+		GitStatus:        gitStatusService,
+		StoreGit:         storeGitManager,
+		TaskContext:      taskContextManager,
+		Publication:      publicationService,
+		AIOperations:     aiservice.NewService(store, supervisor, cfg.DataDir),
+		OpenSpec:         openSpecService,
+		OpenSpecActions:  openspecworkflow.NewActionService(store, openSpecService, openSpecCLI, supervisor, cfg.DataDir),
+		OpenSpecDrafts:   openspecworkflow.NewDraftService(store, cfg.DataDir),
+		OpenSpecCreation: openspecworkflow.NewCreationDraftService(store),
+		Static:           web.Handler(),
 	})
 	serverURL, err := server.Listen(ctx)
 	if err != nil {

@@ -35,6 +35,15 @@ export function PublicationDialog({ controller, onPublished }: PublicationDialog
     }
   };
 
+  const generate = async () => {
+    try {
+      const generated = await controller.generatePublicationMessage();
+      setDraft({ token: generated.token, message: generated.message, body: generated.body ?? "" });
+    } catch {
+      // Keep the user's exact draft and show the recoverable controller error.
+    }
+  };
+
   return (
     <div className="publication-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) controller.dismissPublication();
@@ -65,29 +74,29 @@ export function PublicationDialog({ controller, onPublished }: PublicationDialog
           </div>
 
           <form onSubmit={submit}>
-            <label>
-              <span className="publication-message-heading">
-                Название публикации
-                <em>{preview.generatedBy === "agent" ? "предложено агентом" : "сформировано автоматически"}</em>
+            <div className="publication-field">
+              <div className="publication-message-heading">
+                <label htmlFor="publication-message">Название публикации</label>
+                <em>{preview.generatedBy === "agent" ? "предложено агентом" : "можно изменить"}</em>
                 <button
                   type="button"
-                  disabled={controller.preparing || controller.publishing}
-                  onClick={() => void controller.preparePublication().catch(() => undefined)}
-                >{controller.preparing ? "Формируем…" : "Предложить заново"}</button>
-              </span>
-              <input autoFocus value={message} onChange={(event) => setDraft({ token: preview.token, message: event.target.value, body })} required />
-            </label>
+                  disabled={controller.generating || controller.publishing}
+                  onClick={() => void generate()}
+                >{controller.generating ? "Генерируем…" : "Сгенерировать"}</button>
+              </div>
+              <input id="publication-message" autoFocus value={message} onChange={(event) => setDraft({ token: preview.token, message: event.target.value, body })} required />
+            </div>
             <label>
-              <span>Комментарий <small>необязательно</small></span>
-              <textarea rows={3} value={body} onChange={(event) => setDraft({ token: preview.token, message, body: event.target.value })} placeholder="Что важно знать об изменениях" />
+              <span>Список изменений <small>необязательно при ручном вводе</small></span>
+              <textarea rows={6} value={body} onChange={(event) => setDraft({ token: preview.token, message, body: event.target.value })} placeholder="- Кратко опишите изменение" />
             </label>
             {preview.diffTruncated && <p className="publication-note">Агент получил сокращённый diff; полный набор файлов будет опубликован.</p>}
             {controller.error && <p className="publication-error" role="alert">{controller.error.message}</p>}
             <footer>
               <span>Только артефакты задачи <b>{preview.task}</b></span>
               <div>
-                <button type="button" onClick={controller.dismissPublication} disabled={controller.publishing}>Отмена</button>
-                <button className="publication-primary" type="submit" disabled={!message.trim() || controller.publishing}>
+                <button type="button" onClick={controller.dismissPublication} disabled={controller.generating || controller.publishing}>Отмена</button>
+                <button className="publication-primary" type="submit" disabled={!message.trim() || controller.generating || controller.publishing}>
                   {controller.publishing ? "Публикуем…" : "Опубликовать"}
                 </button>
               </div>

@@ -5,6 +5,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import type { DocumentsController } from "@/features/documents/hooks/useDocumentsController";
 import type { RepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 import type { WorkspaceMode } from "@/features/workspace/model/workspace-types";
+import { isDeltaSpecPath, isMasterSpecPath } from "@/features/workspace/model/openspec-document";
 
 interface WorkspaceSidebarProps {
   documents: DocumentsController;
@@ -102,11 +103,18 @@ export function WorkspaceSidebar({
   const [collapsedSections, setCollapsedSections] = useState<Set<NavigationSectionId>>(
     () => new Set<NavigationSectionId>(["documentation", "archive"]),
   );
-  const [selectedScope, setSelectedScope] = useState<DocumentScope | null>(null);
+  const [selectedScopeId, setSelectedScopeId] = useState("");
   const documentScopes = useMemo(() => collectDocumentScopes(documents.items), [documents.items]);
-  const activeScope = selectedScope && documentScopes.some((scope) => scope.id === selectedScope.id)
-    ? selectedScope
-    : null;
+  const selectedChangeScopeId = useMemo(() => {
+    const selectedPath = documents.selectedPath;
+    if (!selectedPath) return "";
+    return documentScopes.find((scope) =>
+      scope.sectionId === "changes" &&
+      (selectedPath === scope.rootPath || selectedPath.startsWith(`${scope.rootPath}/`)),
+    )?.id ?? "";
+  }, [documentScopes, documents.selectedPath]);
+  const activeScope = documentScopes.find((scope) => scope.id === selectedScopeId) ??
+    documentScopes.find((scope) => scope.id === selectedChangeScopeId) ?? null;
 
   const toggleDirectory = (path: string) => {
     setCollapsedDirectories((current) => {
@@ -127,13 +135,13 @@ export function WorkspaceSidebar({
   };
 
   const selectScope = (scope: DocumentScope) => {
-    setSelectedScope(scope);
+    setSelectedScopeId(scope.id);
     setCollapsedDirectories(new Set());
     onWorkspaceModeChange("documents");
   };
 
   const closeSidebar = () => {
-    setSelectedScope(null);
+    if (activeScope?.sectionId !== "changes") setSelectedScopeId("");
     onClose();
   };
 
@@ -145,7 +153,6 @@ export function WorkspaceSidebar({
       collapsedDirectories.has(`${activeScope.rootPath}/${segments.slice(0, index + 1).join("/")}`),
     );
   }) : [];
-
   return (
     <>
     <aside className="sidebar">
@@ -250,10 +257,14 @@ export function WorkspaceSidebar({
       <aside className="document-tree-panel" aria-label={`Документы: ${activeScope.label}`}>
         <header className="document-tree-heading">
           <div>
-            <small>{navigationSections.find((section) => section.id === activeScope.sectionId)?.label}</small>
+            <small>{activeScope.sectionId === "changes"
+              ? "Изменение"
+              : navigationSections.find((section) => section.id === activeScope.sectionId)?.label}</small>
             <strong title={activeScope.rootPath}>{activeScope.label}</strong>
           </div>
-          <IconButton label="Закрыть дерево документов" onClick={() => setSelectedScope(null)}>×</IconButton>
+          {activeScope.sectionId !== "changes" && (
+            <IconButton label="Закрыть дерево документов" onClick={() => setSelectedScopeId("")}>×</IconButton>
+          )}
         </header>
         <div className="document-tree" role="tree" aria-label={`Дерево ${activeScope.label}`}>
           {scopeItems.length === 0 && <div className="tree-state">Нет Markdown-файлов.</div>}
@@ -262,19 +273,21 @@ export function WorkspaceSidebar({
             const relativeDepth = Math.max(0, itemSegments.length - 1);
             const directoryExpanded = item.kind === "directory" && !collapsedDirectories.has(item.path);
             const artifactRole = getScopeArtifactRole(item.path, activeScope);
+            const masterSpec = isMasterSpecPath(item.path);
+            const deltaSpec = isDeltaSpecPath(item.path);
             const isArtifactRoot = itemSegments.length === 1;
             return (
               <button
                 key={item.path}
                 type="button"
                 role="treeitem"
-                className={`tree-row ${item.kind === "file" ? "file" : "root"} ${artifactRole ? `artifact-${artifactRole}` : ""} ${documents.selectedPath === item.path ? "active" : ""}`}
+                className={`tree-row ${item.kind === "file" ? "file" : "root"} ${masterSpec ? "master-spec" : artifactRole ? `artifact-${artifactRole}` : ""} ${documents.selectedPath === item.path ? "active" : ""}`}
                 style={{ paddingLeft: `${10 + relativeDepth * 14}px` }}
                 onClick={() => item.kind === "directory" ? toggleDirectory(item.path) : documents.select(item.path)}
                 aria-expanded={item.kind === "directory" ? directoryExpanded : undefined}
                 aria-selected={item.kind === "file" ? documents.selectedPath === item.path : false}
-                aria-label={artifactRole ? `${item.name}, ${artifactRoleLabels[artifactRole]}` : undefined}
-                title={artifactRole ? `${item.path} · создаёт ${artifactRoleLabels[artifactRole]}` : item.path}
+                aria-label={masterSpec ? `${item.name}, master spec, только просмотр` : deltaSpec ? `${item.name}, diff spec, только просмотр` : artifactRole ? `${item.name}, ${artifactRoleLabels[artifactRole]}` : undefined}
+                title={masterSpec ? `${item.path} · master spec · только просмотр` : deltaSpec ? `${item.path} · diff spec · только просмотр` : artifactRole ? `${item.path} · создаёт ${artifactRoleLabels[artifactRole]}` : item.path}
               >
                 <span className="tree-row-icon" aria-hidden="true">
                   {item.kind === "directory" ? (
@@ -284,6 +297,9 @@ export function WorkspaceSidebar({
                   ) : "◇"}
                 </span>
                 <span className="tree-row-label">{item.name}</span>
+                {masterSpec && (
+                  <span className="master-spec-badge" aria-hidden="true">MASTER</span>
+                )}
                 {artifactRole && isArtifactRoot && (
                   <span className="artifact-role-badge" aria-hidden="true">
                     {artifactRole === "analyst" ? "АН" : "DEV"}

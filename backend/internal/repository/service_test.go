@@ -142,6 +142,86 @@ func TestContextRepositoryImport(t *testing.T) {
 	}
 }
 
+func TestContextRepositorySwitchesExistingBranchAndFastForwardsUpdate(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	storeRoot := filepath.Join(projectsRoot, "project-space", "store")
+	if err := os.MkdirAll(storeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "source")
+	runGit(t, root, "init", "-b", "main", source)
+	runGit(t, source, "config", "user.email", "test@example.com")
+	runGit(t, source, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".")
+	runGit(t, source, "commit", "-m", "main")
+	runGit(t, source, "switch", "-c", "feature/context")
+	if err := os.WriteFile(filepath.Join(source, "feature.md"), []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".")
+	runGit(t, source, "commit", "-m", "feature")
+	runGit(t, source, "switch", "main")
+	remote := filepath.Join(root, "context.git")
+	runGit(t, root, "clone", "--bare", source, remote)
+
+	db, err := storage.Open(filepath.Join(root, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	projectItem, err := db.Create(context.Background(), project.CreateInput{Name: "Demo", StorePath: storeRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(db, processrunner.NewSupervisor(), projectsRoot)
+	if summary := service.ImportContext(context.Background(), projectItem, []string{remote}); summary.Imported != 1 {
+		t.Fatalf("unexpected import summary: %#v", summary)
+	}
+	items, err := service.List(context.Background(), projectItem.ID)
+	if err != nil || len(items) != 1 || !contains(items[0].RemoteBranches, "origin/feature/context") || contains(items[0].RemoteBranches, "origin") {
+		t.Fatalf("unexpected live repository: %#v err=%v", items, err)
+	}
+	switched, err := service.SwitchBranch(context.Background(), projectItem.ID, items[0].ID, SwitchBranchInput{
+		Branch: "origin/feature/context", Remote: true,
+	})
+	if err != nil || switched.Branch != "feature/context" || switched.Upstream != "origin/feature/context" {
+		t.Fatalf("switch result=%#v err=%v", switched, err)
+	}
+	previousHead := switched.CommitSHA
+
+	runGit(t, source, "switch", "feature/context")
+	if err := os.WriteFile(filepath.Join(source, "feature.md"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".")
+	runGit(t, source, "commit", "-m", "update feature")
+	runGit(t, source, "push", remote, "feature/context")
+	updated, err := service.Update(context.Background(), projectItem.ID, items[0].ID)
+	if err != nil || updated.CommitSHA == previousHead || updated.Behind != 0 {
+		t.Fatalf("update result=%#v err=%v", updated, err)
+	}
+	content, err := os.ReadFile(filepath.Join(updated.Path, "feature.md"))
+	if err != nil || string(content) != "second\n" {
+		t.Fatalf("updated content=%q err=%v", content, err)
+	}
+	if err := os.WriteFile(filepath.Join(updated.Path, "local.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SwitchBranch(context.Background(), projectItem.ID, items[0].ID, SwitchBranchInput{Branch: "main"}); !errors.Is(err, ErrWorktreeDirty) {
+		t.Fatalf("expected dirty switch rejection, got %v", err)
+	}
+	if _, err := service.Update(context.Background(), projectItem.ID, items[0].ID); !errors.Is(err, ErrWorktreeDirty) {
+		t.Fatalf("expected dirty update rejection, got %v", err)
+	}
+}
+
 func TestValidateContextRepositories(t *testing.T) {
 	service := NewService(nil, processrunner.NewSupervisor())
 	values, err := service.ValidateContextRepositories([]string{

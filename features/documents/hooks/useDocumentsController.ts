@@ -110,6 +110,7 @@ export function useDocumentsController(projectId?: string, workspaceContext = ""
 
   useEffect(() => {
     rememberDraft();
+    const requestedPath = currentDocument.current.selectedPath;
     const controller = new AbortController();
     if (!projectId) {
       loadedProjectId.current = undefined;
@@ -136,7 +137,8 @@ export function useDocumentsController(projectId?: string, workspaceContext = ""
       .then(async (loadedItems) => {
         if (controller.signal.aborted || !loadedItems) return;
         setItems(loadedItems);
-        const firstFile = loadedItems.find((item) => item.kind === "file");
+        const firstFile = loadedItems.find((item) => item.kind === "file" && item.path === requestedPath)
+          ?? loadedItems.find((item) => item.kind === "file");
         if (!firstFile) {
           loadedProjectId.current = projectId;
           setSelectedPath(null);
@@ -176,19 +178,39 @@ export function useDocumentsController(projectId?: string, workspaceContext = ""
   const save = useCallback(async () => {
     const activeProjectId = loadedProjectId.current;
     if (!activeProjectId || !selectedPath || !dirty || saving) return;
+    const savedPath = selectedPath;
+    const savedMarkdown = markdown;
+    const savedWorkspaceContext = loadedWorkspaceContext.current;
+    const draftKey = `${activeProjectId}:${savedWorkspaceContext}:${savedPath}`;
     setSaving(true);
     setError(null);
     setConflict(false);
     try {
       const document = await writeDocument(activeProjectId, {
-        path: selectedPath,
-        content: markdown,
+        path: savedPath,
+        content: savedMarkdown,
         baseContentHash: contentHash,
       });
-      setMarkdown(document.content);
+      const latest = currentDocument.current;
+      if (latest.selectedPath !== savedPath || loadedWorkspaceContext.current !== savedWorkspaceContext) {
+        const cached = drafts.current.get(draftKey);
+        if (cached?.markdown === savedMarkdown) drafts.current.delete(draftKey);
+        else if (cached) drafts.current.set(draftKey, {
+          markdown: cached.markdown,
+          baseMarkdown: document.content,
+          contentHash: document.contentHash,
+        });
+        return;
+      }
+      setMarkdown((current) => current === savedMarkdown ? document.content : current);
       setBaseMarkdown(document.content);
       setContentHash(document.contentHash);
-      drafts.current.delete(`${activeProjectId}:${loadedWorkspaceContext.current}:${selectedPath}`);
+      if (latest.markdown === savedMarkdown) drafts.current.delete(draftKey);
+      else drafts.current.set(draftKey, {
+        markdown: latest.markdown,
+        baseMarkdown: document.content,
+        contentHash: document.contentHash,
+      });
     } catch (cause) {
       const apiError = toApiError(cause);
       setError(apiError);

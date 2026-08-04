@@ -37,7 +37,7 @@ func (pusher *fakeTaskPusher) StartTaskPush(_ context.Context, projectID, path, 
 	return operation.Operation{ID: "push", ProjectID: projectID, Kind: operation.KindStoreGit, Status: operation.StatusQueued}, pusher.err
 }
 
-func TestPublicationPreviewAgentFallbackStaleAndExactCommit(t *testing.T) {
+func TestPublicationPreviewOptionalAgentStaleAndExactCommit(t *testing.T) {
 	root, database, projectItem := createPublicationStore(t)
 	defer database.Close()
 	if err := os.WriteFile(filepath.Join(root, "openspec", "spec.md"), []byte("# Changed\n"), 0o600); err != nil {
@@ -50,7 +50,7 @@ func TestPublicationPreviewAgentFallbackStaleAndExactCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	generator := &fakeMessageGenerator{message: taskcontext.CommitMessage{
-		Subject: "docs(openspec): BILL-1842 clarify billing rules", Body: "Updated proposal and specification.",
+		Subject: "BILL-1842: уточнить правила биллинга", Body: "- Обновлено предложение\n- Уточнена спецификация",
 	}}
 	pusher := &fakeTaskPusher{}
 	service := taskcontext.NewPublicationService(database, pusher, generator, t.TempDir())
@@ -59,8 +59,15 @@ func TestPublicationPreviewAgentFallbackStaleAndExactCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Task != "BILL-1842" || preview.GeneratedBy != "agent" || len(preview.Paths) != 2 || preview.ExcludedCount != 1 {
+	if preview.Task != "BILL-1842" || preview.GeneratedBy != "manual" || preview.Message != "BILL-1842: публикация OpenSpec-артефактов" || len(preview.Paths) != 2 || preview.ExcludedCount != 1 {
 		t.Fatalf("preview = %#v", preview)
+	}
+	if generator.request.Task != "" {
+		t.Fatalf("preview unexpectedly invoked agent: %#v", generator.request)
+	}
+	preview, err = service.GenerateMessage(context.Background(), projectItem.ID, taskcontext.GeneratePublicationMessageInput{Token: preview.Token})
+	if err != nil || preview.GeneratedBy != "agent" || preview.Message != "BILL-1842: уточнить правила биллинга" {
+		t.Fatalf("generated preview = %#v, %v", preview, err)
 	}
 	if generator.request.Task != "BILL-1842" || strings.Contains(generator.request.Diff, "code.go") {
 		t.Fatalf("agent request = %#v", generator.request)
@@ -95,7 +102,7 @@ func TestPublicationPreviewAgentFallbackStaleAndExactCommit(t *testing.T) {
 	}
 }
 
-func TestPublicationUsesFallbackForInvalidAgentMessage(t *testing.T) {
+func TestPublicationKeepsManualMessageWhenAgentMessageIsInvalid(t *testing.T) {
 	root, database, projectItem := createPublicationStore(t)
 	defer database.Close()
 	if err := os.WriteFile(filepath.Join(root, "openspec", "spec.md"), []byte("changed\n"), 0o600); err != nil {
@@ -108,8 +115,11 @@ func TestPublicationUsesFallbackForInvalidAgentMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.GeneratedBy != "fallback" || preview.Message != "docs(openspec): publish BILL-1842" {
-		t.Fatalf("fallback preview = %#v", preview)
+	if preview.GeneratedBy != "manual" || preview.Message != "BILL-1842: публикация OpenSpec-артефактов" {
+		t.Fatalf("manual preview = %#v", preview)
+	}
+	if _, err := service.GenerateMessage(context.Background(), projectItem.ID, taskcontext.GeneratePublicationMessageInput{Token: preview.Token}); !errors.Is(err, taskcontext.ErrPublicationMessage) {
+		t.Fatalf("invalid agent message error = %v", err)
 	}
 }
 

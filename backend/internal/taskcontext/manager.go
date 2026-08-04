@@ -21,6 +21,9 @@ var (
 	ErrWorkspaceNotFound    = errors.New("task workspace not found")
 	ErrWorkspaceConflict    = errors.New("task workspace conflict")
 	ErrWorkspaceUnavailable = errors.New("task workspace unavailable")
+	ErrSyncUpstream         = errors.New("task workspace upstream is unavailable")
+	ErrSyncConflict         = errors.New("task workspace remote changes conflict")
+	ErrSyncFailed           = errors.New("task workspace sync failed")
 )
 
 type Workspace struct {
@@ -43,6 +46,13 @@ type Overview struct {
 
 type OpenInput struct {
 	Branch string `json:"branch"`
+}
+
+type SyncResult struct {
+	Task         string `json:"task"`
+	Updated      bool   `json:"updated"`
+	PreviousHead string `json:"previousHead"`
+	Head         string `json:"head"`
 }
 
 type Store interface {
@@ -157,6 +167,53 @@ func (manager *Manager) Open(ctx context.Context, projectID string, input OpenIn
 		return Overview{}, err
 	}
 	return manager.List(ctx, projectID)
+}
+
+func (manager *Manager) Sync(ctx context.Context, projectID string) (SyncResult, error) {
+	base, err := manager.store.GetBaseProject(ctx, projectID)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	overview, err := manager.List(ctx, projectID)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	if overview.Active == nil {
+		return SyncResult{}, ErrWorkspaceUnavailable
+	}
+	active := *overview.Active
+	if err := manager.validateWorkspace(ctx, base.BaseStorePath, active); err != nil {
+		return SyncResult{}, err
+	}
+	previousHead, err := manager.output(ctx, active.Path, 15*time.Second, "rev-parse", "HEAD")
+	if err != nil {
+		return SyncResult{}, ErrWorkspaceUnavailable
+	}
+	result, pullErr := manager.run(ctx, active.Path, 2*time.Minute, "pull", "--ff-only", "--no-rebase")
+	if pullErr != nil {
+		message := strings.ToLower(result.Stdout + "\n" + result.Stderr)
+		switch {
+		case strings.Contains(message, "no tracking information"),
+			strings.Contains(message, "has no upstream branch"),
+			strings.Contains(message, "upstream branch") && strings.Contains(message, "does not exist"):
+			return SyncResult{}, ErrSyncUpstream
+		case strings.Contains(message, "would be overwritten"),
+			strings.Contains(message, "local changes"),
+			strings.Contains(message, "not possible to fast-forward"),
+			strings.Contains(message, "cannot fast-forward"):
+			return SyncResult{}, ErrSyncConflict
+		default:
+			return SyncResult{}, ErrSyncFailed
+		}
+	}
+	head, err := manager.output(ctx, active.Path, 15*time.Second, "rev-parse", "HEAD")
+	if err != nil {
+		return SyncResult{}, ErrWorkspaceUnavailable
+	}
+	return SyncResult{
+		Task: active.Branch, Updated: head != previousHead,
+		PreviousHead: previousHead, Head: head,
+	}, nil
 }
 
 func (manager *Manager) ensureBaseWorkspace(ctx context.Context, item project.Project) (Workspace, error) {

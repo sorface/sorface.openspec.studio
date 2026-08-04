@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	openspecworkflow "github.com/sorface/openspec-studio/backend/internal/openspec"
 	"github.com/sorface/openspec-studio/backend/internal/operation"
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	"github.com/sorface/openspec-studio/backend/internal/storage"
@@ -80,6 +81,71 @@ func TestTaskWorkspacePersistenceAndEffectiveStorePath(t *testing.T) {
 	}
 }
 
+func TestChangeCreationDraftSurvivesRestartAndReplacesPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "creation-drafts.db")
+	first, err := storage.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := first.Create(context.Background(), project.CreateInput{Name: "Platform", StorePath: "/store"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := first.UpsertChangeCreationDraft(context.Background(), openspecworkflow.ChangeCreationDraft{
+		ProjectID: created.ID,
+		Version:   openspecworkflow.CreationDraftVersion,
+		Stage:     openspecworkflow.CreationStageIntent,
+		Intent:    "# Первый замысел",
+	})
+	if err != nil || draft.CreatedAt.IsZero() || draft.UpdatedAt.IsZero() {
+		t.Fatalf("draft=%#v err=%v", draft, err)
+	}
+	draft.Stage = openspecworkflow.CreationStageClarifying
+	draft.Intent = "# Уточнённый замысел"
+	draft.Questions = []openspecworkflow.ExplorationQuestion{{ID: "audience", Prompt: "Для кого?", Kind: "text"}}
+	replaced, err := first.UpsertChangeCreationDraft(context.Background(), draft)
+	if err != nil || replaced.Intent != "# Уточнённый замысел" || !replaced.CreatedAt.Equal(draft.CreatedAt) {
+		t.Fatalf("replaced=%#v err=%v", replaced, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := storage.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	loaded, err := second.GetChangeCreationDraft(context.Background(), created.ID)
+	if err != nil || loaded.Stage != openspecworkflow.CreationStageClarifying || len(loaded.Questions) != 1 {
+		t.Fatalf("loaded=%#v err=%v", loaded, err)
+	}
+}
+
+func TestChangeCreationDraftCascadesWithProject(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "cascade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, err := store.Create(context.Background(), project.CreateInput{Name: "Platform", StorePath: "/store"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertChangeCreationDraft(context.Background(), openspecworkflow.ChangeCreationDraft{
+		ProjectID: created.ID, Version: openspecworkflow.CreationDraftVersion,
+		Stage: openspecworkflow.CreationStageIntent, Intent: "# Intent",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetChangeCreationDraft(context.Background(), created.ID); !errors.Is(err, openspecworkflow.ErrCreationDraftNotFound) {
+		t.Fatalf("expected cascaded draft deletion, got %v", err)
+	}
+}
+
 func TestOperationRepositoryAndRecovery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operations.db")
 	store, err := storage.Open(path)
@@ -98,6 +164,22 @@ func TestOperationRepositoryAndRecovery(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := store.CreateOperation(context.Background(), operation.Operation{
+		ProjectID: projectItem.ID, Kind: operation.KindOpenSpec, Status: operation.StatusAccepted,
+		OpenSpecChange: "another-change",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateOperation(context.Background(), operation.Operation{
+		ProjectID: projectItem.ID, Kind: operation.KindAI, Status: operation.StatusAccepted,
+		OpenSpecChange: "add-auth",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.ListOpenSpecOperations(context.Background(), projectItem.ID, "add-auth", 50)
+	if err != nil || len(listed) != 1 || listed[0].ID != item.ID {
+		t.Fatalf("listed=%#v err=%v", listed, err)
 	}
 	item.Status = operation.StatusRunning
 	if _, err := store.UpdateOperation(context.Background(), item); err != nil {
@@ -193,6 +275,14 @@ func TestRepositoryPersistenceAndContextTransaction(t *testing.T) {
 	links, err := store.ListRepositories(context.Background(), projectItem.ID)
 	if err != nil || len(links) != 1 || links[0].ID != link.ID || !links[0].ReadOnlyForAI {
 		t.Fatalf("links=%#v err=%v", links, err)
+	}
+	link.Branch, link.CommitSHA, link.Dirty, link.Fingerprint = "feature/context", "def", true, "updated"
+	if _, err := store.UpdateRepository(context.Background(), link); err != nil {
+		t.Fatal(err)
+	}
+	links, err = store.ListRepositories(context.Background(), projectItem.ID)
+	if err != nil || links[0].Branch != "feature/context" || links[0].CommitSHA != "def" || !links[0].Dirty || links[0].Fingerprint != "updated" {
+		t.Fatalf("repository live state was not persisted: links=%#v err=%v", links, err)
 	}
 	operationItem, err := store.CreateOperation(context.Background(), operation.Operation{
 		ProjectID: projectItem.ID, Kind: operation.KindAI, InputJSON: "{}",

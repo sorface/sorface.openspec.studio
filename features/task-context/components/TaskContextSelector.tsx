@@ -79,6 +79,12 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
           setOpen((current) => !current);
         }}
       >
+        <svg className="task-branch-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="4" cy="3" r="1.5" />
+          <circle cx="12" cy="5" r="1.5" />
+          <circle cx="4" cy="13" r="1.5" />
+          <path d="M4 4.5v7M5.5 10h1A5.5 5.5 0 0 0 12 6.5" />
+        </svg>
         <b className="task-context-branch">{controller.switching ? "Переключаем…" : active?.branch || "Выбрать задачу"}</b>
         {active?.dirty && <i className="task-dirty-dot" aria-hidden="true" />}
         <svg className={`task-context-chevron ${open ? "open" : ""}`} viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>

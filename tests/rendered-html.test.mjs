@@ -82,6 +82,10 @@ test("Контекст становится доступной странице�
   assert.match(panel, /Подключить Git-репозиторий/);
   assert.match(panel, /Git URL/);
   assert.match(panel, /Подключённые репозитории/);
+  assert.match(panel, /Ветка репозитория/);
+  assert.match(panel, /Перейти/);
+  assert.match(panel, /Получить обновления/);
+  assert.match(panel, /AI: read-only/);
 });
 
 test("форма проекта поддерживает переносимый .openspec/context.yaml", async () => {
@@ -114,21 +118,34 @@ test("покрывает визуальное Markdown-редактирован�
   assert.match(html, /Scope: Store only/);
 });
 
-test("история выбранного файла подключена к read-only Git-панели", async () => {
+test("Git-аннотации и история выбранного файла подключены к read-only панели", async () => {
   const [editor, panel, css] = await Promise.all([
     readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/documents/components/DocumentHistoryPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(editor, /label="История файла"/);
+  assert.match(editor, /label="Git-аннотации файла"/);
   assert.match(editor, /onClick=\{history\.show\}/);
   assert.match(editor, /<DocumentHistoryPanel controller=\{history\}/);
   assert.doesNotMatch(editor, /История файла пока недоступна/);
+  assert.match(panel, /Git-аннотации/);
+  assert.match(panel, /Аннотации <span>\{annotationLines\.length\}<\/span>/);
+  assert.match(panel, /Коммиты <span>\{controller\.items\.length\}<\/span>/);
+  assert.match(panel, /Построчные Git-аннотации/);
+  assert.match(panel, />Дата<\/span>/);
+  assert.match(panel, />Автор<\/span>/);
+  assert.match(panel, />Строка<\/span>/);
+  assert.match(panel, /entry\.content \|\| " "/);
+  assert.match(panel, /Локально/);
   assert.match(panel, /Только просмотр/);
   assert.match(panel, /<time dateTime=\{entry\.committedAt\}>/);
   assert.match(css, /\.file-history-panel \{[^}]*position:\s*absolute[^}]*z-index:\s*12/s);
   assert.match(css, /\.file-history-body \{[^}]*overflow-y:\s*auto/s);
+  assert.match(css, /\.file-history-tabs \{[^}]*grid-template-columns:\s*1fr 1fr/s);
+  assert.match(css, /\.file-history-panel\.annotations-view \{[^}]*width:\s*min\(820px/s);
+  assert.match(css, /\.file-annotation-table-head, \.file-annotation-row \{[^}]*grid-template-columns:\s*84px minmax\(92px, 126px\) 52px/s);
+  assert.match(css, /\.file-annotation-row > code \{[^}]*font:\s*11px\/17px var\(--font-code\)/s);
 });
 
 test("Preview использует read-only Milkdown вместо сырого Markdown pre", async () => {
@@ -178,9 +195,15 @@ test("визуальный редактор сохраняет Markdown, undo/re
   assert.doesNotMatch(markdownEditor, /<span>⌘S<\/span>/);
 });
 
-test("текущий стиль Paragraph в toolbar не выделяется жирным", async () => {
-  const css = await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8");
-  assert.match(css, /\.top-bar-heading-label,[\s\S]*\.top-bar-heading-option\.active\s*\{[\s\S]*font-weight:\s*400/);
+test("heading-селектор использует обычный Paragraph и жирный Heading", async () => {
+  const [css, editor] = await Promise.all([
+    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(css, /\.top-bar-heading-label,[\s\S]*\.top-bar-heading-option\.active:first-child\s*\{[\s\S]*font-weight:\s*400/);
+  assert.match(css, /\.top-bar-heading-button\.heading-active \.top-bar-heading-label,[\s\S]*\.top-bar-heading-option\.active:not\(:first-child\)\s*\{[\s\S]*font-weight:\s*700/);
+  assert.match(editor, /classList\.toggle\("heading-active", \/\^Heading \[1-6\]\$\//);
+  assert.match(editor, /headingSelectorObserver\?\.disconnect\(\)/);
 });
 
 test("уровни заголовков редактора визуально отличаются от основного текста", async () => {
@@ -229,7 +252,7 @@ test("сохраняет доступные имена у интерактивн
   ]);
   for (const label of [
     "Свернуть панель",
-    "История файла",
+    "Git-аннотации файла",
   ]) {
     assert.match(html, new RegExp(`aria-label="${label}"`));
   }
@@ -242,9 +265,12 @@ test("сохраняет доступные имена у интерактивн
 });
 
 test("дерево OpenSpec прокручивается, каталоги сворачиваются, а AI selector использует chevron", async () => {
-  const [sidebar, header, css] = await Promise.all([
+  const [sidebar, header, richEditor, documentActions, operationPanel, css] = await Promise.all([
     readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
@@ -258,11 +284,19 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(sidebar, /segments\[1\] === "archive"/);
   assert.match(sidebar, /collectDocumentScopes/);
   assert.match(sidebar, /segments\.slice\(0, location\.rootDepth \+ 1\)/);
+  assert.match(sidebar, /const \[selectedScopeId, setSelectedScopeId\] = useState\(""\)/);
+  assert.match(sidebar, /scope\.sectionId === "changes"/);
+  assert.match(sidebar, /selectedPath\.startsWith\(`\$\{scope\.rootPath\}\/`\)/);
+  assert.match(sidebar, /scope\.id === selectedChangeScopeId/);
   assert.match(sidebar, /className={`tree-scope-row/);
   assert.match(sidebar, /className="document-tree-panel"/);
   assert.match(sidebar, /scopeItems\.map/);
   assert.match(sidebar, /role="treeitem"/);
   assert.match(sidebar, /label="Закрыть дерево документов"/);
+  assert.match(sidebar, /activeScope\.sectionId !== "changes"/);
+  assert.match(sidebar, /if \(activeScope\?\.sectionId !== "changes"\) setSelectedScopeId\(""\)/);
+  assert.match(sidebar, /activeScope\.sectionId === "changes"[\s\S]*\? "Изменение"/);
+  assert.doesNotMatch(sidebar, /document-tree-next-step|onContinueOpenSpecChange|Записать и продолжить/);
   assert.match(sidebar, /relativeDepth \* 14/);
   assert.match(sidebar, /className="tree-section-heading"/);
   assert.match(sidebar, /className="tree-section-heading-row"/);
@@ -279,7 +313,7 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(sidebar, /"proposal\.md", "spec", "specs"/);
   assert.match(sidebar, /"design\.md", "tasks\.md"/);
   assert.match(sidebar, /artifactRole === "analyst" \? "АН" : "DEV"/);
-  assert.match(sidebar, /aria-label=\{artifactRole \? `\$\{item\.name\}, \$\{artifactRoleLabels\[artifactRole\]\}`/);
+  assert.match(sidebar, /artifactRole \? `\$\{item\.name\}, \$\{artifactRoleLabels\[artifactRole\]\}` : undefined/);
   assert.match(css, /\.tree \{[^}]*flex:\s*1 1 auto[^}]*overflow-y:\s*auto/s);
   assert.match(css, /\.tree-section-heading \{[^}]*border:\s*1px solid #e3e8e5[^}]*background:\s*#f1f4f2/s);
   assert.match(css, /\.tree-section-heading svg\.expanded \{[^}]*transform:\s*rotate\(90deg\)/s);
@@ -288,6 +322,7 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(css, /\.document-tree-panel \{[^}]*position:\s*relative[^}]*width:\s*auto[^}]*min-width:\s*0[^}]*box-shadow:\s*none/s);
   assert.doesNotMatch(css, /\.document-tree-panel \{[^}]*z-index/s);
   assert.match(css, /\.workspace:has\(> \.document-tree-panel\) \{[^}]*grid-template-columns:\s*260px 280px minmax\(470px, 1fr\)/s);
+  assert.match(css, /\.workspace\.left-collapsed:has\(> \.document-tree-panel\) \{[^}]*grid-template-columns:\s*0 280px minmax\(470px, 1fr\)/s);
   assert.match(css, /\.workspace\.agent-settings-open \{[^}]*grid-template-columns:\s*260px minmax\(470px, 1fr\) 310px/s);
   assert.match(css, /\.workspace\.agent-settings-open:has\(> \.document-tree-panel\) \{[^}]*grid-template-columns:\s*260px 280px minmax\(470px, 1fr\) 310px/s);
   assert.doesNotMatch(css, /right-collapsed|\.assistant-panel/);
@@ -296,7 +331,100 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(css, /\.tree-scope-row\.active/);
   assert.match(css, /\.tree-row\.artifact-analyst \{[^}]*box-shadow:\s*inset 2px 0 #d49a38/s);
   assert.match(css, /\.tree-row\.artifact-developer \{[^}]*box-shadow:\s*inset 2px 0 #6687c7/s);
+  assert.match(sidebar, /isMasterSpecPath\(item\.path\)/);
+  assert.match(sidebar, /master spec, только просмотр/);
+  assert.match(sidebar, /master-spec-badge/);
+  assert.match(css, /\.tree-row\.master-spec \{[^}]*box-shadow:\s*inset 2px 0 #16835f/s);
+  assert.match(css, /\.tree-row\.master-spec\.active \{[^}]*background:\s*#dff2e9/s);
   assert.match(css, /\.artifact-role-badge/);
+  assert.match(richEditor, /\.milkdown-top-bar \.top-bar-inner/);
+  assert.match(richEditor, /className="rich-editor-context-actions"/);
+  assert.match(css, /\.rich-editor-context-actions \{[^}]*margin-left:\s*auto[^}]*border-left:/s);
+  assert.match(css, /\.milkdown-top-bar \.openspec-document-action-button \{[^}]*background:\s*#0f7050[^}]*font-family:\s*inherit[^}]*font-size:\s*12px[^}]*font-weight:\s*650/s);
+  assert.match(css, /\.milkdown-top-bar \.openspec-document-action-button:disabled \{[^}]*background:\s*#edf3f0[^}]*color:\s*#44584f[^}]*opacity:\s*1/s);
+  assert.doesNotMatch(css, /\.milkdown-top-bar \.openspec-document-action-button:hover:not\(:disabled\)\s*\{[^}]*transform:/s);
+  assert.match(css, /\.editor-content-shell\.with-context-panel \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 390px/s);
+  assert.match(css, /\.document-openspec-review \{[^}]*position:\s*relative[^}]*border-left:\s*1px solid var\(--line\)/s);
+  assert.match(css, /\.document-openspec-review\.collapsed/);
+  assert.match(css, /\.document-openspec-review \{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto/s);
+  assert.match(css, /\.openspec-operations-list \{[^}]*grid-row:\s*3[^}]*min-height:\s*0[^}]*max-height:\s*none[^}]*overflow-y:\s*auto[^}]*align-content:\s*start/s);
+  assert.match(css, /\.openspec-operation-summary \{[^}]*grid-row:\s*4/s);
+  assert.match(documentActions, /История операций/);
+  assert.match(documentActions, /ИСТОРИЯ ОПЕРАЦИЙ/);
+  assert.match(documentActions, /className="openspec-operations-open-icon"/);
+  assert.match(documentActions, /className="openspec-operations-open-label">История/);
+  assert.match(css, /\.document-openspec-review\.collapsed \{[^}]*display:\s*grid[^}]*width:\s*52px/s);
+  assert.match(css, /\.openspec-operations-open \{[^}]*grid-template-rows:\s*32px minmax\(0, 1fr\) 24px[^}]*background:\s*linear-gradient/s);
+  assert.match(css, /\.openspec-operations-open:focus-visible \{[^}]*box-shadow:\s*inset/s);
+  assert.match(css, /\.openspec-operations-open-icon \{[^}]*border-radius:\s*9px/s);
+  assert.match(css, /\.openspec-operations-open-label \{[^}]*writing-mode:\s*vertical-rl[^}]*white-space:\s*nowrap/s);
+  assert.match(documentActions, /controller\.operations\.map/);
+  assert.match(documentActions, /controller\.selectOperation\(operation\)/);
+  assert.match(documentActions, /className="openspec-operation-dialog"/);
+  assert.match(documentActions, /role="dialog"/);
+  assert.match(documentActions, /controller\.operationDialogOpen/);
+  assert.match(documentActions, /className="openspec-operation-view-button"[\s\S]*Просмотреть результат/);
+  assert.match(documentActions, /selectedOperation && selectedOperation\.status !== "accepted"[\s\S]*className="openspec-operation-summary"/);
+  assert.match(css, /\.openspec-operation-view-button \{[^}]*width:\s*100%[^}]*min-height:\s*36px[^}]*border:\s*1px solid #0f7050[^}]*border-radius:\s*8px[^}]*background:\s*#0f7050[^}]*cursor:\s*pointer/s);
+  assert.match(css, /\.openspec-operation-view-button:hover \{[^}]*background:\s*#0c6246/s);
+  assert.match(css, /\.openspec-operation-view-button:focus-visible \{[^}]*box-shadow:/s);
+  assert.doesNotMatch(css, /\.openspec-operation-view-button:hover \{[^}]*transform:/s);
+  assert.match(css, /\.openspec-operation-dialog \{[^}]*width:\s*min\(1380px[^}]*height:\s*min\(900px/s);
+  assert.match(operationPanel, /className="openspec-split-diff"[\s\S]*role="table"/);
+  assert.match(operationPanel, /className="openspec-operation-conclusion"[\s\S]*aria-label="Заключение агента"/);
+  assert.match(operationPanel, /ЗАКЛЮЧЕНИЕ[\s\S]*Результат работы агента/);
+  assert.doesNotMatch(operationPanel, /<p>\{controller\.result\.finalResponse\}<\/p>/);
+  assert.match(css, /\.openspec-operation-conclusion \{[^}]*border:\s*1px solid #cfe0d8[^}]*border-radius:\s*10px[^}]*background:\s*linear-gradient/s);
+  assert.match(css, /\.openspec-operation-conclusion-body \.openspec-markdown-line \{[^}]*font-size:\s*12px[^}]*line-height:\s*1\.55/s);
+  assert.doesNotMatch(operationPanel, /openspec-split-diff-number|openspec-split-diff-marker/);
+  assert.match(operationPanel, /className="openspec-mutation-toggle"[\s\S]*aria-expanded=\{!collapsed\}[\s\S]*aria-controls=\{contentId\}/);
+  assert.match(operationPanel, /className="openspec-mutation-chevron"/);
+  assert.match(css, /\.openspec-mutation-toggle \{[^}]*grid-template-columns:\s*18px auto minmax\(0, 1fr\) auto[^}]*cursor:\s*pointer/s);
+  assert.match(css, /\.openspec-mutation-toggle:focus-visible \{[^}]*box-shadow:\s*inset/s);
+  assert.match(css, /\.openspec-mutation\.is-collapsed \.openspec-mutation-chevron \{[^}]*rotate\(-90deg\)/s);
+  assert.match(operationPanel, /className=\{`openspec-markdown-line kind-heading/);
+  assert.match(operationPanel, /className="openspec-markdown-line kind-task"/);
+  assert.match(operationPanel, /className=\{`markdown-task-box/);
+  assert.match(operationPanel, /className="removed">−\{summary\.deletions\}/);
+  assert.match(operationPanel, /className="added">\+\{summary\.additions\}/);
+  assert.match(css, /\.openspec-mutation-summary i \{[^}]*min-width:\s*28px[^}]*padding:\s*3px 5px[^}]*font-family:\s*var\(--font-code\)[^}]*font-size:\s*8px[^}]*font-weight:\s*750[^}]*line-height:\s*1/s);
+  assert.doesNotMatch(operationPanel, /<textarea/);
+  assert.match(css, /\.openspec-split-diff-head \{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
+  assert.match(css, /\.openspec-split-diff-row \{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
+  assert.match(css, /\.openspec-split-diff-cell \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
+  assert.match(css, /\.openspec-split-diff-cell\.removed \{[^}]*background:\s*#fff0ee[^}]*#cf6659/s);
+  assert.match(css, /\.openspec-split-diff-cell\.added \{[^}]*background:\s*#e9f7ef[^}]*#3f9a71/s);
+  assert.doesNotMatch(css, /\.openspec-split-diff-number|\.openspec-split-diff-marker/);
+  assert.match(css, /\.openspec-markdown-line \{[^}]*font-size:\s*12px[^}]*line-height:\s*1\.5/s);
+  assert.match(css, /\.openspec-markdown-line\.kind-heading\.level-2 \{[^}]*font-size:\s*15px/s);
+  assert.match(css, /\.markdown-task-box \{[^}]*border-radius:\s*3px/s);
+  assert.match(operationPanel, /className="primary-submit"[\s\S]*Принять весь набор/);
+  assert.match(operationPanel, /className="openspec-operation-progress"[\s\S]*<time aria-label=\{`Время выполнения \$\{formatElapsedTime\(controller\.operationElapsedSeconds\)\}`\}>[\s\S]*\{formatElapsedTime\(controller\.operationElapsedSeconds\)\}/);
+  assert.match(operationPanel, /className=\{`artifact-refresh-operation-status[\s\S]*<ol aria-label="Этапы пересогласования">/);
+  assert.doesNotMatch(operationPanel, /Пересогласование planning-артефактов|Planning-артефакты согласованы|Повторить текущий этап/);
+  assert.match(css, /\.artifact-refresh-operation-status \{[^}]*display:\s*flex[^}]*justify-content:\s*center[^}]*\}/s);
+  assert.match(css, /\.artifact-refresh-operation-status li \+ li::before \{[^}]*width:\s*42px[^}]*height:\s*1px/s);
+  assert.doesNotMatch(css, /\.artifact-refresh-operation-status \{[^}]*border:/s);
+  assert.doesNotMatch(operationPanel, /<p>Прошло/);
+  assert.doesNotMatch(operationPanel, /реальные файлы не изменяются/);
+  assert.match(operationPanel, /className="openspec-draft-card"[\s\S]*className="openspec-draft-status-icon"[\s\S]*className="openspec-draft-copy"/);
+  assert.match(operationPanel, /className="openspec-draft-write-button"[\s\S]*Записать \{controller\.draft\.mutations\.length\} изменений в Store/);
+  assert.match(css, /\.openspec-review-actions button \{[^}]*min-height:\s*38px[^}]*padding:\s*0 16px[^}]*border-radius:\s*8px/s);
+  assert.match(css, /\.openspec-review-actions \.secondary-danger:hover:not\(:disabled\)/);
+  assert.match(css, /\.openspec-review-actions \.primary-submit:hover:not\(:disabled\)/);
+  assert.match(css, /\.openspec-draft-write-button \{[^}]*min-height:\s*38px[^}]*padding:\s*0 16px[^}]*border:\s*1px solid var\(--green\)[^}]*border-radius:\s*8px[^}]*background:\s*var\(--green\)[^}]*cursor:\s*pointer/s);
+  assert.match(css, /\.openspec-draft \{[^}]*display:\s*flex[^}]*justify-content:\s*flex-end[^}]*background:\s*rgba\(250, 252, 251, \.97\)/s);
+  assert.match(css, /\.openspec-draft-card \{[^}]*width:\s*min\(660px, 100%\)[^}]*grid-template-columns:\s*32px minmax\(0, 1fr\) auto[^}]*border-radius:\s*10px/s);
+  assert.match(css, /\.openspec-draft-write-button:hover:not\(:disabled\) \{[^}]*background:\s*#0c6246/s);
+  assert.match(css, /\.openspec-draft-write-button:focus-visible \{[^}]*box-shadow:/s);
+  assert.doesNotMatch(css, /\.openspec-draft-write-button:hover:not\(:disabled\) \{[^}]*transform:/s);
+  assert.match(css, /\.openspec-operation-progress \{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/s);
+  assert.match(css, /\.openspec-operation-progress time \{[^}]*font-variant-numeric:\s*tabular-nums/s);
+  assert.match(css, /\.openspec-operation-running \{[^}]*margin:\s*12px 24px 0[^}]*padding:\s*14px 0 15px[^}]*gap:\s*12px[^}]*border-top:\s*1px solid #edf1ef[^}]*border-bottom:\s*1px solid #edf1ef/s);
+  assert.match(operationPanel, /className="openspec-operation-cancel"[\s\S]*Отменить/);
+  assert.match(css, /\.openspec-operation-running > \.openspec-operation-cancel \{[^}]*min-height:\s*34px[^}]*padding:\s*0 14px[^}]*border:\s*1px solid #dfbcb6[^}]*border-radius:\s*8px[^}]*color:\s*#9a4339/s);
+  assert.match(css, /\.openspec-operation-running > \.openspec-operation-cancel:hover \{[^}]*border-color:\s*#c8877d[^}]*background:\s*#fff4f2[^}]*color:\s*#7f3028/s);
+  assert.match(css, /\.openspec-operation-progress time \{[^}]*padding-left:\s*12px[^}]*border-left:\s*1px solid #dce4e0/s);
   assert.match(header, /className=\{`provider-chevron/);
   assert.match(header, /className="provider-icon" aria-hidden="true">✦</);
   assert.doesNotMatch(header, /className="provider-icon"[^>]*>✣</);
@@ -342,13 +470,14 @@ test("использует самостоятельную реализацию �
 });
 
 test("сохраняет feature-first архитектуру и тонкий route entry point", async () => {
-  const [page, workspace, editor, model, uiPrimitive, richEditor] = await Promise.all([
+  const [page, workspace, editor, model, uiPrimitive, richEditor, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
     readFile(new URL("../components/ui/IconButton.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /OpenSpecWorkspace/);
@@ -356,10 +485,39 @@ test("сохраняет feature-first архитектуру и тонкий ro
   assert.match(workspace, /WorkspaceHeader/);
   assert.match(workspace, /WorkspaceSidebar/);
   assert.match(workspace, /MarkdownEditor/);
+  assert.match(workspace, /className="openspec-task-progress"/);
+  assert.match(workspace, /taskProgressFromMarkdown\(documents\.markdown\)/);
+  assert.match(css, /\.openspec-task-progress \{[^}]*border:\s*1px solid #bad5c9[^}]*background:\s*#edf7f2/s);
   assert.doesNotMatch(workspace, /AiAssistantPanel/);
   assert.match(editor, /interface MarkdownEditorProps/);
   assert.match(model, /export type ViewMode/);
   assert.match(uiPrimitive, /ButtonHTMLAttributes/);
   assert.match(richEditor, /interface RichMarkdownEditorProps/);
   assert.match(richEditor, /\[Crepe\.Feature\.Cursor\]: false/);
+});
+
+test("открывает baseline и delta specs пользователю только для просмотра", async () => {
+  const [workspace, editor, classifier] = await Promise.all([
+    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/model/openspec-document.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(classifier, /\^openspec\\\/specs\\\/\[\^\/\]\+\\\/spec\\\.md\$/);
+  assert.match(classifier, /export function isDeltaSpecPath/);
+  assert.match(classifier, /openspec\\\/changes\\\/\[\^\/\]\+\\\/\(\?:spec\|specs\)/);
+  assert.match(classifier, /isMasterSpecPath\(path\) \|\| isDeltaSpecPath\(path\)/);
+  assert.match(workspace, /const masterSpecReadOnly = isMasterSpecPath\(documents\.selectedPath\)/);
+  assert.match(workspace, /const deltaSpecReadOnly = isDeltaSpecPath\(documents\.selectedPath\)/);
+  assert.match(workspace, /if \(isUserReadOnlySpecPath\(selectedDocumentPath\)\) return false/);
+  assert.match(workspace, /userReadOnly=\{userReadOnlySpec\}/);
+  assert.match(workspace, /readOnlyLabel=\{masterSpecReadOnly \? "Master spec · только просмотр" : "Diff spec · только просмотр"\}/);
+  assert.match(workspace, /hideHeaderActions=\{masterSpecReadOnly\}/);
+  assert.match(editor, /\{!hideHeaderActions && \(/);
+  assert.match(editor, /hideHeaderActions\?: boolean/);
+  assert.match(workspace, /onChange=\{userReadOnlySpec \? \(\) => undefined : documents\.change\}/);
+  assert.match(editor, /const effectiveViewMode: ViewMode = userReadOnly \? "preview" : viewMode/);
+  assert.match(editor, /disabled=\{userReadOnly && mode !== "preview"\}/);
+  assert.match(editor, /canEdit && !userReadOnly && effectiveViewMode !== "preview"/);
+  assert.match(editor, /readOnlyLabel/);
 });

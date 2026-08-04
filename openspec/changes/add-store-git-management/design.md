@@ -88,6 +88,14 @@ Git exit status и ограниченный stderr преобразуются в
 
 Branch и upstream confirmations являются modal dialogs с focus management. Во время операции блокируются только конфликтующие mutations; чтение status и навигация остаются доступными. Введённые branch/message значения сохраняются при recoverable error.
 
+### 8. Пользователь управляет checkout репозиториев контекста без расширения AI-прав
+
+`repository.Service` при каждом list/switch/update заново разрешает сохранённый repository ID внутри выбранного project, проверяет canonical path в управляемом каталоге и перечитывает Git state. В read model добавляются local branches, remote-tracking branches, upstream и ahead/behind; SQLite не становится источником актуального branch state.
+
+Switch принимает только типизированные `branch` и `remote` значения, сверяет их с фактическими refs и разрешён лишь при полностью чистом worktree. Для remote-tracking ref backend создаёт локальную tracking branch с однозначно выведенным именем. Update выполняет `fetch --prune` и `pull --ff-only` для текущего upstream; merge, rebase, stash, reset, commit и push не представлены в API.
+
+Карточка репозитория на странице «Контекст» содержит branch selector и кнопку «Получить обновления». Действия отправляются через CSRF-protected endpoints, блокируются только для выбранной карточки и после ответа заменяют её данными backend. Маркер `read-only` переименовывается в понятный `AI: read-only`, поскольку пользовательский checkout не меняет права agent.
+
 ## Data flow
 
 1. Controller запрашивает расширенный status для активного project ID.
@@ -96,6 +104,7 @@ Branch и upstream confirmations являются modal dialogs с focus managem
 4. Service повторно валидирует Store, preconditions и значения, затем вызывает разрешённую Git-команду через bounded runner.
 5. Локальная mutation возвращает новый status; fetch/push возвращает operation ID и публикует lifecycle events.
 6. Controller применяет только серверный status; после terminal operation выполняет refresh.
+7. Для репозитория контекста controller отправляет repository ID и точный branch target либо update, затем применяет только перечитанный сервером `RepositoryLink`.
 
 ## Path validation, cancellation, timeout и аудит
 
@@ -113,6 +122,8 @@ Branch и upstream confirmations являются modal dialogs с focus managem
 - [Отмена push не гарантирует отсутствие remote side effect] → После cancel честно перечитать local status и не утверждать, что remote откатился.
 - [Remote refs до fetch могут быть устаревшими] → Показывать время последнего успешного fetch в session state и не называть divergence серверно актуальным без fetch.
 - [Conventional commit regex может оказаться слишком строгим] → Проверять стабильный минимальный subject `<type>(<optional-scope>)?: <description>` с фиксированным набором type; body не ограничивать кроме общего размера.
+- [Checkout контекста может скрыто затереть локальную работу] → Перед switch/update требовать полностью чистый worktree и никогда не выполнять stash/reset/discard.
+- [Pull может создать merge commit] → Разрешать только `pull --ff-only`; divergence возвращать как recoverable error.
 
 ## Migration Plan
 

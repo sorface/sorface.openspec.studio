@@ -2,6 +2,7 @@ import { apiRequest } from "@/features/api/api-client";
 import type {
   PublicationPreview,
   PublicationResult,
+  TaskSyncResult,
   TaskWorkspaceOverview,
 } from "@/features/task-context/model/task-context-types";
 
@@ -20,9 +21,22 @@ export function openTaskWorkspace(projectId: string, branch: string): Promise<Ta
   });
 }
 
+export function syncTaskWorkspace(projectId: string): Promise<TaskSyncResult> {
+  return apiRequest<TaskSyncResult>(taskPath(projectId, "task-workspaces/sync"), {
+    method: "POST",
+  });
+}
+
 export function previewTaskPublication(projectId: string): Promise<PublicationPreview> {
   return apiRequest<PublicationPreview>(taskPath(projectId, "task-publications/preview"), {
     method: "POST",
+  });
+}
+
+export function generateTaskPublicationMessage(projectId: string, token: string): Promise<PublicationPreview> {
+  return apiRequest<PublicationPreview>(taskPath(projectId, "task-publications/message"), {
+    method: "POST",
+    body: { token },
   });
 }
 

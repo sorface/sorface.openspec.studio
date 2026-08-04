@@ -222,17 +222,59 @@ func TestParseInlineReplacement(t *testing.T) {
 func TestLocateMarkdownSelectionAcrossVisualFormatting(t *testing.T) {
 	markdown := "- Сохранять snapshot, состояние задания и результат в PostgreSQL, чтобы\n  генерация переживала рестарт.\n"
 	selection := "Сохранять snapshot, состояние задания и результат в PostgreSQL, чтобы генерация переживала рестарт."
-	start, end, ok := locateMarkdownSelection(markdown, selection)
+	start, end, ok := locateMarkdownSelection(markdown, selection, "", "")
 	if !ok || markdown[start:end] != "Сохранять snapshot, состояние задания и результат в PostgreSQL, чтобы\n  генерация переживала рестарт." {
 		t.Fatalf("range=%d:%d ok=%v text=%q", start, end, ok, markdown[start:end])
 	}
 
 	formatted := "Текст с **важным решением** здесь."
-	start, end, ok = locateMarkdownSelection(formatted, "с важным решением здесь.")
+	start, end, ok = locateMarkdownSelection(formatted, "с важным решением здесь.", "", "")
 	if !ok || formatted[start:end] != "с **важным решением** здесь." {
 		// The assertion above checks the wrapped list; this branch only verifies that
 		// hidden emphasis markers do not make the selection ambiguous.
 		t.Fatalf("formatted range=%d:%d ok=%v", start, end, ok)
+	}
+}
+
+func TestLocateShortRepeatedSelectionByVisualContext(t *testing.T) {
+	markdown := "Первый format. Второй stored."
+	start, end, ok := locateMarkdownSelection(markdown, "or", "Второй st", "ed.")
+	if !ok || markdown[start:end] != "or" || markdown[:start] != "Первый format. Второй st" {
+		t.Fatalf("range=%d:%d ok=%v", start, end, ok)
+	}
+
+	if _, _, ok = locateMarkdownSelection("or и or", "or", "", ""); ok {
+		t.Fatal("ambiguous selection without context accepted")
+	}
+}
+
+func TestLocateVisualSelectionAcrossMarkdownListItems(t *testing.T) {
+	markdown := "- Первый пункт.\n- Используются namespaces, включая `/account`, `/id` и `/copilot`.\n- Третий пункт.\n"
+	selection := "Первый пункт.\n\nИспользуются namespaces, включая /account, /id и /copilot."
+	start, end, ok := locateMarkdownSelection(markdown, selection, "", "")
+	if !ok || markdown[start:end] != "Первый пункт.\n- Используются namespaces, включая `/account`, `/id` и `/copilot`." {
+		t.Fatalf("range=%d:%d ok=%v text=%q", start, end, ok, markdown[start:end])
+	}
+}
+
+func TestInlinePromptContainsFileSelectionAndComment(t *testing.T) {
+	prompt := inlinePrompt(
+		"openspec/changes/example/proposal.md",
+		"# Proposal\n\n- Before\n",
+		"Before",
+		"Before",
+		"Добавить детали",
+	)
+	for _, expected := range []string{
+		"ПУТЬ ФАЙЛА:\nopenspec/changes/example/proposal.md",
+		"ПОЛНЫЙ MARKDOWN-ФАЙЛ:\n<<<FILE\n# Proposal",
+		"ВЫДЕЛЕНИЕ В ВИЗУАЛЬНОМ РЕДАКТОРЕ:\n<<<SELECTION\nBefore",
+		"ИСХОДНЫЙ MARKDOWN ВЫДЕЛЕННОГО ФРАГМЕНТА:\n<<<SOURCE\nBefore",
+		"КОММЕНТАРИЙ К ИЗМЕНЕНИЮ:\n<<<COMMENT\nДобавить детали",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("prompt is missing %q: %s", expected, prompt)
+		}
 	}
 }
 
