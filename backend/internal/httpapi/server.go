@@ -236,6 +236,8 @@ func (server *Server) handleTaskContextError(response http.ResponseWriter, reque
 		server.writeError(response, request, http.StatusConflict, "GIT_UNAVAILABLE", "Git недоступен", nil)
 	case errors.Is(err, taskcontext.ErrInvalidBranch):
 		server.writeError(response, request, http.StatusBadRequest, "TASK_BRANCH_INVALID", "Проверьте номер задачи", nil)
+	case errors.Is(err, taskcontext.ErrRemoteBranchNotFound):
+		server.writeError(response, request, http.StatusNotFound, "TASK_REMOTE_BRANCH_NOT_FOUND", "Удалённая ветка больше недоступна. Обновите список веток", nil)
 	case errors.Is(err, taskcontext.ErrWorkspaceNotFound):
 		server.writeError(response, request, http.StatusNotFound, "TASK_WORKSPACE_NOT_FOUND", "Рабочее пространство задачи не найдено", nil)
 	case errors.Is(err, taskcontext.ErrWorkspaceConflict):

@@ -234,27 +234,15 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
 
   return <>
     {!panelOpen ? (
-      <aside className="document-openspec-review collapsed">
-        <button
-          type="button"
-          className="openspec-operations-open"
-          onClick={() => controller.setOperationsPanelOpen(true)}
-          aria-label={`Показать историю операций изменения ${change}`}
-          title="Показать историю операций"
-        >
-          <span className="openspec-operations-open-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20">
-              <path d="M4.2 6.2A6.4 6.4 0 1 1 3.6 11" />
-              <path d="M4.2 2.8v3.8H8" />
-              <path d="M10 6.3v4.1l2.7 1.6" />
-            </svg>
-          </span>
-          <span className="openspec-operations-open-label">История</span>
-          {controller.operations.length > 0 && (
-            <b aria-label={`Всего операций: ${controller.operations.length}`}>{controller.operations.length}</b>
-          )}
-        </button>
-      </aside>
+      <button
+        type="button"
+        className="open-panel right openspec-operations-open"
+        onClick={() => controller.setOperationsPanelOpen(true)}
+        aria-label={`Показать историю операций изменения ${change}`}
+        title="Показать историю операций"
+      >
+        <span aria-hidden="true">‹</span>
+      </button>
     ) : (
       <aside className="document-openspec-review" aria-label={`История операций OpenSpec: ${change}`}>
       <header className="openspec-operations-heading">
@@ -316,7 +304,7 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
         )}
       </aside>
     )}
-    {controller.operationDialogOpen && selectedOperation && (
+    {controller.operationDialogOpen && selectedOperation && createPortal((
       <div className="openspec-operation-dialog-backdrop" role="presentation">
         <section
           className="openspec-operation-dialog"
@@ -330,7 +318,7 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
           />
         </section>
       </div>
-    )}
+    ), document.body)}
   </>;
 }
 

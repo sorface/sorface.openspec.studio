@@ -17,7 +17,6 @@ export function WorkspaceFooter({ workspaceMode, projectSelected, onWorkspaceMod
         onClick={() => onWorkspaceModeChange("openspec")}
       ><span>◇</span><b>OpenSpec</b></button>
       <div className="bottom-spacer" />
-      <span className="validation"><i /> Локально · изменения разделены по задачам</span>
     </nav>
   );
 }

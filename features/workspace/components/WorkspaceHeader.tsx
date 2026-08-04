@@ -4,13 +4,11 @@ import { useMemo } from "react";
 import { LogoMark } from "@/components/ui/LogoMark";
 import { ProjectSwitcher } from "@/features/projects/components/ProjectSwitcher";
 import type { ProjectsController } from "@/features/projects/hooks/useProjectsController";
-import { useSystemStatus } from "@/features/system/hooks/useSystemStatus";
 import { TaskContextSelector } from "@/features/task-context/components/TaskContextSelector";
 import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
 
 interface WorkspaceHeaderProps {
   agentSettingsOpen: boolean;
-  draftSaved: boolean;
   onAgentSettingsToggle: () => void;
   onPublish: () => void;
   onReceive: () => void;
@@ -18,8 +16,7 @@ interface WorkspaceHeaderProps {
   tasks: TaskContextController;
 }
 
-export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
-  const serverStatus = useSystemStatus();
+export function WorkspaceHeader({ agentSettingsOpen, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
   const activeProject = projects.activeProject;
   const provider = activeProject?.defaultAiProvider;
   const model = activeProject?.defaultModel;
@@ -51,9 +48,10 @@ export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettings
           onClick={onReceive}
         >
           <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 3.2v9.2m0 0 3.3-3.3M9 12.4 5.7 9.1M4 13v.5A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5V13" /></svg>
+          <span>{tasks.syncing ? "Получаем…" : "Получить обновления"}</span>
         </button>
         <button
-          className="publish-icon-button"
+          className="publish-icon-button publication-icon-button"
           type="button"
           aria-label={tasks.preparing ? "Готовим публикацию" : "Опубликовать артефакты текущей задачи"}
           disabled={!activeProject || !tasks.overview?.active || tasks.switching || tasks.syncing || tasks.preparing || tasks.publishing}
@@ -61,14 +59,8 @@ export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettings
           onClick={onPublish}
         >
           <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 12.8V3.6m0 0L5.7 6.9M9 3.6l3.3 3.3M4 11.4v2.1A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-2.1" /></svg>
+          <span>{tasks.preparing ? "Готовим…" : "Публикация изменений"}</span>
         </button>
-      </div>
-
-      <div className="workspace-status">
-        <span className={`server-status ${serverStatus}`}>
-          <i /> {serverStatus === "ready" ? "Локальный server" : serverStatus === "checking" ? "Подключение…" : "Backend недоступен"}
-        </span>
-        <span className="saved-state"><i /> {draftSaved ? "Файл сохранён" : "Есть изменения"}</span>
       </div>
 
       <div className="top-actions">

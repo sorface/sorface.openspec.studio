@@ -80,6 +80,8 @@ export interface OpenSpecWorkflowController {
   runArtifactAction: (change: string, artifact: string, goal: string) => Promise<OpenSpecOperation | undefined>;
   startArtifactRefresh: (change: string, specsArtifact: string, includeTasks: boolean, proposalGuidance?: string) => Promise<void>;
   retryArtifactRefresh: () => Promise<void>;
+  respondToClarification: (answers: Record<string, string[]>) => Promise<void>;
+  repeatWithFeedback: (comments: string[]) => Promise<boolean>;
   cancel: () => Promise<void>;
   accept: () => Promise<boolean>;
   reject: () => Promise<void>;
@@ -108,9 +110,37 @@ function appendOperationActivity(current: string[], message: string): string[] {
   return [...current, normalized].slice(-6);
 }
 
+function operationStartedMessage(action?: OpenSpecOperation["openspecAction"], artifact?: string): string {
+  if (action === "explore") return "Agent начал анализ замысла и OpenSpec-контекста";
+  if (action === "archive") return "Agent начал проверку change перед архивированием";
+  if (action === "create_change") return "Agent начал подготовку принятого proposal";
+  if (artifact) return `Agent начал подготовку ${artifact.endsWith(".md") ? artifact : `${artifact}.md`}`;
+  return "Agent начал обработку OpenSpec-контекста";
+}
+
 function upsertOperation(current: OpenSpecOperation[], item: OpenSpecOperation): OpenSpecOperation[] {
   return [item, ...current.filter((candidate) => candidate.id !== item.id)]
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+}
+
+export function openSpecReviewFeedbackGoal(artifact: string, comments: string[]): string {
+  const normalized = comments
+    .map((comment) => comment.trim().slice(0, 1000))
+    .filter(Boolean)
+    .slice(0, 8);
+  let remaining = 6000;
+  const bounded = normalized.flatMap((comment) => {
+    if (remaining <= 0) return [];
+    const next = comment.slice(0, remaining);
+    remaining -= next.length;
+    return next ? [next] : [];
+  });
+  return [
+    `Повтори подготовку артефакта ${artifact}, сохранив согласованный scope change.`,
+    "Учти все замечания пользователя к предыдущему итоговому Markdown:",
+    ...bounded.map((comment, index) => `${index + 1}. ${comment}`),
+    "Верни полный исправленный результат через обычный review-before-write workflow.",
+  ].join("\n\n");
 }
 
 export function useOpenSpecWorkflowController(
@@ -368,6 +398,65 @@ export function useOpenSpecWorkflowController(
     });
   }, [execute, model, projectId, provider]);
 
+  const respondToClarification = useCallback(async (answers: Record<string, string[]>) => {
+    if (!operation || !operation.prompt?.trim() || !operation.result) return;
+    const questions = parseResult(operation)?.exploration?.questions ?? [];
+    if (!questions.length || questions.some((question) => !(answers[question.id]?.length))) return;
+    const clarification = questions.map((question) => ({
+      id: question.id,
+      question: question.prompt,
+      answer: answers[question.id],
+    }));
+    await execute({
+      kind: operation.openspecAction,
+      change: operation.openspecChange || undefined,
+      artifact: operation.openspecArtifact,
+      goal: `${operation.prompt}\n\nУТОЧНЕНИЯ ПОЛЬЗОВАТЕЛЯ:\n${JSON.stringify(clarification)}`,
+      provider: operation.provider || provider,
+      model: operation.model || model,
+      statusFingerprint: operation.openspecFingerprint,
+    });
+  }, [execute, model, operation, provider]);
+
+  const repeatWithFeedback = useCallback(async (comments: string[]) => {
+    if (!projectId || operation?.status !== "awaiting_review" || !operation.openspecChange ||
+        !operation.openspecArtifact ||
+        !["prepare_artifact", "fix_artifact"].includes(operation.openspecAction)) return false;
+    const normalized = comments.map((comment) => comment.trim()).filter(Boolean);
+    if (!normalized.length) {
+      setError(new ApiError(400, {
+        code: "OPENSPEC_REVIEW_FEEDBACK_REQUIRED",
+        message: "Добавьте хотя бы одно замечание перед повтором этапа",
+      }));
+      return false;
+    }
+    setPending(true);
+    setError(null);
+    try {
+      const rejected = await rejectOpenSpecOperation(projectId, operation.id);
+      setOperation(rejected);
+      setOperations((current) => upsertOperation(current, rejected));
+      setDraft(null);
+      const next = await runArtifactAction(
+        operation.openspecChange,
+        operation.openspecArtifact,
+        openSpecReviewFeedbackGoal(operation.openspecArtifact, normalized),
+      );
+      if (!next) return false;
+      setArtifactRefresh((current) => openSpecArtifactRefreshMatchesOperation(current, {
+        id: operation.id,
+        change: operation.openspecChange,
+        artifact: operation.openspecArtifact,
+      }) ? bindOpenSpecArtifactRefreshOperation(current!, next.id) : current);
+      return true;
+    } catch (cause) {
+      setError(toApiError(cause, "Этап не удалось повторить с замечаниями"));
+      return false;
+    } finally {
+      setPending(false);
+    }
+  }, [operation, projectId, runArtifactAction]);
+
   const startArtifactRefresh = useCallback(async (change: string, specsArtifact: string, includeTasks: boolean, proposalGuidance = "") => {
     const initial = createOpenSpecArtifactRefreshCascade(change, specsArtifact, includeTasks, proposalGuidance);
     setArtifactRefresh(initial);
@@ -489,21 +578,25 @@ export function useOpenSpecWorkflowController(
           ? { ...current, status: reduceOpenSpecOperationStatus(current.status, name) }
           : current);
         if (name === "running") {
-          const message = "Agent начал исследование…";
+          const message = operationStartedMessage(operation?.openspecAction, operation?.openspecArtifact);
           setOperationProgress(message);
           setOperationActivity((current) => appendOperationActivity(current, message));
         }
         if (name === "provider_event") {
-          let message = "Agent продолжает исследование…";
+          let message = "";
           try {
             const payload = JSON.parse((event as MessageEvent<string>).data) as { message?: string };
-            message = payload.message?.trim() || message;
+            message = payload.message?.trim() || "";
           } catch {}
-          setOperationProgress(message);
-          setOperationActivity((current) => appendOperationActivity(current, message));
+          if (message) {
+            setOperationProgress(message);
+            setOperationActivity((current) => appendOperationActivity(current, message));
+          }
         }
         if (name === "validating") {
-          const message = "Проверяем, что Store не изменён…";
+          const message = operation?.openspecAction === "explore"
+            ? "Проверяем, что исследование не изменило Store"
+            : "Проверяем подготовленный diff и область записи";
           setOperationProgress(message);
           setOperationActivity((current) => appendOperationActivity(current, message));
         }
@@ -517,7 +610,7 @@ export function useOpenSpecWorkflowController(
       source.close();
       window.clearInterval(poll);
     };
-  }, [operationId, operationStatus, projectId]);
+  }, [operation?.openspecAction, operation?.openspecArtifact, operationId, operationStatus, projectId]);
 
   const validate = useCallback(async (all = false) => {
     if (!projectId) return;
@@ -541,7 +634,9 @@ export function useOpenSpecWorkflowController(
 
   const cancel = useCallback(async () => {
     if (!projectId || !operation) return;
-    const message = "Останавливаем исследование…";
+    const message = operation.openspecAction === "explore"
+      ? "Останавливаем исследование…"
+      : "Останавливаем подготовку артефакта…";
     setOperationProgress(message);
     setOperationActivity((current) => appendOperationActivity(current, message));
     const next = await cancelOpenSpecOperation(projectId, operation.id);
@@ -557,6 +652,7 @@ export function useOpenSpecWorkflowController(
   const accept = useCallback(async () => {
     if (!projectId || operation?.status !== "awaiting_review") return false;
     setPending(true);
+    setError(null);
     try {
       setDraft(await acceptOpenSpecOperation(projectId, operation.id));
       setOperation((current) => current ? { ...current, status: "accepted" } : current);
@@ -722,6 +818,8 @@ export function useOpenSpecWorkflowController(
     runArtifactAction,
     startArtifactRefresh,
     retryArtifactRefresh,
+    respondToClarification,
+    repeatWithFeedback,
     cancel,
     accept,
     reject,

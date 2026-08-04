@@ -309,6 +309,12 @@ func (service *ActionService) run(item operation.Operation) {
 		finalResponse, err = service.createInitialChange(ctx, item, working, execution)
 	case ActionPrepare, ActionFix:
 		finalResponse, err = service.runProvider(ctx, item, working, execution)
+		if err == nil {
+			if candidate, parseErr := ParseExplorationResult(finalResponse); parseErr == nil && candidate.State == "needs_input" {
+				exploration = candidate
+				finalResponse = candidate.Summary
+			}
+		}
 	case ActionArchive:
 		err = service.adapter.Archive(ctx, working, execution.Input.Change)
 		finalResponse = "OpenSpec CLI подготовил архивирование."
@@ -331,6 +337,19 @@ func (service *ActionService) run(item operation.Operation) {
 	}
 	if err != nil {
 		service.finish(item, operation.StatusFailed, "AI_SCOPE_VIOLATION", err.Error(), "")
+		return
+	}
+	if exploration != nil && exploration.State == "needs_input" {
+		if len(mutations) != 0 {
+			service.finish(item, operation.StatusFailed, actionErrorCode(ErrInvalidExploreResult),
+				"Agent запросил уточнение после изменения изолированного Store.", "")
+			return
+		}
+		result, _ := json.Marshal(ActionResult{
+			FinalResponse: finalResponse, Exploration: exploration,
+			Files: []FileMutation{}, Diagnostics: []Diagnostic{},
+		})
+		service.finish(item, operation.StatusAwaitingReview, "", "", string(result))
 		return
 	}
 	diagnostics := []Diagnostic{}
@@ -442,7 +461,7 @@ func (service *ActionService) runProvider(
 	result, runErr := service.runner.Run(ctx, processrunner.Command{
 		Executable: executable, Arguments: arguments, Directory: working, Stdin: prompt,
 		Timeout: service.timeout, DisableTimeout: execution.Input.Kind == ActionExplore, MaxOutputBytes: 1 << 20,
-		OnStdout: providerProgressCallback(service.store, item.ID),
+		OnStdout: providerProgressCallback(service.store, item.ID, item.OpenSpecAction),
 	})
 	_ = service.store.SaveAudit(context.Background(), operation.Audit{
 		OperationID: item.ID, Executable: filepath.Base(executable),
@@ -456,7 +475,7 @@ func (service *ActionService) runProvider(
 	return actionFinalResponse(result.Stdout), nil
 }
 
-func providerProgressCallback(store ActionStore, operationID string) func([]byte) {
+func providerProgressCallback(store ActionStore, operationID, openspecAction string) func([]byte) {
 	var mutex sync.Mutex
 	var outputBytes int64
 	var pending string
@@ -474,7 +493,7 @@ func providerProgressCallback(store ActionStore, operationID string) func([]byte
 			}
 			line := strings.TrimSpace(pending[:newline])
 			pending = pending[newline+1:]
-			if message := providerActivityMessage(line); message != "" {
+			if message := providerActivityMessageForAction(line, openspecAction); message != "" {
 				messages = append(messages, message)
 			}
 		}
@@ -510,38 +529,139 @@ func providerProgressCallback(store ActionStore, operationID string) func([]byte
 }
 
 func providerActivityMessage(line string) string {
+	return providerActivityMessageForAction(line, "")
+}
+
+func providerActivityMessageForAction(line, openspecAction string) string {
 	if line == "" {
 		return ""
 	}
 	var event struct {
 		Type string `json:"type"`
 		Item struct {
-			Type string `json:"type"`
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Command string `json:"command"`
+			Changes []struct {
+				Path string `json:"path"`
+			} `json:"changes"`
 		} `json:"item"`
 	}
 	if json.Unmarshal([]byte(line), &event) != nil {
-		return "Agent продолжает исследование…"
+		return ""
 	}
 	switch event.Type {
-	case "thread.started", "turn.started":
-		return "Agent формирует план исследования…"
+	case "thread.started":
+		return "Agent запустил рабочую сессию"
+	case "turn.started":
+		return providerTurnStartedMessage(openspecAction)
 	case "turn.completed":
-		return "Agent завершает исследование…"
+		return "Agent завершил обработку контекста"
 	case "item.started", "item.completed", "item.updated":
 		switch event.Item.Type {
 		case "reasoning":
-			return "Agent сопоставляет факты и ограничения…"
+			// Provider reasoning is intentionally not exposed. The UI receives
+			// only observable work and explicit public agent messages.
+			return ""
 		case "command_execution":
-			return "Agent изучает OpenSpec-контекст…"
+			if event.Type != "item.started" {
+				return ""
+			}
+			return providerCommandActivity(event.Item.Command)
 		case "mcp_tool_call", "dynamic_tool_call", "web_search":
-			return "Agent проверяет доступный контекст…"
+			if event.Type == "item.started" {
+				return "Agent запросил дополнительный проектный контекст"
+			}
+			return ""
 		case "agent_message":
-			return "Agent формирует результат исследования…"
+			if event.Type == "item.started" {
+				return ""
+			}
+			return normalizePublicAgentMessage(event.Item.Text)
 		case "file_change":
-			return "Agent проверяет границы read-only режима…"
+			if event.Type == "item.started" {
+				return ""
+			}
+			return providerFileChangeActivity(event.Item.Changes)
 		}
 	}
-	return "Agent продолжает исследование…"
+	return ""
+}
+
+func providerTurnStartedMessage(openspecAction string) string {
+	switch openspecAction {
+	case string(ActionExplore):
+		return "Agent начал анализ замысла и OpenSpec-контекста"
+	case string(ActionPrepare), string(ActionFix):
+		return "Agent начал подготовку артефакта по инструкциям OpenSpec"
+	case string(ActionArchive):
+		return "Agent начал проверку change перед архивированием"
+	case string(ActionCreate):
+		return "Agent начал подготовку принятого proposal"
+	default:
+		return "Agent начал обработку OpenSpec-контекста"
+	}
+}
+
+func providerCommandActivity(command string) string {
+	normalized := strings.ToLower(command)
+	switch {
+	case strings.Contains(normalized, "openspec status"):
+		return "Проверяет статус change и готовность артефактов"
+	case strings.Contains(normalized, "openspec instructions"):
+		return "Сверяет инструкции OpenSpec для следующего артефакта"
+	case strings.Contains(normalized, "openspec validate"):
+		return "Проверяет согласованность OpenSpec-артефактов"
+	case strings.Contains(normalized, "git diff"), strings.Contains(normalized, "git status"):
+		return "Проверяет подготовленный diff и границы изменений"
+	case strings.Contains(normalized, "go test"), strings.Contains(normalized, "npm test"),
+		strings.Contains(normalized, "npm run check"):
+		return "Запускает проверку подготовленного результата"
+	case strings.Contains(normalized, "proposal.md"), strings.Contains(normalized, "design.md"),
+		strings.Contains(normalized, "tasks.md"), strings.Contains(normalized, "specs/"):
+		return "Сопоставляет proposal, specs, design и tasks"
+	default:
+		return "Изучает структуру и ограничения проекта"
+	}
+}
+
+func normalizePublicAgentMessage(value string) string {
+	message := strings.TrimSpace(value)
+	if message == "" {
+		return ""
+	}
+	if strings.HasPrefix(message, "{") || strings.HasPrefix(message, "```") {
+		return "Agent подготовил структурированный результат для проверки"
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	message = strings.TrimLeft(message, "#*- ")
+	runes := []rune(message)
+	if len(runes) > 220 {
+		message = strings.TrimSpace(string(runes[:217])) + "…"
+	}
+	return message
+}
+
+func providerFileChangeActivity(changes []struct {
+	Path string `json:"path"`
+}) string {
+	names := make([]string, 0, 3)
+	seen := map[string]bool{}
+	for _, change := range changes {
+		name := filepath.Base(filepath.Clean(change.Path))
+		if name == "." || name == string(filepath.Separator) || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+		if len(names) == 3 {
+			break
+		}
+	}
+	if len(names) == 0 {
+		return "Agent подготовил изменения артефактов"
+	}
+	return "Подготовил изменения: " + strings.Join(names, ", ")
 }
 
 func (service *ActionService) finish(item operation.Operation, status operation.Status, code, message, result string) {
@@ -573,6 +693,9 @@ func BuildActionPrompt(goal string, instructions Instructions, root string) (str
 	builder.WriteString("SYSTEM ACTION BOUNDARY:\n")
 	builder.WriteString("Work only inside the current isolated OpenSpec workspace. ")
 	builder.WriteString("Do not run arbitrary project scripts and do not modify files outside the declared output.\n")
+	builder.WriteString("If essential information is missing, do not modify files. Return exactly one JSON object without Markdown fences: ")
+	builder.WriteString(`{"state":"needs_input","summary":"Russian public summary","questions":[{"id":"stable-kebab-id","prompt":"Russian question","why":"why it matters","kind":"text|single_choice|multi_choice","options":[]}],"assumptions":[],"suggestedNames":[]}. `)
+	builder.WriteString("Ask 1-5 questions only when an answer materially changes scope, observable behavior, security, or compatibility. Otherwise perform the action normally.\n")
 	builder.WriteString("Declared output: " + output + "\n\n")
 	builder.WriteString("USER GOAL:\n" + goal + "\n\n")
 	builder.WriteString("AUTHORITATIVE OPENSPEC INSTRUCTION:\n" + instructions.Instruction + "\n\n")

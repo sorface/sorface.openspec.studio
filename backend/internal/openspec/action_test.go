@@ -142,7 +142,9 @@ func TestBuildActionPromptExpandsTaskSpecDependencies(t *testing.T) {
 	}, root)
 	if err != nil || !strings.Contains(prompt, "# Browser authentication spec") ||
 		!strings.Contains(prompt, "# Identity management spec") || !strings.Contains(prompt, "# Design") ||
-		!strings.Contains(prompt, "openspec/changes/add-proxy-logging/specs/browser-authentication/spec.md") {
+		!strings.Contains(prompt, "openspec/changes/add-proxy-logging/specs/browser-authentication/spec.md") ||
+		!strings.Contains(prompt, `"state":"needs_input"`) ||
+		!strings.Contains(prompt, "do not modify files") {
 		t.Fatalf("prompt=%q err=%v", prompt, err)
 	}
 }
@@ -444,7 +446,7 @@ func TestOpenSpecExploreReturnsResearchWithoutDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeCodex := filepath.Join(bin, "codex")
-	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf '%s\\n' '{\"message\":\"{\\\"state\\\":\\\"needs_input\\\",\\\"summary\\\":\\\"Исследование готово\\\",\\\"questions\\\":[{\\\"id\\\":\\\"scope\\\",\\\"prompt\\\":\\\"Что входит в scope?\\\",\\\"kind\\\":\\\"text\\\"}],\\\"assumptions\\\":[],\\\"suggestedNames\\\":[]}\"}'\n"), 0o700); err != nil {
+	if err := os.WriteFile(fakeCodex, []byte("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"turn.started\"}'\nprintf '%s\\n' '{\"message\":\"{\\\"state\\\":\\\"needs_input\\\",\\\"summary\\\":\\\"Исследование готово\\\",\\\"questions\\\":[{\\\"id\\\":\\\"scope\\\",\\\"prompt\\\":\\\"Что входит в scope?\\\",\\\"kind\\\":\\\"text\\\"}],\\\"assumptions\\\":[],\\\"suggestedNames\\\":[]}\"}'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -484,7 +486,7 @@ func TestOpenSpecExploreReturnsResearchWithoutDraft(t *testing.T) {
 	}
 	foundActivity := false
 	for _, event := range events {
-		if event.Type == "provider_event" && strings.Contains(event.Payload, "Agent продолжает исследование") {
+		if event.Type == "provider_event" && strings.Contains(event.Payload, "Agent начал анализ замысла") {
 			foundActivity = true
 		}
 	}
@@ -545,12 +547,17 @@ func TestOpenSpecExploreHasNoConfiguredTimeout(t *testing.T) {
 func TestProviderActivityMessageDoesNotExposeProviderContent(t *testing.T) {
 	line := `{"type":"item.completed","item":{"type":"reasoning","text":"секретное рассуждение","command":"cat private.md"}}`
 	message := providerActivityMessage(line)
-	if message != "Agent сопоставляет факты и ограничения…" ||
-		strings.Contains(message, "секретное") || strings.Contains(message, "private.md") {
+	if message != "" || strings.Contains(message, "секретное") || strings.Contains(message, "private.md") {
 		t.Fatalf("unsafe provider activity message: %q", message)
 	}
-	if got := providerActivityMessage(`{"type":"item.started","item":{"type":"command_execution"}}`); got != "Agent изучает OpenSpec-контекст…" {
+	if got := providerActivityMessage(`{"type":"item.started","item":{"type":"command_execution","command":"openspec status --change add-auth --json"}}`); got != "Проверяет статус change и готовность артефактов" {
 		t.Fatalf("unexpected command stage: %q", got)
+	}
+	if got := providerActivityMessage(`{"type":"item.completed","item":{"type":"agent_message","text":"Сопоставил требования и подготовил план обновления design.md."}}`); got != "Сопоставил требования и подготовил план обновления design.md." {
+		t.Fatalf("public agent update was not preserved: %q", got)
+	}
+	if got := providerActivityMessage(`{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"openspec/changes/add-auth/design.md"}]}}`); got != "Подготовил изменения: design.md" {
+		t.Fatalf("file activity was not normalized: %q", got)
 	}
 }
 

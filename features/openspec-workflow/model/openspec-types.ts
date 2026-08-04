@@ -86,6 +86,7 @@ export interface OpenSpecOperation {
   status: OpenSpecOperationStatus;
   provider?: string;
   model?: string;
+  prompt?: string;
   result?: string;
   errorCode?: string;
   errorMessage?: string;

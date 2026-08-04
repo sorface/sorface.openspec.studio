@@ -24,7 +24,9 @@ type DraftStore interface {
 	GetOperation(context.Context, string) (operation.Operation, error)
 	UpdateOperation(context.Context, operation.Operation) (operation.Operation, error)
 	CreateDraftSet(context.Context, operation.DraftSet) (operation.DraftSet, error)
+	AcceptDraftSet(context.Context, operation.Operation, operation.DraftSet) (operation.DraftSet, error)
 	GetDraftSet(context.Context, string) (operation.DraftSet, error)
+	GetDraftSetByOperation(context.Context, string) (operation.DraftSet, error)
 	UpdateDraftSetStatus(context.Context, string, operation.DraftSetStatus) (operation.DraftSet, error)
 }
 
@@ -49,6 +51,9 @@ func (service *DraftService) Accept(
 	if item.ProjectID != projectID || item.Kind != operation.KindOpenSpec {
 		return operation.DraftSet{}, project.ErrNotFound
 	}
+	if item.Status == operation.StatusAccepted {
+		return service.store.GetDraftSetByOperation(ctx, operationID)
+	}
 	if item.Status != operation.StatusAwaitingReview {
 		return operation.DraftSet{}, ErrInvalidDraft
 	}
@@ -66,18 +71,11 @@ func (service *DraftService) Accept(
 			Before: file.Before, After: file.After,
 		})
 	}
-	set, err := service.store.CreateDraftSet(ctx, operation.DraftSet{
+	item.Status = operation.StatusAccepted
+	return service.store.AcceptDraftSet(ctx, item, operation.DraftSet{
 		ProjectID: projectID, OperationID: operationID, Status: operation.DraftAccepted,
 		Mutations: mutations,
 	})
-	if err != nil {
-		return operation.DraftSet{}, err
-	}
-	item.Status = operation.StatusAccepted
-	if _, err := service.store.UpdateOperation(ctx, item); err != nil {
-		return operation.DraftSet{}, err
-	}
-	return set, nil
 }
 
 func (service *DraftService) Reject(

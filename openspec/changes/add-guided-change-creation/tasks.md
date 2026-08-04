@@ -46,6 +46,7 @@
 - [x] 5.24 Стилизовать действия широкого operation review как согласованные secondary-danger и primary кнопки с hover/focus/disabled-состояниями без смещения; добавить rendered regression-тест.
 - [x] 5.25 Не отображать в header открытого master spec кнопки режимов, истории, дополнительных действий и записи, сохранив read-only метку и прежнее поведение delta specs; добавить regression-тест.
 - [x] 5.26 Показывать в toolbar открытого tasks.md реактивный счётчик выполненных Markdown-задач `completed/total`, не учитывая обычные списки; добавить unit и rendered regression-тесты.
+- [x] 5.27 Добавить полноэкранный просмотр итогового Markdown каждой review-мутации, несколько редактируемых замечаний, повтор того же artifact-этапа с bounded feedback и принятие текущей итерации.
 
 ## 6. Проверки и документация результата
 
@@ -55,3 +56,4 @@
 - [x] 6.4 Проверить в browser переход от открытого proposal к выбранному change, доступность подготовки specs без обязательной цели и отображение обещания review diff; сохранить screenshot.
 - [x] 6.5 Обновить integration/rendered tests, выполнить frontend checks и проверить в browser контраст toolbar-действия и inline review без навигации.
 - [x] 6.6 Обновить тесты topbar, выполнить frontend checks и проверить в browser порядок «селектор задачи → публикация» на рабочем viewport.
+- [x] 6.7 Добавить rendered/controller regression-тесты feedback loop, выполнить frontend проверки и пройти полноэкранный review в browser без записи тестового результата в Store.

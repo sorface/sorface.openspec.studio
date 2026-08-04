@@ -29,6 +29,7 @@ export interface TaskContextController {
   result: PublicationResult | null;
   error: ApiError | null;
   openTask: (branch: string) => Promise<void>;
+  openRemoteTask: (remoteBranch: string) => Promise<void>;
   receiveRemoteChanges: () => Promise<TaskSyncResult>;
   refresh: () => void;
   preparePublication: () => Promise<void>;
@@ -95,11 +96,32 @@ export function useTaskContextController(projectId?: string): TaskContextControl
     setError(null);
     setPreview(null);
     try {
-      setOverview(await openTaskWorkspace(projectId, normalized));
+      setOverview(await openTaskWorkspace(projectId, { branch: normalized }));
       setResult(null);
       setStatus("ready");
     } catch (cause) {
       const next = toApiError(cause, "Не удалось открыть задачу");
+      setError(next);
+      throw next;
+    } finally {
+      mutationInFlight.current = false;
+      setSwitching(false);
+    }
+  }, [projectId]);
+
+  const openRemoteTask = useCallback(async (remoteBranch: string) => {
+    const normalized = remoteBranch.trim();
+    if (!projectId || !normalized || mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    setSwitching(true);
+    setError(null);
+    setPreview(null);
+    try {
+      setOverview(await openTaskWorkspace(projectId, { remoteBranch: normalized }));
+      setResult(null);
+      setStatus("ready");
+    } catch (cause) {
+      const next = toApiError(cause, "Не удалось открыть удалённую ветку");
       setError(next);
       throw next;
     } finally {
@@ -215,6 +237,7 @@ export function useTaskContextController(projectId?: string): TaskContextControl
     result,
     error,
     openTask,
+    openRemoteTask,
     receiveRemoteChanges,
     refresh,
     preparePublication,
@@ -222,5 +245,5 @@ export function useTaskContextController(projectId?: string): TaskContextControl
     publish,
     dismissPublication,
     clearError,
-  }), [clearError, dismissPublication, error, generatePublicationMessage, generating, openTask, overview, preparePublication, preparing, preview, publish, publishing, receiveRemoteChanges, refresh, result, status, switching, syncing]);
+  }), [clearError, dismissPublication, error, generatePublicationMessage, generating, openRemoteTask, openTask, overview, preparePublication, preparing, preview, publish, publishing, receiveRemoteChanges, refresh, result, status, switching, syncing]);
 }

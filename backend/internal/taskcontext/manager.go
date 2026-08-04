@@ -21,6 +21,7 @@ var (
 	ErrWorkspaceNotFound    = errors.New("task workspace not found")
 	ErrWorkspaceConflict    = errors.New("task workspace conflict")
 	ErrWorkspaceUnavailable = errors.New("task workspace unavailable")
+	ErrRemoteBranchNotFound = errors.New("task remote branch not found")
 	ErrSyncUpstream         = errors.New("task workspace upstream is unavailable")
 	ErrSyncConflict         = errors.New("task workspace remote changes conflict")
 	ErrSyncFailed           = errors.New("task workspace sync failed")
@@ -41,11 +42,13 @@ type Workspace struct {
 type Overview struct {
 	Items             []Workspace `json:"items"`
 	AvailableBranches []string    `json:"availableBranches"`
+	RemoteBranches    []string    `json:"remoteBranches"`
 	Active            *Workspace  `json:"active,omitempty"`
 }
 
 type OpenInput struct {
-	Branch string `json:"branch"`
+	Branch       string `json:"branch,omitempty"`
+	RemoteBranch string `json:"remoteBranch,omitempty"`
 }
 
 type SyncResult struct {
@@ -94,7 +97,11 @@ func (manager *Manager) List(ctx context.Context, projectID string) (Overview, e
 	if err != nil {
 		return Overview{}, err
 	}
-	result := Overview{Items: items, AvailableBranches: branches}
+	remoteBranches, err := manager.remoteBranches(ctx, base.BaseStorePath)
+	if err != nil {
+		return Overview{}, err
+	}
+	result := Overview{Items: items, AvailableBranches: branches, RemoteBranches: remoteBranches}
 	for index := range result.Items {
 		if result.Items[index].Active {
 			active := result.Items[index]
@@ -110,7 +117,7 @@ func (manager *Manager) Open(ctx context.Context, projectID string, input OpenIn
 	if err != nil {
 		return Overview{}, err
 	}
-	branch, err := manager.validateBranch(ctx, base.BaseStorePath, input.Branch)
+	branch, remoteBranch, err := manager.resolveOpenBranch(ctx, base.BaseStorePath, input)
 	if err != nil {
 		return Overview{}, err
 	}
@@ -137,8 +144,11 @@ func (manager *Manager) Open(ctx context.Context, projectID string, input OpenIn
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return Overview{}, ErrWorkspaceUnavailable
 	}
+	localRefExists := manager.refExists(ctx, base.BaseStorePath, "refs/heads/"+branch)
 	arguments := []string{"worktree", "add", "--", target, branch}
-	if !manager.refExists(ctx, base.BaseStorePath, "refs/heads/"+branch) {
+	if remoteBranch != "" && !localRefExists {
+		arguments = []string{"worktree", "add", "-b", branch, "--track", "--", target, remoteBranch}
+	} else if !localRefExists {
 		remoteRef := "refs/remotes/origin/" + branch
 		if manager.refExists(ctx, base.BaseStorePath, remoteRef) {
 			arguments = []string{"worktree", "add", "-b", branch, "--track", "--", target, "origin/" + branch}
@@ -297,12 +307,50 @@ func (manager *Manager) validateBranch(ctx context.Context, path, branch string)
 	return branch, nil
 }
 
+func (manager *Manager) resolveOpenBranch(ctx context.Context, path string, input OpenInput) (string, string, error) {
+	branch := strings.TrimSpace(input.Branch)
+	remoteBranch := strings.TrimSpace(input.RemoteBranch)
+	if (branch == "") == (remoteBranch == "") {
+		return "", "", ErrInvalidBranch
+	}
+	if remoteBranch == "" {
+		validated, err := manager.validateBranch(ctx, path, branch)
+		return validated, "", err
+	}
+	if !strings.HasPrefix(remoteBranch, "origin/") || remoteBranch == "origin/HEAD" {
+		return "", "", ErrInvalidBranch
+	}
+	localBranch, err := manager.validateBranch(ctx, path, strings.TrimPrefix(remoteBranch, "origin/"))
+	if err != nil {
+		return "", "", err
+	}
+	if !manager.refExists(ctx, path, "refs/remotes/"+remoteBranch) {
+		return "", "", ErrRemoteBranchNotFound
+	}
+	return localBranch, remoteBranch, nil
+}
+
 func (manager *Manager) localBranches(ctx context.Context, path string) ([]string, error) {
 	value, err := manager.output(ctx, path, 15*time.Second, "for-each-ref", "--format=%(refname:short)", "refs/heads")
 	if err != nil {
 		return nil, ErrWorkspaceUnavailable
 	}
 	branches := strings.Fields(value)
+	sort.Strings(branches)
+	return branches, nil
+}
+
+func (manager *Manager) remoteBranches(ctx context.Context, path string) ([]string, error) {
+	value, err := manager.output(ctx, path, 15*time.Second, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
+	if err != nil {
+		return nil, ErrWorkspaceUnavailable
+	}
+	branches := make([]string, 0)
+	for _, branch := range strings.Fields(value) {
+		if strings.HasPrefix(branch, "origin/") && branch != "origin/HEAD" {
+			branches = append(branches, branch)
+		}
+	}
 	sort.Strings(branches)
 	return branches, nil
 }
@@ -329,7 +377,7 @@ func (manager *Manager) run(ctx context.Context, path string, timeout time.Durat
 	return manager.runner.Run(ctx, processrunner.Command{
 		Executable: manager.gitPath, Arguments: arguments, Directory: path,
 		Timeout: timeout, MaxOutputBytes: 128 << 10,
-		Environment: map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		Environment: map[string]string{"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"},
 	})
 }
 

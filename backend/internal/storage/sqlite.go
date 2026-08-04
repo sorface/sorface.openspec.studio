@@ -157,10 +157,15 @@ func Open(path string) (*SQLite, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	if _, err = db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	if _, err = db.Exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure sqlite: %w", err)
 	}
 	if err = ensureOperationMetadataColumns(db); err != nil {
 		_ = db.Close()
@@ -782,6 +787,98 @@ func (store *SQLite) CreateDraftSet(ctx context.Context, item operation.DraftSet
 	return item, nil
 }
 
+// AcceptDraftSet persists the review result and advances its operation in one
+// transaction. If an earlier interrupted request already created the draft,
+// the same transaction repairs the operation status and returns that draft.
+func (store *SQLite) AcceptDraftSet(
+	ctx context.Context,
+	operationItem operation.Operation,
+	item operation.DraftSet,
+) (operation.DraftSet, error) {
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	defer transaction.Rollback()
+
+	var currentStatus operation.Status
+	if err := transaction.QueryRowContext(ctx,
+		"SELECT status FROM operations WHERE id=? AND project_id=?",
+		operationItem.ID, operationItem.ProjectID,
+	).Scan(&currentStatus); errors.Is(err, sql.ErrNoRows) {
+		return operation.DraftSet{}, project.ErrNotFound
+	} else if err != nil {
+		return operation.DraftSet{}, err
+	}
+	if currentStatus != operation.StatusAwaitingReview {
+		return operation.DraftSet{}, operation.ErrInvalidTransition
+	}
+
+	var existingID string
+	existingErr := transaction.QueryRowContext(ctx,
+		"SELECT id FROM draft_sets WHERE operation_id=?", operationItem.ID,
+	).Scan(&existingID)
+	if existingErr != nil && !errors.Is(existingErr, sql.ErrNoRows) {
+		return operation.DraftSet{}, existingErr
+	}
+
+	now := time.Now().UTC()
+	if errors.Is(existingErr, sql.ErrNoRows) {
+		if item.ID == "" {
+			item.ID = newID()
+		}
+		if item.Status == "" {
+			item.Status = operation.DraftAccepted
+		}
+		item.CreatedAt, item.UpdatedAt = now, now
+		if _, err := transaction.ExecContext(ctx, `
+			INSERT INTO draft_sets(id, project_id, operation_id, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			item.ID, item.ProjectID, item.OperationID, item.Status, formatTime(now), formatTime(now)); err != nil {
+			return operation.DraftSet{}, err
+		}
+		for index := range item.Mutations {
+			if item.Mutations[index].ID == "" {
+				item.Mutations[index].ID = newID()
+			}
+			item.Mutations[index].SetID = item.ID
+			mutation := item.Mutations[index]
+			if _, err := transaction.ExecContext(ctx, `
+				INSERT INTO draft_mutations
+				(id, set_id, type, path, previous_path, before_content, after_content)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				mutation.ID, mutation.SetID, mutation.Type, mutation.Path, mutation.PreviousPath,
+				mutation.Before, mutation.After); err != nil {
+				return operation.DraftSet{}, err
+			}
+		}
+	} else {
+		item.ID = existingID
+	}
+
+	result, err := transaction.ExecContext(ctx, `
+		UPDATE operations SET status=?, updated_at=?
+		WHERE id=? AND project_id=? AND status=?`,
+		operation.StatusAccepted, formatTime(now), operationItem.ID, operationItem.ProjectID,
+		operation.StatusAwaitingReview)
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err != nil {
+			return operation.DraftSet{}, err
+		}
+		return operation.DraftSet{}, operation.ErrInvalidTransition
+	}
+	if err := transaction.Commit(); err != nil {
+		return operation.DraftSet{}, err
+	}
+	if existingID != "" {
+		return store.GetDraftSet(ctx, existingID)
+	}
+	return item, nil
+}
+
 func (store *SQLite) GetDraftSet(ctx context.Context, id string) (operation.DraftSet, error) {
 	var item operation.DraftSet
 	var created, updated string
@@ -823,6 +920,20 @@ func (store *SQLite) GetDraftSet(ctx context.Context, id string) (operation.Draf
 		item.Mutations = append(item.Mutations, mutation)
 	}
 	return item, rows.Err()
+}
+
+func (store *SQLite) GetDraftSetByOperation(ctx context.Context, operationID string) (operation.DraftSet, error) {
+	var id string
+	err := store.db.QueryRowContext(ctx,
+		"SELECT id FROM draft_sets WHERE operation_id=?", operationID,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return operation.DraftSet{}, project.ErrNotFound
+	}
+	if err != nil {
+		return operation.DraftSet{}, err
+	}
+	return store.GetDraftSet(ctx, id)
 }
 
 func (store *SQLite) UpdateDraftSetStatus(

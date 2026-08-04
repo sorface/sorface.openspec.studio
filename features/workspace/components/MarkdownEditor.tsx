@@ -30,6 +30,7 @@ interface MarkdownEditorProps {
   contextPanel?: ReactNode;
   onBlur: () => void;
   onAddComment?: (path: string, selection: EditorTextSelection, comment: string) => void;
+  onUpdateComment?: (path: string, commentId: string, comment: string) => void;
   onDeleteComment?: (path: string, commentId: string) => void;
   onChange: (markdown: string) => void;
   onViewModeChange: (mode: ViewMode) => void;
@@ -44,7 +45,7 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
     activeFile, lines, markdown, documentStatus, loadingDocument, saving, dirty, conflict,
     error, history, saveShortcutLabel, viewMode, userReadOnly = false, hideHeaderActions = false,
     readOnlyLabel = "Только просмотр", comments,
-    toolbarActions, contextPanel, onBlur, onAddComment, onDeleteComment, onChange, onViewModeChange, onWrite, onRetry,
+    toolbarActions, contextPanel, onBlur, onAddComment, onUpdateComment, onDeleteComment, onChange, onViewModeChange, onWrite, onRetry,
   } = props;
   const breadcrumbs = activeFile?.split("/") ?? [];
   const canEdit = documentStatus === "ready" && !!activeFile && !loadingDocument;
@@ -123,6 +124,7 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
             comments={comments}
             toolbarActions={toolbarActions}
             onAddComment={onAddComment ? (selection, comment) => onAddComment(activeFile!, selection, comment) : undefined}
+            onUpdateComment={onUpdateComment ? (commentId, comment) => onUpdateComment(activeFile!, commentId, comment) : undefined}
             onDeleteComment={onDeleteComment ? (commentId) => onDeleteComment(activeFile!, commentId) : undefined}
             onChange={onChange}
             onBlur={onBlur}
@@ -141,7 +143,9 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
       {history.open && activeFile && <DocumentHistoryPanel controller={history} path={activeFile} />}
 
       <footer className="editor-statusbar">
-        <span className="draft-label"><i /> {userReadOnly ? readOnlyLabel : saving ? "Запись…" : dirty ? "Есть изменения" : "Файл сохранён"}</span>
+        {(userReadOnly || saving || dirty) && (
+          <span className="draft-label"><i /> {userReadOnly ? readOnlyLabel : saving ? "Запись…" : "Есть изменения"}</span>
+        )}
         <span>Markdown</span>
         <span>Строк: {lines.length}</span>
         <span>Слов: {wordCount}</span>

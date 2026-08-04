@@ -51,6 +51,10 @@ func TestAcceptAndWriteDraftMutationSet(t *testing.T) {
 	if err != nil || len(set.Mutations) != 4 {
 		t.Fatalf("set=%#v err=%v", set, err)
 	}
+	repeated, err := service.Accept(context.Background(), projectItem.ID, item.ID)
+	if err != nil || repeated.ID != set.ID || len(repeated.Mutations) != len(set.Mutations) {
+		t.Fatalf("repeated accept=%#v err=%v", repeated, err)
+	}
 	loadedOperation, err := database.GetOperation(context.Background(), item.ID)
 	if err != nil || loadedOperation.Status != operation.StatusAccepted {
 		t.Fatalf("operation=%#v err=%v", loadedOperation, err)

@@ -27,10 +27,33 @@ test("рендерит продуктовый workspace вместо старт�
   assert.match(html, /<title>OpenSpec Studio<\/title>/i);
   assert.match(html, /Загрузка проектов/);
   assert.doesNotMatch(html, /AI-ассистент/);
-  assert.match(html, /изменения разделены по задачам/);
+  assert.doesNotMatch(html, /Локально · изменения разделены по задачам|Файл сохранён/);
   assert.match(html, /Задача/);
   assert.match(html, /Опубликовать/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview|react-loading-skeleton/i);
+});
+
+test("показывает loading landing до завершения анимации и инициализации проекта", async () => {
+  const [workspace, landing, css] = await Promise.all([
+    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/ProjectLoadingLanding.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(landing, /PROJECT_LOADING_ANIMATION_MAX_MS = 1_600/);
+  assert.match(landing, /setAnimationComplete\(true\)/);
+  assert.match(landing, /if \(!animationComplete \|\| !initializationComplete \|\| phase !== "visible"\) return/);
+  assert.match(landing, /<LogoMark \/>/);
+  assert.match(landing, /<strong>OpenSpec<\/strong>/);
+  assert.match(landing, /<span>Studio<\/span>/);
+  assert.match(workspace, /projects\.status !== "loading"/);
+  assert.match(workspace, /tasks\.status !== "loading"/);
+  assert.match(workspace, /documents\.status !== "loading"/);
+  assert.match(workspace, /openSpec\.status !== "loading"/);
+  assert.match(workspace, /<ProjectLoadingLanding initializationComplete=\{projectInitializationComplete\} \/>/);
+  assert.match(css, /\.project-loading-landing \{[^}]*position:\s*fixed[^}]*z-index:\s*500/s);
+  assert.match(css, /@keyframes project-loading-logo/);
+  assert.match(css, /@keyframes project-loading-copy/);
 });
 
 test("переключатель проекта использует портфель без избыточной подписи", async () => {
@@ -113,7 +136,7 @@ test("покрывает визуальное Markdown-редактирован�
   assert.match(html, />Edit</);
   assert.match(html, />Preview</);
   assert.match(html, />Split</);
-  assert.match(html, /Файл сохранён/);
+  assert.doesNotMatch(html, /Файл сохранён/);
   assert.match(html, /Записать в файл/);
   assert.match(html, /Scope: Store only/);
 });
@@ -231,11 +254,12 @@ test("не рендерит удалённую панель AI-ассистен�
   assert.doesNotMatch(workspace, /AiAssistantPanel|useAiOperationsController|rightOpen|assistantMode/);
 });
 
-test("покрывает задачу и OpenSpec-навигацию без Git-терминов в основном workflow", async () => {
+test("покрывает задачу и OpenSpec-навигацию без Git-терминов и локальных status-индикаторов", async () => {
   const html = await (await render()).text();
-  for (const expected of ["Задача", "Опубликовать", "OpenSpec", "Локально", "изменения разделены по задачам"]) {
+  for (const expected of ["Задача", "Опубликовать", "OpenSpec"]) {
     assert.match(html, new RegExp(expected));
   }
+  assert.doesNotMatch(html, /Локально · изменения разделены по задачам|Файл сохранён/);
   assert.doesNotMatch(html, /Операции|История операций пока недоступна/);
   assert.doesNotMatch(html, /Git-панель пока недоступна/);
   assert.doesNotMatch(html, /Commit &amp; Push появится вместе с Git-панелью/);
@@ -345,19 +369,17 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.doesNotMatch(css, /\.milkdown-top-bar \.openspec-document-action-button:hover:not\(:disabled\)\s*\{[^}]*transform:/s);
   assert.match(css, /\.editor-content-shell\.with-context-panel \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 390px/s);
   assert.match(css, /\.document-openspec-review \{[^}]*position:\s*relative[^}]*border-left:\s*1px solid var\(--line\)/s);
-  assert.match(css, /\.document-openspec-review\.collapsed/);
   assert.match(css, /\.document-openspec-review \{[^}]*grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto/s);
   assert.match(css, /\.openspec-operations-list \{[^}]*grid-row:\s*3[^}]*min-height:\s*0[^}]*max-height:\s*none[^}]*overflow-y:\s*auto[^}]*align-content:\s*start/s);
   assert.match(css, /\.openspec-operation-summary \{[^}]*grid-row:\s*4/s);
   assert.match(documentActions, /История операций/);
   assert.match(documentActions, /ИСТОРИЯ ОПЕРАЦИЙ/);
-  assert.match(documentActions, /className="openspec-operations-open-icon"/);
-  assert.match(documentActions, /className="openspec-operations-open-label">История/);
-  assert.match(css, /\.document-openspec-review\.collapsed \{[^}]*display:\s*grid[^}]*width:\s*52px/s);
-  assert.match(css, /\.openspec-operations-open \{[^}]*grid-template-rows:\s*32px minmax\(0, 1fr\) 24px[^}]*background:\s*linear-gradient/s);
-  assert.match(css, /\.openspec-operations-open:focus-visible \{[^}]*box-shadow:\s*inset/s);
-  assert.match(css, /\.openspec-operations-open-icon \{[^}]*border-radius:\s*9px/s);
-  assert.match(css, /\.openspec-operations-open-label \{[^}]*writing-mode:\s*vertical-rl[^}]*white-space:\s*nowrap/s);
+  assert.match(documentActions, /className="open-panel right openspec-operations-open"/);
+  assert.match(documentActions, /aria-label=\{`Показать историю операций изменения \$\{change\}`\}/);
+  assert.match(documentActions, /<span aria-hidden="true">‹<\/span>/);
+  assert.match(css, /\.open-panel\.right \{[^}]*right:\s*0[^}]*border-radius:\s*7px 0 0 7px/s);
+  assert.match(css, /\.editor-content-shell\.with-context-panel:has\(> \.openspec-operations-open\) \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
+  assert.match(css, /\.openspec-operations-open \{[^}]*place-items:\s*center[^}]*font-size:\s*18px/s);
   assert.match(documentActions, /controller\.operations\.map/);
   assert.match(documentActions, /controller\.selectOperation\(operation\)/);
   assert.match(documentActions, /className="openspec-operation-dialog"/);
@@ -388,7 +410,17 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(operationPanel, /className="removed">−\{summary\.deletions\}/);
   assert.match(operationPanel, /className="added">\+\{summary\.additions\}/);
   assert.match(css, /\.openspec-mutation-summary i \{[^}]*min-width:\s*28px[^}]*padding:\s*3px 5px[^}]*font-family:\s*var\(--font-code\)[^}]*font-size:\s*8px[^}]*font-weight:\s*750[^}]*line-height:\s*1/s);
-  assert.doesNotMatch(operationPanel, /<textarea/);
+  assert.match(operationPanel, /className="openspec-mutation-open-final"[\s\S]*Открыть итоговый Markdown/);
+  assert.match(operationPanel, /className="openspec-result-dialog"[\s\S]*aria-modal="true"/);
+  assert.match(operationPanel, /className="openspec-result-markdown"/);
+  assert.match(operationPanel, /className="openspec-result-comments"[\s\S]*Замечания к итоговому Markdown/);
+  assert.match(operationPanel, /Редактировать[\s\S]*Удалить[\s\S]*Добавить комментарий/);
+  assert.match(operationPanel, /Повторить этап с комментариями/);
+  assert.match(operationPanel, /Принять исправления/);
+  assert.match(css, /\.openspec-result-dialog-backdrop \{[^}]*position:\s*fixed[^}]*z-index:\s*1300[^}]*inset:\s*0/s);
+  assert.match(css, /\.openspec-result-dialog \{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.openspec-result-dialog-content \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(320px, 390px\)/s);
+  assert.match(css, /\.openspec-result-comments \{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto auto/s);
   assert.match(css, /\.openspec-split-diff-head \{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
   assert.match(css, /\.openspec-split-diff-row \{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
   assert.match(css, /\.openspec-split-diff-cell \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
@@ -399,6 +431,13 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(css, /\.openspec-markdown-line\.kind-heading\.level-2 \{[^}]*font-size:\s*15px/s);
   assert.match(css, /\.markdown-task-box \{[^}]*border-radius:\s*3px/s);
   assert.match(operationPanel, /className="primary-submit"[\s\S]*Принять весь набор/);
+  assert.match(operationPanel, /className="openspec-review-action-error" role="alert"/);
+  assert.match(operationPanel, /controller\.pending \? "Принимаем…" : "Принять весь набор"/);
+  assert.match(documentActions, /controller\.operationDialogOpen && selectedOperation && createPortal\(/);
+  assert.match(operationPanel, /className="openspec-operation-scroll"[\s\S]*className="openspec-operation-footer"/);
+  assert.match(css, /\.openspec-operation-dialog \.openspec-operation \{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.openspec-operation-dialog \.openspec-operation-scroll \{[^}]*overflow-y:\s*auto/s);
+  assert.match(css, /\.openspec-operation-dialog \.openspec-operation-footer \{[^}]*box-shadow:/s);
   assert.match(operationPanel, /className="openspec-operation-progress"[\s\S]*<time aria-label=\{`Время выполнения \$\{formatElapsedTime\(controller\.operationElapsedSeconds\)\}`\}>[\s\S]*\{formatElapsedTime\(controller\.operationElapsedSeconds\)\}/);
   assert.match(operationPanel, /className=\{`artifact-refresh-operation-status[\s\S]*<ol aria-label="Этапы пересогласования">/);
   assert.doesNotMatch(operationPanel, /Пересогласование planning-артефактов|Planning-артефакты согласованы|Повторить текущий этап/);
@@ -418,13 +457,14 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(css, /\.openspec-draft-write-button:hover:not\(:disabled\) \{[^}]*background:\s*#0c6246/s);
   assert.match(css, /\.openspec-draft-write-button:focus-visible \{[^}]*box-shadow:/s);
   assert.doesNotMatch(css, /\.openspec-draft-write-button:hover:not\(:disabled\) \{[^}]*transform:/s);
-  assert.match(css, /\.openspec-operation-progress \{[^}]*display:\s*flex[^}]*justify-content:\s*space-between/s);
-  assert.match(css, /\.openspec-operation-progress time \{[^}]*font-variant-numeric:\s*tabular-nums/s);
-  assert.match(css, /\.openspec-operation-running \{[^}]*margin:\s*12px 24px 0[^}]*padding:\s*14px 0 15px[^}]*gap:\s*12px[^}]*border-top:\s*1px solid #edf1ef[^}]*border-bottom:\s*1px solid #edf1ef/s);
+  assert.match(operationPanel, /className="openspec-operation-running-header"[\s\S]*className="operation-spinner"[\s\S]*className="openspec-operation-progress"[\s\S]*<time[\s\S]*className="openspec-operation-cancel"/);
+  assert.match(css, /\.openspec-operation-running-header \{[^}]*grid-template-columns:\s*18px minmax\(0, 1fr\) auto auto[^}]*align-items:\s*center/s);
+  assert.match(css, /\.openspec-operation-running-header time \{[^}]*font-variant-numeric:\s*tabular-nums[^}]*text-align:\s*center/s);
+  assert.match(css, /\.openspec-operation-running \{[^}]*margin:\s*12px 24px 0[^}]*padding:\s*14px 0 15px[^}]*display:\s*grid[^}]*gap:\s*10px[^}]*border-top:\s*1px solid #edf1ef[^}]*border-bottom:\s*1px solid #edf1ef/s);
   assert.match(operationPanel, /className="openspec-operation-cancel"[\s\S]*Отменить/);
-  assert.match(css, /\.openspec-operation-running > \.openspec-operation-cancel \{[^}]*min-height:\s*34px[^}]*padding:\s*0 14px[^}]*border:\s*1px solid #dfbcb6[^}]*border-radius:\s*8px[^}]*color:\s*#9a4339/s);
-  assert.match(css, /\.openspec-operation-running > \.openspec-operation-cancel:hover \{[^}]*border-color:\s*#c8877d[^}]*background:\s*#fff4f2[^}]*color:\s*#7f3028/s);
-  assert.match(css, /\.openspec-operation-progress time \{[^}]*padding-left:\s*12px[^}]*border-left:\s*1px solid #dce4e0/s);
+  assert.match(css, /\.openspec-operation-running-header > \.openspec-operation-cancel \{[^}]*min-height:\s*34px[^}]*padding:\s*0 14px[^}]*border:\s*1px solid #dfbcb6[^}]*border-radius:\s*8px[^}]*color:\s*#9a4339/s);
+  assert.match(css, /\.openspec-operation-running-header > \.openspec-operation-cancel:hover \{[^}]*border-color:\s*#c8877d[^}]*background:\s*#fff4f2[^}]*color:\s*#7f3028/s);
+  assert.match(css, /\.openspec-operation-running-header time \{[^}]*padding-left:\s*10px[^}]*border-left:\s*1px solid #dce4e0/s);
   assert.match(header, /className=\{`provider-chevron/);
   assert.match(header, /className="provider-icon" aria-hidden="true">✦</);
   assert.doesNotMatch(header, /className="provider-icon"[^>]*>✣</);

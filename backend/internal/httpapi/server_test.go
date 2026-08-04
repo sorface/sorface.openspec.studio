@@ -226,6 +226,34 @@ func createGitStore(t *testing.T) string {
 	return canonical
 }
 
+func addGitRemoteBranch(t *testing.T, root, branch string) {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if output, err := exec.Command("git", "init", "--bare", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init remote: %v\n%s", err, output)
+	}
+	current := exec.Command("git", "-C", root, "branch", "--show-current")
+	output, err := current.CombinedOutput()
+	if err != nil {
+		t.Fatalf("current branch: %v\n%s", err, output)
+	}
+	baseBranch := strings.TrimSpace(string(output))
+	commands := [][]string{
+		{"-C", remote, "symbolic-ref", "HEAD", "refs/heads/" + baseBranch},
+		{"-C", root, "remote", "add", "origin", remote},
+		{"-C", root, "push", "origin", baseBranch},
+		{"-C", root, "branch", branch},
+		{"-C", root, "push", "origin", branch},
+		{"-C", root, "branch", "-D", branch},
+		{"-C", root, "remote", "set-head", "origin", "-a"},
+	}
+	for _, arguments := range commands {
+		if commandOutput, commandErr := exec.Command("git", arguments...).CombinedOutput(); commandErr != nil {
+			t.Fatalf("git %v: %v\n%s", arguments, commandErr, commandOutput)
+		}
+	}
+}
+
 func TestHealthAndCorrelationID(t *testing.T) {
 	response := request(newHandler(t), http.MethodGet, "/api/v1/system/health", nil, "")
 	if response.Code != http.StatusOK {
@@ -465,6 +493,7 @@ func TestGitStatusContract(t *testing.T) {
 
 func TestTaskWorkspaceContractsAndCSRF(t *testing.T) {
 	root := createGitStore(t)
+	addGitRemoteBranch(t, root, "feature/CGA-1244")
 	database, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -483,7 +512,8 @@ func TestTaskWorkspaceContractsAndCSRF(t *testing.T) {
 	base := "/api/v1/projects/" + item.ID + "/task-workspaces"
 
 	listed := request(handler, http.MethodGet, base, nil, "")
-	if listed.Code != http.StatusOK || !bytes.Contains(listed.Body.Bytes(), []byte(`"active"`)) {
+	if listed.Code != http.StatusOK || !bytes.Contains(listed.Body.Bytes(), []byte(`"active"`)) ||
+		!bytes.Contains(listed.Body.Bytes(), []byte(`"remoteBranches":["origin/feature/CGA-1244"`)) {
 		t.Fatalf("list: %d %s", listed.Code, listed.Body)
 	}
 	withoutCSRF := request(handler, http.MethodPost, base, []byte(`{"branch":"BILL-1842"}`), "")
@@ -506,6 +536,14 @@ func TestTaskWorkspaceContractsAndCSRF(t *testing.T) {
 	invalid := request(handler, http.MethodPost, base, []byte(`{"branch":"bad name"}`), token)
 	if invalid.Code != http.StatusBadRequest || !bytes.Contains(invalid.Body.Bytes(), []byte("TASK_BRANCH_INVALID")) {
 		t.Fatalf("invalid branch: %d %s", invalid.Code, invalid.Body)
+	}
+	missingRemote := request(handler, http.MethodPost, base, []byte(`{"remoteBranch":"origin/feature/missing"}`), token)
+	if missingRemote.Code != http.StatusNotFound || !bytes.Contains(missingRemote.Body.Bytes(), []byte("TASK_REMOTE_BRANCH_NOT_FOUND")) {
+		t.Fatalf("missing remote: %d %s", missingRemote.Code, missingRemote.Body)
+	}
+	remoteOpened := request(handler, http.MethodPost, base, []byte(`{"remoteBranch":"origin/feature/CGA-1244"}`), token)
+	if remoteOpened.Code != http.StatusOK || !bytes.Contains(remoteOpened.Body.Bytes(), []byte(`"branch":"feature/CGA-1244"`)) {
+		t.Fatalf("open remote: %d %s", remoteOpened.Code, remoteOpened.Body)
 	}
 	opened := request(handler, http.MethodPost, base, []byte(`{"branch":"BILL-1842"}`), token)
 	if opened.Code != http.StatusOK || !bytes.Contains(opened.Body.Bytes(), []byte(`"branch":"BILL-1842"`)) {

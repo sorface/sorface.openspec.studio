@@ -16,12 +16,19 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
   const triggerLabel = active
     ? `Задача: ${active.branch}${active.dirty ? ", есть локальные изменения" : ""}`
     : "Задача: выбрать";
-  const choices = useMemo(() => {
+  const { localChoices, remoteChoices } = useMemo(() => {
     const existing = new Map(controller.overview?.items.map((item) => [item.branch, item]) ?? []);
-    return Array.from(new Set([
+    const localNames = Array.from(new Set([
       ...(controller.overview?.items.map((item) => item.branch) ?? []),
       ...(controller.overview?.availableBranches ?? []),
-    ])).map((name) => ({ name, workspace: existing.get(name) }));
+    ]));
+    const localSet = new Set(localNames);
+    const remoteNames = Array.from(new Set(controller.overview?.remoteBranches ?? []))
+      .filter((name) => name.startsWith("origin/") && !localSet.has(name.slice("origin/".length)));
+    return {
+      localChoices: localNames.map((name) => ({ name, workspace: existing.get(name) })),
+      remoteChoices: remoteNames,
+    };
   }, [controller.overview]);
 
   useEffect(() => {
@@ -65,6 +72,15 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
     }
   };
 
+  const selectRemote = async (remoteBranch: string) => {
+    try {
+      await controller.openRemoteTask(remoteBranch);
+      setOpen(false);
+    } catch {
+      // Keep the popover open so the user can refresh stale remote refs.
+    }
+  };
+
   return (
     <div className="task-context" ref={root}>
       <button
@@ -103,14 +119,6 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
                 value={branch}
                 onChange={(event) => setBranch(event.target.value)}
               />
-              <button
-                type="submit"
-                aria-label="Открыть задачу"
-                title="Открыть задачу"
-                disabled={!branch.trim() || controller.switching}
-              >
-                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
-              </button>
             </div>
           </form>
           {controller.error && (
@@ -119,10 +127,10 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
               {controller.error.correlationId && <small>Код: {controller.error.correlationId}</small>}
             </div>
           )}
-          {choices.length > 0 && (
+          {(localChoices.length > 0 || remoteChoices.length > 0) && (
             <div className="task-context-list">
-              <small>Задачи</small>
-              {choices.map(({ name, workspace }) => (
+              {localChoices.length > 0 && <small>Локальные ветки</small>}
+              {localChoices.map(({ name, workspace }) => (
                 <button
                   key={name}
                   type="button"
@@ -135,6 +143,17 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
                   {name === active?.branch && (
                     <svg viewBox="0 0 16 16" aria-label="Текущая задача"><path d="m3.5 8 3 3 6-6" /></svg>
                   )}
+                </button>
+              ))}
+              {remoteChoices.length > 0 && <small>Удалённые ветки</small>}
+              {remoteChoices.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => void selectRemote(name)}
+                  disabled={controller.switching}
+                >
+                  <span>{name}</span>
                 </button>
               ))}
             </div>

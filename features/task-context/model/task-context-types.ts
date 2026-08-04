@@ -13,6 +13,7 @@ export interface TaskWorkspace {
 export interface TaskWorkspaceOverview {
   items: TaskWorkspace[];
   availableBranches: string[];
+  remoteBranches: string[];
   active?: TaskWorkspace;
 }
 

@@ -22,6 +22,7 @@ import {
 import { RepositoriesPanel } from "@/features/repositories/components/RepositoriesPanel";
 import { AgentCliPanel } from "./AgentCliPanel";
 import { MarkdownEditor } from "./MarkdownEditor";
+import { ProjectLoadingLanding } from "./ProjectLoadingLanding";
 import { WorkspaceFooter } from "./WorkspaceFooter";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
@@ -119,6 +120,17 @@ export function OpenSpecWorkspace() {
     providerAvailable,
     refreshStoreState,
     workspaceContext,
+  );
+  const projectInitializationComplete = projects.status !== "loading" && (
+    !projects.activeProject || (
+      tasks.status !== "idle"
+      && tasks.status !== "loading"
+      && documents.status !== "idle"
+      && documents.status !== "loading"
+      && !documents.loadingDocument
+      && openSpec.status !== "idle"
+      && openSpec.status !== "loading"
+    )
   );
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
   const [leftOpen, setLeftOpen] = useState(true);
@@ -245,6 +257,13 @@ export function OpenSpecWorkspace() {
     }));
   }, []);
 
+  const updateFragmentComment = useCallback((path: string, commentId: string, text: string) => {
+    setFragmentCommentsByPath((current) => ({
+      ...current,
+      [path]: (current[path] ?? []).map((comment) => comment.id === commentId ? { ...comment, text } : comment),
+    }));
+  }, []);
+
   const addOpenSpecChange = useCallback(() => {
     setWorkspaceMode("openspec");
     setOpenSpecCreationPageOpen(true);
@@ -265,9 +284,9 @@ export function OpenSpecWorkspace() {
 
   return (
     <main className="app-shell">
+      <ProjectLoadingLanding initializationComplete={projectInitializationComplete} />
       <WorkspaceHeader
         agentSettingsOpen={agentSettingsOpen}
-        draftSaved={!documents.dirty}
         onAgentSettingsToggle={() => setAgentSettingsOpen((open) => !open)}
         onPublish={preparePublication}
         onReceive={receiveRemoteChanges}
@@ -349,6 +368,7 @@ export function OpenSpecWorkspace() {
             ) : undefined}
             onBlur={() => undefined}
             onAddComment={changeDocument?.artifact === "proposal" ? addFragmentComment : undefined}
+            onUpdateComment={changeDocument?.artifact === "proposal" ? updateFragmentComment : undefined}
             onDeleteComment={changeDocument?.artifact === "proposal" ? deleteFragmentComment : undefined}
             onChange={userReadOnlySpec ? () => undefined : documents.change}
             onViewModeChange={setViewMode}

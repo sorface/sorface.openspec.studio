@@ -14,10 +14,13 @@ export function getTaskWorkspaces(projectId: string, signal?: AbortSignal): Prom
   return apiRequest<TaskWorkspaceOverview>(taskPath(projectId, "task-workspaces"), { signal });
 }
 
-export function openTaskWorkspace(projectId: string, branch: string): Promise<TaskWorkspaceOverview> {
+export function openTaskWorkspace(
+  projectId: string,
+  input: { branch?: string; remoteBranch?: string },
+): Promise<TaskWorkspaceOverview> {
   return apiRequest<TaskWorkspaceOverview>(taskPath(projectId, "task-workspaces"), {
     method: "POST",
-    body: { branch },
+    body: input,
   });
 }
 

@@ -385,13 +385,14 @@ index 123..456 100644
 });
 
 test("task context связывает workspace с задачей и публикует только OpenSpec-артефакты", async () => {
-  const [client, controller, selector, dialog, workspace, header, documents, types, footer, css] = await Promise.all([
+  const [client, controller, selector, dialog, workspace, header, markdownEditor, documents, types, footer, css] = await Promise.all([
     readFile(new URL("../features/task-context/api/task-context-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/task-context/hooks/useTaskContextController.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/task-context/components/TaskContextSelector.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/task-context/components/PublicationDialog.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../features/documents/hooks/useDocumentsController.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
     readFile(new URL("../features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
@@ -404,23 +405,32 @@ test("task context связывает workspace с задачей и публи�
   assert.match(client, /task-publications\/preview/);
   assert.match(client, /task-publications\/message/);
   assert.match(client, /task-workspaces\/sync/);
-  assert.match(controller, /setOverview\(await openTaskWorkspace/);
+  assert.match(client, /remoteBranch\?: string/);
+  assert.match(controller, /openTaskWorkspace\(projectId, \{ branch: normalized \}\)/);
+  assert.match(controller, /openTaskWorkspace\(projectId, \{ remoteBranch: normalized \}\)/);
   assert.match(controller, /await syncTaskWorkspace\(projectId\)/);
   assert.match(controller, /setSyncing\(true\)/);
   assert.match(controller, /setPreview\(await previewTaskPublication/);
   assert.match(controller, /generateTaskPublicationMessage\(projectId, preview\.token\)/);
   assert.match(controller, /token: preview\.token/);
   assert.match(selector, /Номер задачи или ветка/);
+  assert.match(selector, /<form onSubmit=\{submit\}>/);
+  assert.doesNotMatch(selector, /Открыть задачу/);
   assert.match(selector, /active\?\.branch/);
   assert.match(selector, /className="task-branch-icon"[\s\S]*aria-hidden="true"/);
   assert.match(selector, /className="task-context-branch"/);
   assert.match(selector, /aria-label=\{triggerLabel\}/);
+  assert.match(selector, /overview\?\.remoteBranches \?\? \[\]/);
+  assert.match(selector, /!localSet\.has\(name\.slice\("origin\/"\.length\)\)/);
+  assert.match(selector, /Удалённые ветки/);
+  assert.match(selector, /controller\.openRemoteTask\(remoteBranch\)/);
   assert.doesNotMatch(selector, /task-context-icon|task-context-copy|РАБОЧИЙ КОНТЕКСТ|Изменения каждой задачи сохраняются отдельно/);
   assert.doesNotMatch(selector, /статус задачи|workflow/i);
   assert.match(css, /\.task-context-trigger \{[^}]*height:\s*34px[^}]*border:\s*0[^}]*background:\s*transparent/s);
   assert.match(css, /\.task-branch-icon \{[^}]*width:\s*14px[^}]*stroke:\s*#718079/s);
   assert.match(css, /\.task-context-branch \{[^}]*font:\s*650 13px var\(--font-ui\)/s);
   assert.match(css, /\.task-context-popover \{[^}]*width:\s*312px/s);
+  assert.doesNotMatch(css, /\.task-context-popover form button/);
   assert.match(dialog, /Опубликовать артефакты/);
   assert.match(dialog, /предложено агентом/);
   assert.match(dialog, /Сгенерировать/);
@@ -432,17 +442,22 @@ test("task context связывает workspace с задачей и публи�
   assert.match(workspace, /result\.updated\) retryDocuments\(\)/);
   assert.match(documents, /item\.kind === "file" && item\.path === requestedPath/);
   assert.match(workspace, /<PublicationDialog/);
-  assert.match(header, /<div className="task-context-publish-group">\s*<TaskContextSelector[\s\S]*className="publish-icon-button"[\s\S]*<\/div>\s*<div className="workspace-status">/);
-  assert.doesNotMatch(header, /<div className="workspace-status">[\s\S]*className="publish-icon-button"/);
+  assert.match(header, /<div className="task-context-publish-group">\s*<TaskContextSelector[\s\S]*className="publish-icon-button(?: [^"]*)?"[\s\S]*<\/div>\s*<div className="top-actions">/);
+  assert.doesNotMatch(header, /workspace-status|server-status|saved-state|useSystemStatus|draftSaved/);
+  assert.doesNotMatch(header, /Локальный server|Файл сохранён/);
   assert.match(header, /aria-label=\{tasks\.preparing \? "Готовим публикацию" : "Опубликовать артефакты текущей задачи"\}/);
   assert.match(header, /Получить изменения текущей задачи из remote/);
+  assert.match(header, /<span>\{tasks\.syncing \? "Получаем…" : "Получить обновления"\}<\/span>/);
+  assert.match(header, /<span>\{tasks\.preparing \? "Готовим…" : "Публикация изменений"\}<\/span>/);
   assert.match(header, /onClick=\{onReceive\}/);
   assert.doesNotMatch(header, /className="publish-button"/);
   assert.match(css, /\.task-context-publish-group \{[^}]*display:\s*flex[^}]*gap:\s*2px/s);
   assert.match(css, /\.publish-icon-button \{[^}]*width:\s*32px[^}]*background:\s*transparent/s);
+  assert.match(css, /\.receive-icon-button, \.publication-icon-button \{[^}]*width:\s*auto[^}]*display:\s*flex[^}]*font-weight:\s*650/s);
   assert.match(documents, /loadedWorkspaceContext/);
   assert.doesNotMatch(types, /"git"/);
-  assert.match(footer, /изменения разделены по задачам/);
+  assert.doesNotMatch(footer, /Локально|изменения разделены по задачам/);
+  assert.doesNotMatch(markdownEditor, /Файл сохранён/);
 });
 
 test("agent CLI settings используют capabilities и сохранённые настройки проекта", async () => {
@@ -733,9 +748,8 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(documentActions, /Просмотреть результат/);
   assert.match(documentActions, /selectedOperation && selectedOperation\.status !== "accepted"/);
   assert.match(documentActions, /Показать историю операций изменения/);
-  assert.match(documentActions, /className="openspec-operations-open-icon"/);
-  assert.match(documentActions, /className="openspec-operations-open-label">История/);
-  assert.match(documentActions, /Всего операций:/);
+  assert.match(documentActions, /className="open-panel right openspec-operations-open"/);
+  assert.match(documentActions, /<span aria-hidden="true">‹<\/span>/);
   assert.match(operationPanel, /createSplitLineDiff/);
   assert.match(operationPanel, /summarizeSplitLineDiff/);
   assert.match(operationPanel, /presentMarkdownDiff/);
@@ -752,7 +766,16 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(operationPanel, /className="openspec-split-diff"/);
   assert.doesNotMatch(operationPanel, /openspec-split-diff-number|openspec-split-diff-marker/);
   assert.match(operationPanel, /openspec-mutation-summary/);
-  assert.doesNotMatch(operationPanel, /Markdown до изменения|Markdown после изменения|<textarea/);
+  assert.doesNotMatch(operationPanel, /Markdown до изменения|Markdown после изменения/);
+  assert.match(operationPanel, /Открыть итоговый Markdown/);
+  assert.match(operationPanel, /className="openspec-result-dialog"/);
+  assert.match(operationPanel, /Повторить этап с комментариями/);
+  assert.match(operationPanel, /Принять исправления/);
+  assert.match(controller, /openSpecReviewFeedbackGoal/);
+  assert.match(controller, /repeatWithFeedback/);
+  assert.match(controller, /rejectOpenSpecOperation\(projectId, operation\.id\)[\s\S]*runArtifactAction\(/);
+  assert.match(controller, /slice\(0, 8\)/);
+  assert.match(controller, /let remaining = 6000/);
   assert.match(operationPanel, /Принять весь набор/);
   assert.doesNotMatch(operationPanel, /Planning-артефакты согласованы/);
   assert.doesNotMatch(operationPanel, /завершится только после выполнения всех актуальных пунктов tasks\.md/);
@@ -847,7 +870,13 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.match(controller, /appendOperationActivity/);
   assert.match(controller, /operationStartInFlight/);
   assert.match(controller, /provider_event/);
-  assert.match(controller, /Agent продолжает исследование/);
+  assert.match(controller, /operationStartedMessage/);
+  assert.match(controller, /Проверяем подготовленный diff и область записи/);
+  assert.match(controller, /respondToClarification/);
+  assert.match(operationPanel, /ХОД РАБОТЫ АГЕНТА/);
+  assert.match(operationPanel, /Agent ожидает ваш выбор/);
+  assert.match(operationPanel, /Ответить и продолжить/);
+  assert.match(operationPanel, /type=\{question\.kind === "single_choice" \? "radio" : "checkbox"\}/);
 
   assert.match(panel, /Создать change/);
   assert.doesNotMatch(panel, /className="openspec-add-change"/);
@@ -936,12 +965,33 @@ test("proposal.md хранит видимые комментарии к фраг
   assert.match(richEditor, /container\.closest\("\.cm-content"\)/);
   assert.match(richEditor, /Добавить комментарий к выделенному фрагменту/);
   assert.match(richEditor, /editor-comment-highlight/);
-  assert.match(richEditor, /editor-fragment-comments/);
+  assert.match(richEditor, /editor-inline-comment-slot/);
+  assert.match(richEditor, /slot\.contentEditable = "false"/);
+  assert.match(richEditor, /editor-inline-comment-panel editing" contentEditable=\{false\}/);
+  assert.match(richEditor, /stopEvent: \(event\).*editor-inline-comment-panel/);
+  assert.match(richEditor, /side:\s*-1/);
+  assert.doesNotMatch(richEditor, />Комментарий к фрагменту</);
+  assert.match(richEditor, /Decoration\.widget/);
+  assert.match(richEditor, /commentSlotTargets/);
+  assert.match(richEditor, /editorRect\.width - horizontalInset \* 2/);
+  assert.match(richEditor, /editorRect\.left - slotRect\.left \+ horizontalInset/);
+  assert.match(richEditor, /data-comment-id/);
+  assert.match(richEditor, /selectionToolbarTarget/);
+  assert.match(richEditor, /editor-comment-toolbar-action/);
+  assert.match(richEditor, /renderCommentForm/);
+  assert.match(richEditor, /openExistingComment/);
   assert.match(richEditor, /onDeleteComment/);
+  assert.match(richEditor, /onUpdateComment/);
   assert.match(richEditor, /textBetween\(from, to, "\\n"\)/);
+  assert.match(richEditor, /view\.state\.doc\.descendants/);
+  assert.match(richEditor, /normalizedCharacters/);
+  assert.match(richEditor, /matchIndex !== lastMatchIndex/);
+  assert.match(richEditor, /normalizedNeedle\.length < 80/);
   assert.match(richEditor, /candidate\.prefix = view\.state\.doc\.textBetween\(0, from, "\\n"\)/);
   assert.match(richEditor, /candidate\.suffix = view\.state\.doc\.textBetween\(to, view\.state\.doc\.content\.size, "\\n"\)/);
   assert.match(markdownEditor, /onAddComment/);
+  assert.match(markdownEditor, /onUpdateComment/);
+  assert.match(workspace, /updateFragmentComment/);
   assert.match(workspace, /proposalCommentsStorageKey/);
   assert.match(workspace, /pendingCommentUpdatePath/);
   assert.match(workspace, /clearFragmentComments/);
@@ -949,10 +999,17 @@ test("proposal.md хранит видимые комментарии к фраг
   assert.match(documentActions, /controller\.startArtifactRefresh/);
   assert.doesNotMatch(controller, /editDocument|mode: "inline"|createAiOperation/);
   assert.doesNotMatch(richEditor, /agent-inline-prompt|Редактировать изменение через agent/);
-  assert.match(css, /\.editor-comment-prompt/);
-  assert.match(css, /\.editor-comment-action/);
-  assert.match(css, /\.editor-comment-highlight/);
-  assert.match(css, /\.editor-fragment-comments/);
+  assert.match(css, /\.editor-comment-toolbar-action/);
+  assert.match(css, /\.editor-inline-comment-slot \{[^}]*position:\s*relative[^}]*width:\s*100%[^}]*margin:\s*8px 0/s);
+  assert.match(css, /\.editor-inline-comment-slot:empty \{[^}]*margin:\s*0[^}]*line-height:\s*0/s);
+  assert.match(css, /\.editor-inline-comment-panel \{[^}]*border:\s*0[^}]*border-radius:\s*18px[^}]*background:\s*rgba\(248, 251, 249, \.82\)/s);
+  assert.match(css, /\.editor-inline-comment-panel \{[^}]*font:\s*400 12px\/1\.5 var\(--font-ui\)[^}]*letter-spacing:\s*normal/s);
+  assert.match(css, /\.editor-inline-comment-panel > header b \{[^}]*margin-right:\s*auto[^}]*font-size:\s*13px[^}]*font-weight:\s*700/s);
+  assert.match(css, /\.editor-inline-comment-panel > p \{[^}]*font:\s*400 12px\/1\.5 var\(--font-ui\) !important/s);
+  assert.match(css, /\.editor-inline-comment-panel > footer \{[^}]*display:\s*flex[^}]*justify-content:\s*flex-end/s);
+  assert.match(css, /\.editor-comment-highlight \{[^}]*background:\s*#ffe58a !important[^}]*box-shadow:\s*inset 0 -1px 0 #c89b18/s);
+  assert.match(css, /\.editor-comment-highlight::selection \{[^}]*background:\s*#efc952/s);
+  assert.match(css, /\.editor-comment-highlight-draft/);
   const goal = commentModel.proposalCommentsGoal([{
     id: "comment-1",
     selection: { text: "Исходный фрагмент" },

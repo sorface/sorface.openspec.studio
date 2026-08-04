@@ -1,6 +1,7 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import { createPortal } from "react-dom";
 import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
 import { openSpecActionLabels } from "@/features/openspec-workflow/model/openspec-action-presentation";
 import {
@@ -13,7 +14,10 @@ import {
   type MarkdownDiffInlineToken,
   type MarkdownDiffLinePresentation,
 } from "@/features/openspec-workflow/model/markdown-diff-presentation";
-import type { OpenSpecFileMutation } from "@/features/openspec-workflow/model/openspec-types";
+import type {
+  OpenSpecExplorationQuestion,
+  OpenSpecFileMutation,
+} from "@/features/openspec-workflow/model/openspec-types";
 
 interface OpenSpecOperationPanelProps {
   controller: OpenSpecWorkflowController;
@@ -124,6 +128,95 @@ function OperationConclusion({ markdown }: { markdown: string }) {
   );
 }
 
+function ClarificationQuestion({
+  question,
+  values,
+  onChange,
+}: {
+  question: OpenSpecExplorationQuestion;
+  values: string[];
+  onChange: (values: string[]) => void;
+}) {
+  if (question.kind === "text") {
+    return (
+      <label className="openspec-clarification-question">
+        <strong>{question.prompt}</strong>
+        {question.why && <small>{question.why}</small>}
+        <input
+          type="text"
+          value={values[0] ?? ""}
+          onChange={(event) => onChange(event.target.value ? [event.target.value] : [])}
+          placeholder="Введите уточнение…"
+        />
+      </label>
+    );
+  }
+  return (
+    <fieldset className="openspec-clarification-question">
+      <legend>{question.prompt}</legend>
+      {question.why && <small>{question.why}</small>}
+      <div className="openspec-clarification-options">
+        {(question.options ?? []).map((option) => {
+          const checked = values.includes(option);
+          return (
+            <label key={option}>
+              <input
+                type={question.kind === "single_choice" ? "radio" : "checkbox"}
+                name={`operation-question-${question.id}`}
+                checked={checked}
+                onChange={() => onChange(question.kind === "single_choice"
+                  ? [option]
+                  : checked ? values.filter((value) => value !== option) : [...values, option])}
+              />
+              <span>{option}</span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
+
+function OperationClarification({ controller }: { controller: OpenSpecWorkflowController }) {
+  const questions = controller.result?.exploration?.questions ?? [];
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  if (!questions.length) return null;
+  const complete = questions.every((question) => (answers[question.id]?.length ?? 0) > 0);
+
+  return (
+    <section className="openspec-operation-clarification" aria-labelledby="operation-clarification-title">
+      <header>
+        <span aria-hidden="true">?</span>
+        <div>
+          <small>НУЖНО УТОЧНЕНИЕ</small>
+          <strong id="operation-clarification-title">Agent ожидает ваш выбор</strong>
+        </div>
+      </header>
+      {controller.result?.exploration?.summary && <p>{controller.result.exploration.summary}</p>}
+      <div className="openspec-clarification-list">
+        {questions.map((question) => (
+          <ClarificationQuestion
+            key={question.id}
+            question={question}
+            values={answers[question.id] ?? []}
+            onChange={(values) => setAnswers((current) => ({ ...current, [question.id]: values }))}
+          />
+        ))}
+      </div>
+      <footer>
+        <button
+          type="button"
+          className="primary-submit"
+          disabled={!complete || controller.pending}
+          onClick={() => void controller.respondToClarification(answers)}
+        >
+          Ответить и продолжить
+        </button>
+      </footer>
+    </section>
+  );
+}
+
 function SplitDiffCell({
   row,
   side,
@@ -149,7 +242,7 @@ function SplitDiffCell({
   );
 }
 
-function MutationReview({ mutation }: { mutation: OpenSpecFileMutation }) {
+function MutationReview({ mutation, onOpenFinal }: { mutation: OpenSpecFileMutation; onOpenFinal: () => void }) {
   const [collapsed, setCollapsed] = useState(false);
   const contentId = useId();
   const rows = createSplitLineDiff(mutation.before ?? "", mutation.after ?? "");
@@ -178,6 +271,12 @@ function MutationReview({ mutation }: { mutation: OpenSpecFileMutation }) {
             <i className="added">+{summary.additions}</i>
           </span>
         </button>
+        {mutation.type !== "delete" && mutation.after !== undefined && (
+          <button type="button" className="openspec-mutation-open-final" onClick={onOpenFinal}>
+            <span aria-hidden="true">↗</span>
+            Открыть итоговый Markdown
+          </button>
+        )}
       </header>
       {!collapsed && (
         <div id={contentId} className="openspec-split-diff" role="table" aria-label={`Сравнение ${mutation.path}`}>
@@ -201,12 +300,171 @@ function MutationReview({ mutation }: { mutation: OpenSpecFileMutation }) {
   );
 }
 
+interface ReviewComment {
+  id: string;
+  text: string;
+}
+
+function ResultMarkdownDialog({
+  mutation,
+  comments,
+  pending,
+  reviewable,
+  canRepeat,
+  onCommentsChange,
+  onClose,
+  onRepeat,
+  onAccept,
+}: {
+  mutation: OpenSpecFileMutation;
+  comments: ReviewComment[];
+  pending: boolean;
+  reviewable: boolean;
+  canRepeat: boolean;
+  onCommentsChange: (comments: ReviewComment[]) => void;
+  onClose: () => void;
+  onRepeat: () => Promise<boolean>;
+  onAccept: () => Promise<boolean>;
+}) {
+  const titleId = useId();
+  const [draft, setDraft] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const markdown = presentMarkdownDiff(mutation.after ?? "");
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const saveComment = () => {
+    const text = draft.trim().slice(0, 1000);
+    if (!text) return;
+    if (editingId) {
+      onCommentsChange(comments.map((comment) => comment.id === editingId ? { ...comment, text } : comment));
+    } else if (comments.length < 8) {
+      onCommentsChange([...comments, { id: `${Date.now()}-${comments.length}`, text }]);
+    }
+    setDraft("");
+    setEditingId("");
+  };
+
+  return createPortal(
+    <div className="openspec-result-dialog-backdrop">
+      <section className="openspec-result-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header>
+          <div>
+            <small>ИТОГОВЫЙ MARKDOWN</small>
+            <h3 id={titleId}>{mutation.path}</h3>
+          </div>
+          <button type="button" aria-label="Закрыть полноэкранный просмотр" onClick={onClose}>×</button>
+        </header>
+        <div className={`openspec-result-dialog-content ${reviewable ? "" : "view-only"}`}>
+          <main className="openspec-result-markdown" aria-label={`Итоговый Markdown ${mutation.path}`}>
+            {markdown.length ? markdown.map((line, index) => (
+              <MarkdownDiffLine line={line} key={`${line.kind}-${index}`} />
+            )) : <p>Итоговый Markdown пуст.</p>}
+          </main>
+          {reviewable && <aside className="openspec-result-comments" aria-label="Замечания к итоговому Markdown">
+            <header>
+              <div><small>ПРОВЕРКА</small><h4>Комментарии</h4></div>
+              <span>{comments.length}/8</span>
+            </header>
+            <div className="openspec-result-comments-list">
+              {comments.length === 0 && <p>Добавьте замечания, чтобы повторить этот этап с их учётом.</p>}
+              {comments.map((comment, index) => (
+                <article key={comment.id}>
+                  <strong>Комментарий {index + 1}</strong>
+                  <p>{comment.text}</p>
+                  <div>
+                    <button type="button" onClick={() => { setEditingId(comment.id); setDraft(comment.text); }}>Редактировать</button>
+                    <button type="button" onClick={() => onCommentsChange(comments.filter((item) => item.id !== comment.id))}>Удалить</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <label className="openspec-result-comment-editor">
+              <span>{editingId ? "Редактировать комментарий" : "Новый комментарий"}</span>
+              <textarea
+                value={draft}
+                maxLength={1000}
+                rows={5}
+                placeholder="Опишите, что нужно изменить в итоговом Markdown…"
+                onChange={(event) => setDraft(event.target.value)}
+              />
+            </label>
+            <div className="openspec-result-comment-editor-actions">
+              {editingId && <button type="button" onClick={() => { setEditingId(""); setDraft(""); }}>Отменить</button>}
+              <button type="button" onClick={saveComment} disabled={!draft.trim() || (!editingId && comments.length >= 8)}>
+                {editingId ? "Сохранить" : "Добавить комментарий"}
+              </button>
+            </div>
+          </aside>}
+        </div>
+        <footer>
+          <button type="button" className="secondary-action" onClick={onClose}>Вернуться к сравнению</button>
+          {reviewable && <div>
+            {canRepeat && (
+              <button type="button" className="secondary-action" disabled={pending || comments.length === 0} onClick={() => void onRepeat()}>
+                {pending ? "Запускаем…" : "Повторить этап с комментариями"}
+              </button>
+            )}
+            <button type="button" className="primary-submit" disabled={pending} onClick={() => void onAccept()}>
+              {pending ? "Принимаем…" : "Принять исправления"}
+            </button>
+          </div>}
+        </footer>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperationPanelProps) {
   const operation = controller.operation;
+  const [reviewState, setReviewState] = useState<{
+    operationId: string;
+    selectedMutationIndex: number | null;
+    comments: ReviewComment[];
+  } | null>(null);
+
   if (!operation) return null;
   const operationActive = ["queued", "running", "validating"].includes(operation.status);
+  const currentReviewState = reviewState?.operationId === operation.id ? reviewState : null;
+  const selectedMutationIndex = currentReviewState?.selectedMutationIndex ?? null;
+  const reviewComments = currentReviewState?.comments ?? [];
+  const selectedMutation = selectedMutationIndex === null
+    ? undefined
+    : controller.result?.files[selectedMutationIndex];
+  const reviewable = operation.status === "awaiting_review";
+  const canRepeat = reviewable && ["prepare_artifact", "fix_artifact"].includes(operation.openspecAction);
+
+  const closeResultDialog = () => setReviewState((current) => current?.operationId === operation.id
+    ? { ...current, selectedMutationIndex: null }
+    : current);
+  const changeReviewComments = (comments: ReviewComment[]) => setReviewState((current) => ({
+    operationId: operation.id,
+    selectedMutationIndex: current?.operationId === operation.id ? current.selectedMutationIndex : null,
+    comments,
+  }));
+  const repeatWithFeedback = async () => {
+    const repeated = await controller.repeatWithFeedback(reviewComments.map((comment) => comment.text));
+    if (repeated) {
+      changeReviewComments([]);
+      closeResultDialog();
+    }
+    return repeated;
+  };
+  const acceptResult = async () => {
+    const accepted = await controller.accept();
+    if (accepted) closeResultDialog();
+    return accepted;
+  };
 
   return (
+    <>
     <section className={`openspec-operation status-${operation.status}`} aria-live="polite">
       <header>
         <div>
@@ -223,7 +481,8 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
           )}
         </div>
       </header>
-      {controller.artifactRefresh?.change === operation.openspecChange && (
+      <div className="openspec-operation-scroll">
+        {controller.artifactRefresh?.change === operation.openspecChange && (
         <div className={`artifact-refresh-operation-status status-${controller.artifactRefresh.status}`}>
           <ol aria-label="Этапы пересогласования">
             {controller.artifactRefresh.steps.map((step, index) => (
@@ -238,38 +497,54 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
             ))}
           </ol>
         </div>
-      )}
-      {operationActive && (
+        )}
+        {operationActive && (
         <div className="openspec-operation-running">
-          <span className="operation-spinner" />
-          <div>
+          <div className="openspec-operation-running-header">
+            <span className="operation-spinner" />
             <b className="openspec-operation-progress">
               <span>{controller.operationProgress || "Agent работает…"}</span>
-              <time aria-label={`Время выполнения ${formatElapsedTime(controller.operationElapsedSeconds)}`}>
-                {formatElapsedTime(controller.operationElapsedSeconds)}
-              </time>
             </b>
+            <time aria-label={`Время выполнения ${formatElapsedTime(controller.operationElapsedSeconds)}`}>
+              {formatElapsedTime(controller.operationElapsedSeconds)}
+            </time>
+            <button
+              type="button"
+              className="openspec-operation-cancel"
+              onClick={() => void controller.cancel()}
+            >
+              Отменить
+            </button>
           </div>
-          <button
-            type="button"
-            className="openspec-operation-cancel"
-            onClick={() => void controller.cancel()}
-          >
-            Отменить
-          </button>
+          {controller.operationActivity.length > 0 && (
+            <div className="openspec-operation-activity" aria-label="Ход работы агента">
+              <small>ХОД РАБОТЫ АГЕНТА</small>
+              <ol>
+                {controller.operationActivity.map((message, index) => (
+                  <li className={index === controller.operationActivity.length - 1 ? "current" : ""} key={`${index}-${message}`}>
+                    <i aria-hidden="true" />
+                    <span>{message}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
         </div>
-      )}
-      {operation.status === "failed" && (
+        )}
+        {operation.status === "failed" && (
         <div className="openspec-operation-error" role="alert">
           <b>{operation.errorCode}</b>
           <p>{operation.errorMessage}</p>
           {operation.correlationId && <small>Correlation ID: {operation.correlationId}</small>}
         </div>
-      )}
-      {operation.status === "cancelled" && <p>Операция отменена. Store не изменён.</p>}
-      {controller.result && (
+        )}
+        {operation.status === "cancelled" && <p>Операция отменена. Store не изменён.</p>}
+        {controller.result && (
         <div className="openspec-review">
-          {controller.result.finalResponse && (
+          {controller.result.exploration?.state === "needs_input" && (
+            <OperationClarification key={operation.id} controller={controller} />
+          )}
+          {controller.result.finalResponse && controller.result.exploration?.state !== "needs_input" && (
             <OperationConclusion markdown={controller.result.finalResponse} />
           )}
           {!!controller.result.diagnostics?.length && (
@@ -281,7 +556,7 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
               ))}
             </div>
           )}
-          {operation.openspecAction !== "explore" && (
+          {operation.openspecAction !== "explore" && controller.result.exploration?.state !== "needs_input" && (
             <h4>Предпросмотр полного набора изменений ({controller.result.files.length})</h4>
           )}
           {operation.openspecAction === "archive" && (
@@ -290,18 +565,39 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
             </div>
           )}
           {operation.openspecAction !== "explore" && controller.result.files.map((mutation, index) => (
-            <MutationReview key={`${mutation.type}-${mutation.path}-${index}`} mutation={mutation} />
+            <MutationReview
+              key={`${mutation.type}-${mutation.path}-${index}`}
+              mutation={mutation}
+              onOpenFinal={() => setReviewState((current) => ({
+                operationId: operation.id,
+                selectedMutationIndex: index,
+                comments: current?.operationId === operation.id && current.selectedMutationIndex === index
+                  ? current.comments
+                  : [],
+              }))}
+            />
           ))}
-          {operation.status === "awaiting_review" && operation.openspecAction !== "explore" && (
-            <div className="openspec-review-actions">
-              <button type="button" className="secondary-danger" onClick={() => void controller.reject()}>
-                Отклонить
-              </button>
-              <button type="button" className="primary-submit" onClick={() => void controller.accept()} disabled={controller.pending}>
-                Принять весь набор
-              </button>
+        </div>
+        )}
+      </div>
+      {operation.status === "awaiting_review" && operation.openspecAction !== "explore" &&
+        controller.result?.exploration?.state !== "needs_input" && (
+        <div className="openspec-operation-footer">
+          {controller.error && (
+            <div className="openspec-review-action-error" role="alert">
+              <b>Не удалось принять результат</b>
+              <span>{controller.error.message}</span>
+              {controller.error.code && <small>Код: {controller.error.code}</small>}
             </div>
           )}
+          <div className="openspec-review-actions">
+            <button type="button" className="secondary-danger" onClick={() => void controller.reject()} disabled={controller.pending}>
+              Отклонить
+            </button>
+            <button type="button" className="primary-submit" onClick={() => void controller.accept()} disabled={controller.pending}>
+              {controller.pending ? "Принимаем…" : "Принять весь набор"}
+            </button>
+          </div>
         </div>
       )}
       {controller.draft && (
@@ -328,5 +624,19 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
         </div>
       )}
     </section>
+    {selectedMutation && (
+      <ResultMarkdownDialog
+        mutation={selectedMutation}
+        comments={reviewComments}
+        pending={controller.pending}
+        reviewable={reviewable}
+        canRepeat={canRepeat}
+        onCommentsChange={changeReviewComments}
+        onClose={closeResultDialog}
+        onRepeat={repeatWithFeedback}
+        onAccept={acceptResult}
+      />
+    )}
+    </>
   );
 }
