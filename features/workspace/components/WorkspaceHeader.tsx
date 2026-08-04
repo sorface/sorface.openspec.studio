@@ -5,15 +5,19 @@ import { LogoMark } from "@/components/ui/LogoMark";
 import { ProjectSwitcher } from "@/features/projects/components/ProjectSwitcher";
 import type { ProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { useSystemStatus } from "@/features/system/hooks/useSystemStatus";
+import { TaskContextSelector } from "@/features/task-context/components/TaskContextSelector";
+import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
 
 interface WorkspaceHeaderProps {
   agentSettingsOpen: boolean;
   draftSaved: boolean;
   onAgentSettingsToggle: () => void;
+  onPublish: () => void;
   projects: ProjectsController;
+  tasks: TaskContextController;
 }
 
-export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettingsToggle, projects }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettingsToggle, onPublish, projects, tasks }: WorkspaceHeaderProps) {
   const serverStatus = useSystemStatus();
   const activeProject = projects.activeProject;
   const provider = activeProject?.defaultAiProvider;
@@ -35,9 +39,9 @@ export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettings
       </div>
 
       <ProjectSwitcher controller={projects} />
+      <TaskContextSelector controller={tasks} projectSelected={!!activeProject} />
 
       <div className="workspace-status">
-        <span className="store-id">Store <b>{activeProject?.storePath || "не выбран"}</b></span>
         <span className={`server-status ${serverStatus}`}>
           <i /> {serverStatus === "ready" ? "Локальный server" : serverStatus === "checking" ? "Подключение…" : "Backend недоступен"}
         </span>
@@ -45,6 +49,16 @@ export function WorkspaceHeader({ agentSettingsOpen, draftSaved, onAgentSettings
       </div>
 
       <div className="top-actions">
+        <button
+          className="publish-button"
+          type="button"
+          disabled={!activeProject || !tasks.overview?.active || tasks.switching || tasks.preparing || tasks.publishing}
+          title={!activeProject ? "Сначала выберите проект" : !tasks.overview?.active ? "Сначала откройте задачу" : "Опубликовать OpenSpec-артефакты текущей задачи"}
+          onClick={onPublish}
+        >
+          <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 12.8V3.6m0 0L5.7 6.9M9 3.6l3.3 3.3M4 11.4v2.1A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-2.1" /></svg>
+          {tasks.preparing ? "Готовим…" : "Опубликовать"}
+        </button>
         <div className="provider-settings">
           <button
             className="provider-button"

@@ -30,6 +30,7 @@ function toApiError(error: unknown): ApiError {
 export function useDocumentHistoryController(
   projectId?: string,
   path?: string | null,
+  workspaceContext = "",
 ): DocumentHistoryController {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<DocumentHistoryStatus>("idle");
@@ -75,7 +76,7 @@ export function useDocumentHistoryController(
       setError(null);
     });
     return () => requestRef.current?.abort();
-  }, [path, projectId]);
+  }, [path, projectId, workspaceContext]);
 
   return useMemo(() => ({
     open,

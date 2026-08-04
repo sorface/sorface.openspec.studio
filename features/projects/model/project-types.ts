@@ -2,6 +2,7 @@ export interface Project {
   id: string;
   name: string;
   storePath: string;
+  activeTask?: string;
   activeWorktreeId: string | null;
   defaultAiProvider: string | null;
   defaultModel: string | null;

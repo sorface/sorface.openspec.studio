@@ -26,6 +26,7 @@ import (
 	"github.com/sorface/openspec-studio/backend/internal/repository"
 	"github.com/sorface/openspec-studio/backend/internal/storage"
 	"github.com/sorface/openspec-studio/backend/internal/storegit"
+	"github.com/sorface/openspec-studio/backend/internal/taskcontext"
 	"github.com/sorface/openspec-studio/backend/internal/tools"
 )
 
@@ -39,6 +40,23 @@ type fakeStoreManager struct {
 type fakeContextImporter struct {
 	validateErr error
 	summary     project.ContextImportSummary
+}
+
+type fakeTaskPusher struct {
+	storePath string
+	branch    string
+}
+
+func (pusher *fakeTaskPusher) StartTaskPush(
+	_ context.Context, projectID, storePath, branch, correlationID string,
+) (operation.Operation, error) {
+	pusher.storePath = storePath
+	pusher.branch = branch
+	return operation.Operation{
+		ID: "publish-operation", ProjectID: projectID, Kind: operation.KindStoreGit,
+		Status: operation.StatusQueued, GitAction: "push", GitBranch: branch,
+		CorrelationID: correlationID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}, nil
 }
 
 func (importer fakeContextImporter) ValidateContextRepositories(values []string) ([]string, error) {
@@ -433,6 +451,143 @@ func TestGitStatusContract(t *testing.T) {
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"openspec/spec.md"`)) ||
 		!bytes.Contains(response.Body.Bytes(), []byte(`"diffTruncated":false`)) {
 		t.Fatalf("status: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestTaskWorkspaceContractsAndCSRF(t *testing.T) {
+	root := createGitStore(t)
+	database, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	item, err := database.Create(context.Background(), project.CreateInput{Name: "Tasks", StorePath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := taskcontext.NewManager(database, filepath.Join(t.TempDir(), "task-worktrees"))
+	projectService := project.NewService(database, storegit.NewService())
+	handler := httpapi.New(httpapi.Options{
+		Address: "127.0.0.1:0", Projects: projectService, TaskContext: manager,
+		Static: http.NotFoundHandler(),
+	}).Handler()
+	base := "/api/v1/projects/" + item.ID + "/task-workspaces"
+
+	listed := request(handler, http.MethodGet, base, nil, "")
+	if listed.Code != http.StatusOK || !bytes.Contains(listed.Body.Bytes(), []byte(`"active"`)) {
+		t.Fatalf("list: %d %s", listed.Code, listed.Body)
+	}
+	withoutCSRF := request(handler, http.MethodPost, base, []byte(`{"branch":"BILL-1842"}`), "")
+	if withoutCSRF.Code != http.StatusForbidden || !bytes.Contains(withoutCSRF.Body.Bytes(), []byte("CSRF_REJECTED")) {
+		t.Fatalf("csrf: %d %s", withoutCSRF.Code, withoutCSRF.Body)
+	}
+	token := csrfToken(t, handler)
+	pathInput := request(handler, http.MethodPost, base, []byte(`{"branch":"BILL-1842","path":"/tmp/outside"}`), token)
+	if pathInput.Code != http.StatusBadRequest || !bytes.Contains(pathInput.Body.Bytes(), []byte("INVALID_REQUEST")) {
+		t.Fatalf("path input: %d %s", pathInput.Code, pathInput.Body)
+	}
+	invalid := request(handler, http.MethodPost, base, []byte(`{"branch":"bad name"}`), token)
+	if invalid.Code != http.StatusBadRequest || !bytes.Contains(invalid.Body.Bytes(), []byte("TASK_BRANCH_INVALID")) {
+		t.Fatalf("invalid branch: %d %s", invalid.Code, invalid.Body)
+	}
+	opened := request(handler, http.MethodPost, base, []byte(`{"branch":"BILL-1842"}`), token)
+	if opened.Code != http.StatusOK || !bytes.Contains(opened.Body.Bytes(), []byte(`"branch":"BILL-1842"`)) {
+		t.Fatalf("open: %d %s", opened.Code, opened.Body)
+	}
+	projectResponse := request(handler, http.MethodGet, "/api/v1/projects/"+item.ID, nil, "")
+	if projectResponse.Code != http.StatusOK || !bytes.Contains(projectResponse.Body.Bytes(), []byte(`"activeTask":"BILL-1842"`)) {
+		t.Fatalf("project context: %d %s", projectResponse.Code, projectResponse.Body)
+	}
+}
+
+func TestTaskPublicationPreviewAndConfirmContract(t *testing.T) {
+	root := createGitStore(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	for _, command := range []*exec.Cmd{
+		exec.Command("git", "init", "--bare", remote),
+		exec.Command("git", "-C", root, "remote", "add", "origin", remote),
+		exec.Command("git", "-C", root, "config", "user.name", "API Test"),
+		exec.Command("git", "-C", root, "config", "user.email", "api@example.com"),
+	} {
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("prepare repository: %v\n%s", err, output)
+		}
+	}
+	database, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	item, err := database.Create(context.Background(), project.CreateInput{Name: "Publish", StorePath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskManager := taskcontext.NewManager(database, filepath.Join(t.TempDir(), "task-worktrees"))
+	if _, err := taskManager.Open(context.Background(), item.ID, taskcontext.OpenInput{Branch: "BILL-1842"}); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := database.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(effective.StorePath, "openspec", "spec.md"), []byte("# Billing publication\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(effective.StorePath, "notes.txt"), []byte("not part of publication\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pusher := &fakeTaskPusher{}
+	publication := taskcontext.NewPublicationService(database, pusher, nil, t.TempDir())
+	projectService := project.NewService(database, storegit.NewService())
+	handler := httpapi.New(httpapi.Options{
+		Address: "127.0.0.1:0", Projects: projectService, TaskContext: taskManager,
+		Publication: publication, Static: http.NotFoundHandler(),
+	}).Handler()
+	token := csrfToken(t, handler)
+	base := "/api/v1/projects/" + item.ID + "/task-publications"
+
+	withoutCSRF := request(handler, http.MethodPost, base+"/preview", nil, "")
+	if withoutCSRF.Code != http.StatusForbidden || !bytes.Contains(withoutCSRF.Body.Bytes(), []byte("CSRF_REJECTED")) {
+		t.Fatalf("preview csrf: %d %s", withoutCSRF.Code, withoutCSRF.Body)
+	}
+	previewResponse := request(handler, http.MethodPost, base+"/preview", nil, token)
+	if previewResponse.Code != http.StatusOK {
+		t.Fatalf("preview: %d %s", previewResponse.Code, previewResponse.Body)
+	}
+	var preview taskcontext.PublicationPreview
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Task != "BILL-1842" || preview.Message != "docs(openspec): publish BILL-1842" ||
+		preview.ExcludedCount != 1 || len(preview.Paths) != 1 || preview.Paths[0] != "openspec/spec.md" {
+		t.Fatalf("unexpected preview: %#v", preview)
+	}
+	confirmBody, err := json.Marshal(taskcontext.ConfirmPublicationInput{Token: preview.Token, Message: preview.Message})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed := request(handler, http.MethodPost, base, confirmBody, token)
+	if confirmed.Code != http.StatusAccepted || !bytes.Contains(confirmed.Body.Bytes(), []byte(`"task":"BILL-1842"`)) ||
+		!bytes.Contains(confirmed.Body.Bytes(), []byte(`"gitAction":"push"`)) {
+		t.Fatalf("confirm: %d %s", confirmed.Code, confirmed.Body)
+	}
+	canonicalEffective, err := filepath.EvalSymlinks(effective.StorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pusher.storePath != canonicalEffective || pusher.branch != "BILL-1842" {
+		t.Fatalf("push target path=%q branch=%q", pusher.storePath, pusher.branch)
+	}
+	command := exec.Command("git", "-C", effective.StorePath, "show", "--pretty=format:", "--name-only", "HEAD")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(output)) != "openspec/spec.md" {
+		t.Fatalf("committed paths=%q", output)
+	}
+	if _, err := os.Stat(filepath.Join(effective.StorePath, "notes.txt")); err != nil {
+		t.Fatalf("excluded file was lost: %v", err)
 	}
 }
 

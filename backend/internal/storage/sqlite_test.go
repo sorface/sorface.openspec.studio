@@ -3,12 +3,14 @@ package storage_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/sorface/openspec-studio/backend/internal/operation"
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	"github.com/sorface/openspec-studio/backend/internal/storage"
+	"github.com/sorface/openspec-studio/backend/internal/taskcontext"
 )
 
 func TestProjectsSurviveRestart(t *testing.T) {
@@ -36,6 +38,45 @@ func TestProjectsSurviveRestart(t *testing.T) {
 	}
 	if loaded.Name != created.Name || loaded.StorePath != created.StorePath {
 		t.Fatalf("loaded project differs: %#v", loaded)
+	}
+}
+
+func TestTaskWorkspacePersistenceAndEffectiveStorePath(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created, err := store.Create(context.Background(), project.CreateInput{Name: "Platform", StorePath: "/base/store"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.CreateTaskWorkspace(context.Background(), taskcontext.Workspace{
+		ProjectID: created.ID, Branch: "BILL-1842", Path: "/tasks/bill-1842", Managed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetActiveTaskWorkspace(context.Background(), created.ID, workspace.ID); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.StorePath != workspace.Path || loaded.BaseStorePath != created.StorePath || loaded.ActiveTask != workspace.Branch {
+		t.Fatalf("effective project = %#v", loaded)
+	}
+	base, err := store.GetBaseProject(context.Background(), created.ID)
+	if err != nil || base.StorePath != created.StorePath || base.BaseStorePath != created.StorePath {
+		t.Fatalf("base project = %#v, %v", base, err)
+	}
+	items, err := store.ListTaskWorkspaces(context.Background(), created.ID)
+	if err != nil || len(items) != 1 || !items[0].Active {
+		t.Fatalf("task workspaces = %#v, %v", items, err)
+	}
+	if err := store.SetActiveTaskWorkspace(context.Background(), created.ID, "missing"); !errors.Is(err, taskcontext.ErrWorkspaceNotFound) {
+		t.Fatalf("missing workspace error = %v", err)
 	}
 }
 

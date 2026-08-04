@@ -22,6 +22,7 @@ import (
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	"github.com/sorface/openspec-studio/backend/internal/repository"
 	"github.com/sorface/openspec-studio/backend/internal/storegit"
+	"github.com/sorface/openspec-studio/backend/internal/taskcontext"
 	"github.com/sorface/openspec-studio/backend/internal/tools"
 )
 
@@ -36,6 +37,8 @@ type Server struct {
 	repositories         *repository.Service
 	gitStatus            *gitstatus.Service
 	storeGit             *storegit.Manager
+	taskContext          *taskcontext.Manager
+	publication          *taskcontext.PublicationService
 	aiOperations         *aiservice.Service
 	openSpec             *openspecworkflow.Service
 	openSpecActions      *openspecworkflow.ActionService
@@ -54,6 +57,8 @@ type Options struct {
 	Repositories         *repository.Service
 	GitStatus            *gitstatus.Service
 	StoreGit             *storegit.Manager
+	TaskContext          *taskcontext.Manager
+	Publication          *taskcontext.PublicationService
 	AIOperations         *aiservice.Service
 	OpenSpec             *openspecworkflow.Service
 	OpenSpecActions      *openspecworkflow.ActionService
@@ -88,6 +93,8 @@ func New(options Options) *Server {
 		repositories:         options.Repositories,
 		gitStatus:            options.GitStatus,
 		storeGit:             options.StoreGit,
+		taskContext:          options.TaskContext,
+		publication:          options.Publication,
 		aiOperations:         options.AIOperations,
 		openSpec:             options.OpenSpec,
 		openSpecActions:      options.OpenSpecActions,
@@ -108,6 +115,14 @@ func (server *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{projectId}", server.getProject)
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}", server.updateProject)
 	mux.HandleFunc("DELETE /api/v1/projects/{projectId}", server.deleteProject)
+	if server.taskContext != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectId}/task-workspaces", server.listTaskWorkspaces)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-workspaces", server.openTaskWorkspace)
+	}
+	if server.publication != nil {
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-publications/preview", server.previewTaskPublication)
+		mux.HandleFunc("POST /api/v1/projects/{projectId}/task-publications", server.confirmTaskPublication)
+	}
 	if server.documents != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/documents", server.listDocuments)
 		mux.HandleFunc("GET /api/v1/projects/{projectId}/documents/content", server.getDocument)
@@ -163,6 +178,101 @@ func (server *Server) Handler() http.Handler {
 	}
 	mux.Handle("/", server.static)
 	return server.withRecovery(server.withSecurity(server.withCorrelationID(mux)))
+}
+
+func (server *Server) listTaskWorkspaces(response http.ResponseWriter, request *http.Request) {
+	result, err := server.taskContext.List(request.Context(), request.PathValue("projectId"))
+	if !server.handleTaskContextError(response, request, err) {
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (server *Server) openTaskWorkspace(response http.ResponseWriter, request *http.Request) {
+	var input taskcontext.OpenInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	result, err := server.taskContext.Open(request.Context(), request.PathValue("projectId"), input)
+	if !server.handleTaskContextError(response, request, err) {
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (server *Server) handleTaskContextError(response http.ResponseWriter, request *http.Request, err error) bool {
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, project.ErrNotFound):
+		server.writeError(response, request, http.StatusNotFound, "PROJECT_NOT_FOUND", "Проект не найден", nil)
+	case errors.Is(err, project.ErrGitUnavailable):
+		server.writeError(response, request, http.StatusConflict, "GIT_UNAVAILABLE", "Git недоступен", nil)
+	case errors.Is(err, taskcontext.ErrInvalidBranch):
+		server.writeError(response, request, http.StatusBadRequest, "TASK_BRANCH_INVALID", "Проверьте номер задачи", nil)
+	case errors.Is(err, taskcontext.ErrWorkspaceNotFound):
+		server.writeError(response, request, http.StatusNotFound, "TASK_WORKSPACE_NOT_FOUND", "Рабочее пространство задачи не найдено", nil)
+	case errors.Is(err, taskcontext.ErrWorkspaceConflict):
+		server.writeError(response, request, http.StatusConflict, "TASK_WORKSPACE_CONFLICT", "Ветка задачи уже открыта в другом рабочем пространстве", nil)
+	case errors.Is(err, taskcontext.ErrWorkspaceUnavailable):
+		server.writeError(response, request, http.StatusConflict, "TASK_WORKSPACE_UNAVAILABLE", "Не удалось открыть рабочее пространство задачи", nil)
+	default:
+		server.writeError(response, request, http.StatusInternalServerError, "INTERNAL_ERROR", "Не удалось переключить задачу", nil)
+	}
+	return false
+}
+
+func (server *Server) previewTaskPublication(response http.ResponseWriter, request *http.Request) {
+	preview, err := server.publication.Preview(request.Context(), request.PathValue("projectId"))
+	if !server.handlePublicationError(response, request, err) {
+		return
+	}
+	writeJSON(response, http.StatusOK, preview)
+}
+
+func (server *Server) confirmTaskPublication(response http.ResponseWriter, request *http.Request) {
+	var input taskcontext.ConfirmPublicationInput
+	if err := decodeJSON(request.Body, &input); err != nil {
+		server.writeError(response, request, http.StatusBadRequest, "INVALID_REQUEST", "Некорректный JSON", nil)
+		return
+	}
+	input.CorrelationID = correlationID(request)
+	result, err := server.publication.Confirm(request.Context(), request.PathValue("projectId"), input)
+	if !server.handlePublicationError(response, request, err) {
+		return
+	}
+	writeJSON(response, http.StatusAccepted, result)
+}
+
+func (server *Server) handlePublicationError(response http.ResponseWriter, request *http.Request, err error) bool {
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, project.ErrNotFound):
+		server.writeError(response, request, http.StatusNotFound, "PROJECT_NOT_FOUND", "Проект не найден", nil)
+	case errors.Is(err, project.ErrGitUnavailable):
+		server.writeError(response, request, http.StatusConflict, "GIT_UNAVAILABLE", "Git недоступен", nil)
+	case errors.Is(err, taskcontext.ErrPublicationEmpty):
+		server.writeError(response, request, http.StatusConflict, "PUBLICATION_EMPTY", "Нет изменений для публикации", nil)
+	case errors.Is(err, taskcontext.ErrPublicationStale):
+		server.writeError(response, request, http.StatusConflict, "PUBLICATION_STALE", "Артефакты изменились. Обновите публикацию", nil)
+	case errors.Is(err, taskcontext.ErrPublicationScope):
+		server.writeError(response, request, http.StatusBadRequest, "PUBLICATION_SCOPE_INVALID", "Публикация содержит недопустимый OpenSpec-файл", nil)
+	case errors.Is(err, taskcontext.ErrPublicationRemote), errors.Is(err, storegit.ErrRemoteNotFound):
+		server.writeError(response, request, http.StatusConflict, "PUBLICATION_REMOTE_UNAVAILABLE", "Не удалось подключиться к хранилищу проекта", nil)
+	case errors.Is(err, taskcontext.ErrWorkspaceUnavailable), errors.Is(err, taskcontext.ErrWorkspaceConflict):
+		server.writeError(response, request, http.StatusConflict, "TASK_WORKSPACE_UNAVAILABLE", "Рабочее пространство задачи изменилось", nil)
+	case errors.Is(err, storegit.ErrNonFastForward):
+		server.writeError(response, request, http.StatusConflict, "PUBLICATION_REMOTE_CHANGED", "Ветка задачи обновлена в другом месте", nil)
+	case errors.Is(err, storegit.ErrGitAuthFailed):
+		server.writeError(response, request, http.StatusConflict, "PUBLICATION_AUTH_FAILED", "Не удалось подключиться к хранилищу проекта", nil)
+	case errors.Is(err, storegit.ErrOperationConflict):
+		server.writeError(response, request, http.StatusConflict, "PUBLICATION_IN_PROGRESS", "Другая публикация ещё выполняется", nil)
+	default:
+		server.writeError(response, request, http.StatusInternalServerError, "PUBLICATION_FAILED", "Не удалось опубликовать артефакты", nil)
+	}
+	return false
 }
 
 func (server *Server) acceptOpenSpecOperation(response http.ResponseWriter, request *http.Request) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/sorface/openspec-studio/backend/internal/operation"
 	"github.com/sorface/openspec-studio/backend/internal/project"
+	"github.com/sorface/openspec-studio/backend/internal/taskcontext"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,6 +34,18 @@ CREATE TABLE IF NOT EXISTS projects (
 	updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS projects_updated_at_idx ON projects(updated_at DESC);
+CREATE TABLE IF NOT EXISTS task_workspaces (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	branch TEXT NOT NULL,
+	path TEXT NOT NULL UNIQUE,
+	managed INTEGER NOT NULL DEFAULT 1,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE(project_id, branch)
+);
+CREATE INDEX IF NOT EXISTS task_workspaces_project_idx
+	ON task_workspaces(project_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS repositories (
 	id TEXT PRIMARY KEY,
 	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -196,9 +209,12 @@ func (store *SQLite) Close() error {
 
 func (store *SQLite) List(ctx context.Context) ([]project.Project, error) {
 	rows, err := store.db.QueryContext(ctx, `
-		SELECT id, name, store_path, active_worktree_id, default_ai_provider,
-		       default_model, created_at, updated_at
-		FROM projects ORDER BY updated_at DESC`)
+		SELECT p.id, p.name, COALESCE(w.path, p.store_path), p.store_path,
+		       p.active_worktree_id, COALESCE(w.branch, ''), p.default_ai_provider,
+		       p.default_model, p.created_at, p.updated_at
+		FROM projects p
+		LEFT JOIN task_workspaces w ON w.id = p.active_worktree_id AND w.project_id = p.id
+		ORDER BY p.updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -217,8 +233,23 @@ func (store *SQLite) List(ctx context.Context) ([]project.Project, error) {
 
 func (store *SQLite) Get(ctx context.Context, id string) (project.Project, error) {
 	row := store.db.QueryRowContext(ctx, `
-		SELECT id, name, store_path, active_worktree_id, default_ai_provider,
-		       default_model, created_at, updated_at
+		SELECT p.id, p.name, COALESCE(w.path, p.store_path), p.store_path,
+		       p.active_worktree_id, COALESCE(w.branch, ''), p.default_ai_provider,
+		       p.default_model, p.created_at, p.updated_at
+		FROM projects p
+		LEFT JOIN task_workspaces w ON w.id = p.active_worktree_id AND w.project_id = p.id
+		WHERE p.id = ?`, id)
+	item, err := scanProject(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return project.Project{}, project.ErrNotFound
+	}
+	return item, err
+}
+
+func (store *SQLite) GetBaseProject(ctx context.Context, id string) (project.Project, error) {
+	row := store.db.QueryRowContext(ctx, `
+		SELECT id, name, store_path, store_path, active_worktree_id, '',
+		       default_ai_provider, default_model, created_at, updated_at
 		FROM projects WHERE id = ?`, id)
 	item, err := scanProject(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -230,11 +261,12 @@ func (store *SQLite) Get(ctx context.Context, id string) (project.Project, error
 func (store *SQLite) Create(ctx context.Context, input project.CreateInput) (project.Project, error) {
 	now := time.Now().UTC()
 	item := project.Project{
-		ID:        newID(),
-		Name:      input.Name,
-		StorePath: input.StorePath,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:            newID(),
+		Name:          input.Name,
+		StorePath:     input.StorePath,
+		BaseStorePath: input.StorePath,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	_, err := store.db.ExecContext(ctx, `
 		INSERT INTO projects (id, name, store_path, created_at, updated_at)
@@ -301,8 +333,9 @@ func scanProject(source scanner) (project.Project, error) {
 	var item project.Project
 	var createdAt, updatedAt string
 	err := source.Scan(
-		&item.ID, &item.Name, &item.StorePath, &item.ActiveWorktreeID,
-		&item.DefaultProvider, &item.DefaultModel, &createdAt, &updatedAt,
+		&item.ID, &item.Name, &item.StorePath, &item.BaseStorePath,
+		&item.ActiveWorktreeID, &item.ActiveTask, &item.DefaultProvider,
+		&item.DefaultModel, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		return project.Project{}, err
@@ -313,6 +346,131 @@ func scanProject(source scanner) (project.Project, error) {
 	}
 	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
 	return item, err
+}
+
+func (store *SQLite) CreateTaskWorkspace(ctx context.Context, item taskcontext.Workspace) (taskcontext.Workspace, error) {
+	now := time.Now().UTC()
+	if item.ID == "" {
+		item.ID = newID()
+	}
+	item.CreatedAt, item.UpdatedAt = now, now
+	_, err := store.db.ExecContext(ctx, `
+		INSERT INTO task_workspaces (id, project_id, branch, path, managed, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ProjectID, item.Branch, item.Path, boolInt(item.Managed), formatTime(now), formatTime(now))
+	return item, err
+}
+
+func (store *SQLite) ListTaskWorkspaces(ctx context.Context, projectID string) ([]taskcontext.Workspace, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT w.id, w.project_id, w.branch, w.path, w.managed,
+		       w.id = p.active_worktree_id, w.created_at, w.updated_at
+		FROM task_workspaces w
+		JOIN projects p ON p.id = w.project_id
+		WHERE w.project_id = ?
+		ORDER BY (w.id = p.active_worktree_id) DESC, w.updated_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]taskcontext.Workspace, 0)
+	for rows.Next() {
+		item, scanErr := scanTaskWorkspace(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (store *SQLite) GetTaskWorkspace(ctx context.Context, projectID, id string) (taskcontext.Workspace, error) {
+	row := store.db.QueryRowContext(ctx, `
+		SELECT w.id, w.project_id, w.branch, w.path, w.managed,
+		       w.id = p.active_worktree_id, w.created_at, w.updated_at
+		FROM task_workspaces w
+		JOIN projects p ON p.id = w.project_id
+		WHERE w.project_id = ? AND w.id = ?`, projectID, id)
+	item, err := scanTaskWorkspace(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return taskcontext.Workspace{}, taskcontext.ErrWorkspaceNotFound
+	}
+	return item, err
+}
+
+func (store *SQLite) GetTaskWorkspaceByBranch(ctx context.Context, projectID, branch string) (taskcontext.Workspace, error) {
+	row := store.db.QueryRowContext(ctx, `
+		SELECT w.id, w.project_id, w.branch, w.path, w.managed,
+		       w.id = p.active_worktree_id, w.created_at, w.updated_at
+		FROM task_workspaces w
+		JOIN projects p ON p.id = w.project_id
+		WHERE w.project_id = ? AND w.branch = ?`, projectID, branch)
+	item, err := scanTaskWorkspace(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return taskcontext.Workspace{}, taskcontext.ErrWorkspaceNotFound
+	}
+	return item, err
+}
+
+func (store *SQLite) SetActiveTaskWorkspace(ctx context.Context, projectID, id string) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM task_workspaces WHERE id = ? AND project_id = ?", id, projectID,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 1 {
+		return taskcontext.ErrWorkspaceNotFound
+	}
+	now := formatTime(time.Now().UTC())
+	result, err := tx.ExecContext(ctx,
+		"UPDATE projects SET active_worktree_id = ?, updated_at = ? WHERE id = ?", id, now, projectID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return project.ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE task_workspaces SET updated_at = ? WHERE id = ?", now, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func scanTaskWorkspace(source scanner) (taskcontext.Workspace, error) {
+	var item taskcontext.Workspace
+	var managed, active int
+	var createdAt, updatedAt string
+	err := source.Scan(
+		&item.ID, &item.ProjectID, &item.Branch, &item.Path, &managed,
+		&active, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return taskcontext.Workspace{}, err
+	}
+	item.Managed, item.Active = managed != 0, active != 0
+	item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return taskcontext.Workspace{}, err
+	}
+	item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	return item, err
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func formatTime(value time.Time) string {

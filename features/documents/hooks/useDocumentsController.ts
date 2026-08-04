@@ -43,7 +43,7 @@ function toApiError(error: unknown): ApiError {
   });
 }
 
-export function useDocumentsController(projectId?: string): DocumentsController {
+export function useDocumentsController(projectId?: string, workspaceContext = ""): DocumentsController {
   const [items, setItems] = useState<DocumentItem[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [markdown, setMarkdown] = useState("");
@@ -56,6 +56,8 @@ export function useDocumentsController(projectId?: string): DocumentsController 
   const [error, setError] = useState<ApiError | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
   const loadedProjectId = useRef<string | undefined>(undefined);
+  const loadedWorkspaceContext = useRef("");
+  const activeWorkspaceContext = useRef(workspaceContext);
   const drafts = useRef(new Map<string, DraftSnapshot>());
   const currentDocument = useRef({
     selectedPath,
@@ -66,27 +68,32 @@ export function useDocumentsController(projectId?: string): DocumentsController 
 
   const dirty = markdown !== baseMarkdown;
   useEffect(() => {
+    activeWorkspaceContext.current = workspaceContext;
+  }, [workspaceContext]);
+  useEffect(() => {
     currentDocument.current = { selectedPath, markdown, baseMarkdown, contentHash };
   }, [baseMarkdown, contentHash, markdown, selectedPath]);
 
   const rememberDraft = useCallback(() => {
     const current = currentDocument.current;
     if (!loadedProjectId.current || !current.selectedPath || current.markdown === current.baseMarkdown) return;
-    drafts.current.set(`${loadedProjectId.current}:${current.selectedPath}`, {
+    drafts.current.set(`${loadedProjectId.current}:${loadedWorkspaceContext.current}:${current.selectedPath}`, {
       markdown: current.markdown,
       baseMarkdown: current.baseMarkdown,
       contentHash: current.contentHash,
     });
   }, []);
 
-  const loadContent = useCallback(async (activeProjectId: string, path: string, signal?: AbortSignal) => {
+  const loadContent = useCallback(async (activeProjectId: string, path: string, signal?: AbortSignal, requestedContext = workspaceContext) => {
     setLoadingDocument(true);
     setError(null);
     setConflict(false);
     try {
       const document = await getDocument(activeProjectId, path, signal);
-      const cached = drafts.current.get(`${activeProjectId}:${path}`);
+      if (requestedContext !== activeWorkspaceContext.current) return;
+      const cached = drafts.current.get(`${activeProjectId}:${requestedContext}:${path}`);
       loadedProjectId.current = activeProjectId;
+      loadedWorkspaceContext.current = requestedContext;
       setSelectedPath(document.path);
       setMarkdown(cached?.markdown ?? document.content);
       setBaseMarkdown(cached?.baseMarkdown ?? document.content);
@@ -99,13 +106,14 @@ export function useDocumentsController(projectId?: string): DocumentsController 
     } finally {
       if (!signal?.aborted) setLoadingDocument(false);
     }
-  }, []);
+  }, [workspaceContext]);
 
   useEffect(() => {
     rememberDraft();
     const controller = new AbortController();
     if (!projectId) {
       loadedProjectId.current = undefined;
+      loadedWorkspaceContext.current = "";
       void Promise.resolve().then(() => {
         if (controller.signal.aborted) return;
         setItems([]);
@@ -139,7 +147,7 @@ export function useDocumentsController(projectId?: string): DocumentsController 
           return;
         }
         setStatus("ready");
-        await loadContent(projectId, firstFile.path, controller.signal);
+        await loadContent(projectId, firstFile.path, controller.signal, workspaceContext);
       })
       .catch((cause) => {
         if (controller.signal.aborted) return;
@@ -148,7 +156,7 @@ export function useDocumentsController(projectId?: string): DocumentsController 
         setStatus(apiError.code === "NETWORK_ERROR" ? "unavailable" : "error");
       });
     return () => controller.abort();
-  }, [loadContent, projectId, reloadVersion, rememberDraft]);
+  }, [loadContent, projectId, reloadVersion, rememberDraft, workspaceContext]);
 
   const select = useCallback((path: string) => {
     if (!projectId || path === selectedPath) return;
@@ -156,8 +164,8 @@ export function useDocumentsController(projectId?: string): DocumentsController 
       return;
     }
     rememberDraft();
-    void loadContent(projectId, path);
-  }, [dirty, loadContent, projectId, rememberDraft, selectedPath]);
+    void loadContent(projectId, path, undefined, workspaceContext);
+  }, [dirty, loadContent, projectId, rememberDraft, selectedPath, workspaceContext]);
 
   const change = useCallback((nextMarkdown: string) => {
     setMarkdown(nextMarkdown);
@@ -180,7 +188,7 @@ export function useDocumentsController(projectId?: string): DocumentsController 
       setMarkdown(document.content);
       setBaseMarkdown(document.content);
       setContentHash(document.contentHash);
-      drafts.current.delete(`${activeProjectId}:${selectedPath}`);
+      drafts.current.delete(`${activeProjectId}:${loadedWorkspaceContext.current}:${selectedPath}`);
     } catch (cause) {
       const apiError = toApiError(cause);
       setError(apiError);
@@ -197,12 +205,12 @@ export function useDocumentsController(projectId?: string): DocumentsController 
       if (!window.confirm("Загрузить актуальную версию с диска? Несохранённый текст текущего документа будет заменён.")) {
         return;
       }
-      drafts.current.delete(`${activeProjectId}:${selectedPath}`);
-      void loadContent(activeProjectId, selectedPath);
+      drafts.current.delete(`${activeProjectId}:${loadedWorkspaceContext.current}:${selectedPath}`);
+      void loadContent(activeProjectId, selectedPath, undefined, workspaceContext);
       return;
     }
     setReloadVersion((current) => current + 1);
-  }, [conflict, loadContent, selectedPath]);
+  }, [conflict, loadContent, selectedPath, workspaceContext]);
 
   return useMemo(() => ({
     items,

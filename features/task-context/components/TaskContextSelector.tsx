@@ -1,0 +1,140 @@
+"use client";
+
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
+
+interface TaskContextSelectorProps {
+  controller: TaskContextController;
+  projectSelected: boolean;
+}
+
+export function TaskContextSelector({ controller, projectSelected }: TaskContextSelectorProps) {
+  const [open, setOpen] = useState(false);
+  const [branch, setBranch] = useState("");
+  const root = useRef<HTMLDivElement>(null);
+  const active = controller.overview?.active;
+  const triggerLabel = active
+    ? `Задача: ${active.branch}${active.dirty ? ", есть локальные изменения" : ""}`
+    : "Задача: выбрать";
+  const choices = useMemo(() => {
+    const existing = new Map(controller.overview?.items.map((item) => [item.branch, item]) ?? []);
+    return Array.from(new Set([
+      ...(controller.overview?.items.map((item) => item.branch) ?? []),
+      ...(controller.overview?.availableBranches ?? []),
+    ])).map((name) => ({ name, workspace: existing.get(name) }));
+  }, [controller.overview]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!branch.trim()) return;
+    try {
+      await controller.openTask(branch);
+      setBranch("");
+      setOpen(false);
+    } catch {
+      // The controller exposes a safe, actionable error inside this popover.
+    }
+  };
+
+  const select = async (next: string) => {
+    if (next === active?.branch) {
+      setOpen(false);
+      return;
+    }
+    try {
+      await controller.openTask(next);
+      setOpen(false);
+    } catch {
+      // Keep the popover open so the user can act on the controller error.
+    }
+  };
+
+  return (
+    <div className="task-context" ref={root}>
+      <button
+        className={`task-context-trigger ${active?.dirty ? "dirty" : ""}`}
+        type="button"
+        disabled={!projectSelected}
+        aria-label={triggerLabel}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => {
+          controller.clearError();
+          setOpen((current) => !current);
+        }}
+      >
+        <b className="task-context-branch">{controller.switching ? "Переключаем…" : active?.branch || "Выбрать задачу"}</b>
+        {active?.dirty && <i className="task-dirty-dot" aria-hidden="true" />}
+        <svg className={`task-context-chevron ${open ? "open" : ""}`} viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+      </button>
+
+      {open && (
+        <div className="task-context-popover" role="dialog" aria-label="Выбор задачи">
+          <form onSubmit={submit}>
+            <label htmlFor="task-branch">Номер задачи или ветка</label>
+            <div>
+              <input
+                id="task-branch"
+                autoFocus
+                autoComplete="off"
+                placeholder="Номер задачи или ветка"
+                value={branch}
+                onChange={(event) => setBranch(event.target.value)}
+              />
+              <button
+                type="submit"
+                aria-label="Открыть задачу"
+                title="Открыть задачу"
+                disabled={!branch.trim() || controller.switching}
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
+              </button>
+            </div>
+          </form>
+          {controller.error && (
+            <div className="task-context-error" role="alert">
+              {controller.error.message}
+              {controller.error.correlationId && <small>Код: {controller.error.correlationId}</small>}
+            </div>
+          )}
+          {choices.length > 0 && (
+            <div className="task-context-list">
+              <small>Задачи</small>
+              {choices.map(({ name, workspace }) => (
+                <button
+                  key={name}
+                  type="button"
+                  className={name === active?.branch ? "active" : ""}
+                  onClick={() => void select(name)}
+                  disabled={controller.switching}
+                >
+                  <span>{name}</span>
+                  {workspace?.dirty && <i title="Есть неопубликованные изменения" />}
+                  {name === active?.branch && (
+                    <svg viewBox="0 0 16 16" aria-label="Текущая задача"><path d="m3.5 8 3 3 6-6" /></svg>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

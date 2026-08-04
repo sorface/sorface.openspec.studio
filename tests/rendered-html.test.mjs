@@ -27,7 +27,9 @@ test("рендерит продуктовый workspace вместо старт�
   assert.match(html, /<title>OpenSpec Studio<\/title>/i);
   assert.match(html, /Загрузка проектов/);
   assert.doesNotMatch(html, /AI-ассистент/);
-  assert.match(html, /Git управляет только Store/);
+  assert.match(html, /изменения разделены по задачам/);
+  assert.match(html, /Задача/);
+  assert.match(html, /Опубликовать/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview|react-loading-skeleton/i);
 });
 
@@ -206,14 +208,15 @@ test("не рендерит удалённую панель AI-ассистен�
   assert.doesNotMatch(workspace, /AiAssistantPanel|useAiOperationsController|rightOpen|assistantMode/);
 });
 
-test("покрывает рабочую Git- и OpenSpec-навигацию без неиспользуемых операций", async () => {
+test("покрывает задачу и OpenSpec-навигацию без Git-терминов в основном workflow", async () => {
   const html = await (await render()).text();
-  for (const expected of ["Git", "OpenSpec", "Локальный режим", "Git управляет только Store"]) {
+  for (const expected of ["Задача", "Опубликовать", "OpenSpec", "Локально", "изменения разделены по задачам"]) {
     assert.match(html, new RegExp(expected));
   }
   assert.doesNotMatch(html, /Операции|История операций пока недоступна/);
   assert.doesNotMatch(html, /Git-панель пока недоступна/);
   assert.doesNotMatch(html, /Commit &amp; Push появится вместе с Git-панелью/);
+  assert.doesNotMatch(html, />Git<\/b>/);
   assert.doesNotMatch(html, /OPENSpec/);
 });
 

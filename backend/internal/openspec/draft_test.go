@@ -2,6 +2,7 @@ package openspec
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/sorface/openspec-studio/backend/internal/operation"
 	"github.com/sorface/openspec-studio/backend/internal/project"
 	"github.com/sorface/openspec-studio/backend/internal/storage"
+	"github.com/sorface/openspec-studio/backend/internal/taskcontext"
 )
 
 func TestAcceptAndWriteDraftMutationSet(t *testing.T) {
@@ -111,6 +113,70 @@ func TestDraftConflictDoesNotApplyEarlierMutation(t *testing.T) {
 		t.Fatal("earlier create was partially applied")
 	}
 	assertFileContent(t, conflictPath, "external")
+}
+
+func TestDraftWriteKeepsOperationTaskWorkspaceAfterSwitch(t *testing.T) {
+	root := t.TempDir()
+	baseRoot := filepath.Join(root, "base")
+	taskA := filepath.Join(root, "task-a")
+	taskB := filepath.Join(root, "task-b")
+	for _, directory := range []string{baseRoot, taskA, taskB} {
+		if err := os.MkdirAll(filepath.Join(directory, "openspec"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "openspec", "spec.md"), []byte("before"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	database, err := storage.Open(filepath.Join(root, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	projectItem, err := database.Create(context.Background(), project.CreateInput{Name: "Test", StorePath: baseRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceA, err := database.CreateTaskWorkspace(context.Background(), taskcontext.Workspace{
+		ProjectID: projectItem.ID, Branch: "BILL-1842", Path: taskA, Managed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceB, err := database.CreateTaskWorkspace(context.Background(), taskcontext.Workspace{
+		ProjectID: projectItem.ID, Branch: "BILL-1907", Path: taskB, Managed: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(actionExecution{StorePath: workspaceA.Path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationItem, err := database.CreateOperation(context.Background(), operation.Operation{
+		ProjectID: projectItem.ID, Kind: operation.KindOpenSpec, InputJSON: string(payload),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := database.CreateDraftSet(context.Background(), operation.DraftSet{
+		ProjectID: projectItem.ID, OperationID: operationItem.ID,
+		Mutations: []operation.DraftMutation{{
+			Type: "update", Path: "openspec/spec.md", Before: "before", After: "after-a",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetActiveTaskWorkspace(context.Background(), projectItem.ID, workspaceB.ID); err != nil {
+		t.Fatal(err)
+	}
+	service := NewDraftService(database, filepath.Join(root, "data"))
+	if _, err := service.Write(context.Background(), projectItem.ID, set.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, filepath.Join(taskA, "openspec", "spec.md"), "after-a")
+	assertFileContent(t, filepath.Join(taskB, "openspec", "spec.md"), "before")
 }
 
 func TestRejectReviewOperation(t *testing.T) {

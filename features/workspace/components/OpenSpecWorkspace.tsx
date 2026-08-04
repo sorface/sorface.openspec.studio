@@ -5,14 +5,14 @@ import { useDocumentsController } from "@/features/documents/hooks/useDocumentsC
 import { useDocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
 import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
-import { useGitStatusController } from "@/features/git/hooks/useGitStatusController";
 import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
 import { OpenSpecPanel } from "@/features/openspec-workflow/components/OpenSpecPanel";
+import { PublicationDialog } from "@/features/task-context/components/PublicationDialog";
+import { useTaskContextController } from "@/features/task-context/hooks/useTaskContextController";
 import {
   isSaveShortcut,
   primaryShortcutLabel,
 } from "@/features/system/model/platform-shortcuts";
-import { GitPanel } from "@/features/git/components/GitPanel";
 import { RepositoriesPanel } from "@/features/repositories/components/RepositoriesPanel";
 import { AgentCliPanel } from "./AgentCliPanel";
 import { MarkdownEditor } from "./MarkdownEditor";
@@ -24,22 +24,23 @@ import type { ViewMode, WorkspaceMode } from "@/features/workspace/model/workspa
 export function OpenSpecWorkspace() {
   const projects = useProjectsController();
   const repositories = useRepositoriesController(projects.activeProject?.id);
-  const documents = useDocumentsController(projects.activeProject?.id);
-  const documentHistory = useDocumentHistoryController(projects.activeProject?.id, documents.selectedPath);
+  const tasks = useTaskContextController(projects.activeProject?.id);
+  const workspaceContext = tasks.overview?.active?.id ?? projects.activeProject?.activeTask ?? "base";
+  const documents = useDocumentsController(projects.activeProject?.id, workspaceContext);
+  const documentHistory = useDocumentHistoryController(projects.activeProject?.id, documents.selectedPath, workspaceContext);
   const configuredProvider = projects.activeProject?.defaultAiProvider ?? undefined;
   const providerAvailable = !!configuredProvider && (projects.capabilities?.tools.some((tool) =>
     tool.name === configuredProvider.toLowerCase() && tool.available && tool.supported !== false && tool.nonInteractive !== false,
   ) ?? false);
-  const gitAvailable = projects.capabilities?.tools.some((tool) => tool.name === "git" && tool.available) ?? false;
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("documents");
   const activeWorkspaceMode = projects.activeProject ? workspaceMode : "documents";
-  const git = useGitStatusController(projects.activeProject?.id, activeWorkspaceMode === "git");
   const openSpec = useOpenSpecWorkflowController(
     projects.activeProject?.id,
     configuredProvider,
     projects.activeProject?.defaultModel ?? undefined,
     providerAvailable,
     documents.retry,
+    workspaceContext,
   );
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
   const [leftOpen, setLeftOpen] = useState(true);
@@ -57,9 +58,18 @@ export function OpenSpecWorkspace() {
 
   const writeFile = useCallback(() => {
     void documents.save()
-      .then(() => notify("Файл записан в Store"))
+      .then(() => {
+        tasks.refresh();
+        notify("Файл сохранён в задаче");
+      })
       .catch(() => undefined);
-  }, [documents, notify]);
+  }, [documents, notify, tasks]);
+
+  const preparePublication = useCallback(() => {
+    void tasks.preparePublication().catch((error: unknown) => {
+      notify(error instanceof Error ? error.message : "Не удалось подготовить публикацию");
+    });
+  }, [notify, tasks]);
 
   useEffect(() => {
     void Promise.resolve().then(() => setSaveShortcutLabel(primaryShortcutLabel("S")));
@@ -88,7 +98,9 @@ export function OpenSpecWorkspace() {
         agentSettingsOpen={agentSettingsOpen}
         draftSaved={!documents.dirty}
         onAgentSettingsToggle={() => setAgentSettingsOpen((open) => !open)}
+        onPublish={preparePublication}
         projects={projects}
+        tasks={tasks}
       />
 
       <section className={`workspace ${agentSettingsOpen ? "agent-settings-open" : ""} ${leftOpen ? "" : "left-collapsed"}`}>
@@ -98,16 +110,13 @@ export function OpenSpecWorkspace() {
           onClose={() => setLeftOpen(false)}
           repositories={repositories}
           projectSelected={!!projects.activeProject}
-          gitAvailable={gitAvailable}
           workspaceMode={activeWorkspaceMode}
           onWorkspaceModeChange={setWorkspaceMode}
           onAddOpenSpecChange={addOpenSpecChange}
         />
         {!leftOpen && <button className="open-panel left" onClick={() => setLeftOpen(true)}>›</button>}
 
-        {activeWorkspaceMode === "git" ? (
-          <GitPanel controller={git} />
-        ) : activeWorkspaceMode === "context" ? (
+        {activeWorkspaceMode === "context" ? (
           <RepositoriesPanel controller={repositories} enabled={!!projects.activeProject} />
         ) : activeWorkspaceMode === "openspec" ? (
           <OpenSpecPanel
@@ -145,10 +154,10 @@ export function OpenSpecWorkspace() {
 
       <WorkspaceFooter
         workspaceMode={activeWorkspaceMode}
-        gitAvailable={gitAvailable}
         projectSelected={!!projects.activeProject}
         onWorkspaceModeChange={setWorkspaceMode}
       />
+      <PublicationDialog controller={tasks} onPublished={(task) => notify(`Артефакты задачи ${task} отправляются`)} />
       {toast && <div className="toast">✓ {toast}</div>}
     </main>
   );

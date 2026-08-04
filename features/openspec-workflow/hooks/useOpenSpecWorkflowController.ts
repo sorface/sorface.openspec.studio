@@ -100,6 +100,7 @@ export function useOpenSpecWorkflowController(
   model?: string,
   agentAvailable = false,
   onStoreChanged?: () => void,
+  workspaceContext = "",
 ): OpenSpecWorkflowController {
   const [overview, setOverview] = useState<OpenSpecOverview | null>(null);
   const [details, setDetails] = useState<OpenSpecChangeDetails | null>(null);
@@ -169,7 +170,7 @@ export function useOpenSpecWorkflowController(
       window.clearTimeout(resetTimer);
       controller.abort();
     };
-  }, [projectId, reloadVersion]);
+  }, [projectId, reloadVersion, workspaceContext]);
 
   useEffect(() => {
     if (!projectId || !selectedChange) {
@@ -196,7 +197,7 @@ export function useOpenSpecWorkflowController(
       window.clearTimeout(loadingTimer);
       controller.abort();
     };
-  }, [projectId, selectedChange, reloadVersion]);
+  }, [projectId, selectedChange, reloadVersion, workspaceContext]);
 
   const refresh = useCallback(() => {
     setError(null);
