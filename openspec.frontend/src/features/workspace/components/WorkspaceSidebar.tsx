@@ -9,6 +9,7 @@ import { isDeltaSpecPath, isMasterSpecPath } from "@/features/workspace/model/op
 
 interface WorkspaceSidebarProps {
   documents: DocumentsController;
+  hideDocumentTree?: boolean;
   onClose: () => void;
   repositories: RepositoriesController;
   projectSelected: boolean;
@@ -38,7 +39,7 @@ interface DocumentScope {
 }
 
 const navigationSections: NavigationSection[] = [
-  { id: "documentation", label: "Документация" },
+  { id: "documentation", label: "Master Spec" },
   { id: "changes", label: "Изменения" },
   { id: "archive", label: "Архив" },
 ];
@@ -92,6 +93,7 @@ function relativeSegments(path: string, scope: DocumentScope): string[] {
 
 export function WorkspaceSidebar({
   documents,
+  hideDocumentTree = false,
   onClose,
   repositories,
   projectSelected,
@@ -138,6 +140,10 @@ export function WorkspaceSidebar({
     setSelectedScopeId(scope.id);
     setCollapsedDirectories(new Set());
     onWorkspaceModeChange("documents");
+    const preferredPath = `${scope.rootPath}/proposal.md`;
+    const target = documents.items.find((item) => item.kind === "file" && item.path === preferredPath)
+      ?? documents.items.find((item) => item.kind === "file" && item.path.startsWith(`${scope.rootPath}/`));
+    if (target) documents.select(target.path);
   };
 
   const closeSidebar = () => {
@@ -171,20 +177,7 @@ export function WorkspaceSidebar({
       {projectSelected && (
         <>
           <div className="sidebar-heading files-heading">
-            <button
-              type="button"
-              className={workspaceMode === "openspec" ? "active-heading" : ""}
-              onClick={() => onWorkspaceModeChange("openspec")}
-              title="Открыть инструменты управления OpenSpec"
-            >OpenSpec</button>
-            <div>
-              <IconButton
-                label="Управление OpenSpec"
-                onClick={() => onWorkspaceModeChange("openspec")}
-                title="Создать change и управлять артефактами через agent"
-              >＋</IconButton>
-              <IconButton label="Обновить" onClick={documents.retry} disabled={documents.status === "loading"} title="Обновить дерево Store">↻</IconButton>
-            </div>
+            <span className="files-heading-label">OpenSpec</span>
           </div>
           <div className="tree" tabIndex={0} aria-label="Дерево OpenSpec">
             {documents.status === "loading" && <div className="tree-state">Загрузка документов…</div>}
@@ -236,7 +229,7 @@ export function WorkspaceSidebar({
                       <button
                         key={scope.id}
                         type="button"
-                        className={`tree-scope-row ${activeScope?.id === scope.id ? "active" : ""}`}
+                        className={`tree-scope-row ${!hideDocumentTree && workspaceMode === "documents" && activeScope?.id === scope.id ? "active" : ""}`}
                         onClick={() => selectScope(scope)}
                         title={scope.rootPath}
                         aria-haspopup="tree"
@@ -253,7 +246,7 @@ export function WorkspaceSidebar({
         </>
       )}
     </aside>
-    {activeScope && workspaceMode === "documents" && (
+    {!hideDocumentTree && activeScope && workspaceMode === "documents" && (
       <aside className="document-tree-panel" aria-label={`Документы: ${activeScope.label}`}>
         <header className="document-tree-heading">
           <div>

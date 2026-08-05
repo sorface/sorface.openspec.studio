@@ -152,9 +152,39 @@ test("Markdown presentation для diff форматирует блоки и о�
   ]);
 });
 
+test("заключение OpenSpec преобразует JSON агента в понятные пользователю разделы", async () => {
+  const conclusion = await importTypeScript("../src/features/openspec-workflow/model/operation-conclusion.ts");
+  assert.deepEqual(conclusion.parseStructuredOperationConclusion(JSON.stringify({
+    state: "done",
+    summary: "Обновлён раздел ограничений",
+    assumptions: ["Сохраняем текущий scope"],
+    suggestedNames: ["update-proxy-log"],
+  })), {
+    summary: "Обновлён раздел ограничений",
+    assumptions: ["Сохраняем текущий scope"],
+    suggestedNames: ["update-proxy-log"],
+  });
+  assert.equal(conclusion.parseStructuredOperationConclusion("Обычный **Markdown**"), null);
+});
+
+test("якорь комментария сохраняется при удалении выделенного текста", async () => {
+  const comments = await importTypeScript("../src/features/editor/model/fragment-comment.ts");
+  const mapped = comments.mapEditorCommentRanges(
+    [{ id: "comment-1", from: 10, to: 25 }],
+    (position) => position >= 10 && position <= 25 ? 10 : position,
+    40,
+  );
+  assert.deepEqual(mapped, [{ id: "comment-1", from: 10, to: 10 }]);
+});
+
 test("каскад пересогласования проходит specs, design и tasks и безопасно прерывается", async () => {
   const cascade = await importTypeScript("../src/features/openspec-workflow/model/artifact-refresh-cascade.ts");
-  let state = cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "spec");
+  assert.deepEqual(cascade.openSpecArtifactRefreshStepsForDocument("proposal", true, true), ["specs", "design", "tasks"]);
+  assert.deepEqual(cascade.openSpecArtifactRefreshStepsForDocument("proposal", false, true), ["specs", "tasks"]);
+  assert.deepEqual(cascade.openSpecArtifactRefreshStepsForDocument("design", true, true), ["design", "tasks"]);
+  assert.deepEqual(cascade.openSpecArtifactRefreshStepsForDocument("design", true, false), ["design"]);
+  assert.deepEqual(cascade.openSpecArtifactRefreshStepsForDocument("tasks", true, true), ["tasks"]);
+  let state = cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "spec", ["specs", "design", "tasks"]);
 
   assert.equal(state.current, "specs");
   assert.equal(cascade.openSpecArtifactRefreshActionArtifact(state), "spec");
@@ -179,16 +209,28 @@ test("каскад пересогласования проходит specs, desi
   assert.equal(state.status, "complete");
   assert.deepEqual(state.completed, ["specs", "design", "tasks"]);
 
-  let designOnly = cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "specs", false);
-  assert.deepEqual(designOnly.steps, ["specs", "design"]);
-  designOnly = cascade.advanceOpenSpecArtifactRefreshCascade(designOnly);
+  let designOnly = cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "design", ["design", "tasks"]);
+  assert.deepEqual(designOnly.steps, ["design", "tasks"]);
   assert.equal(designOnly.current, "design");
   designOnly = cascade.advanceOpenSpecArtifactRefreshCascade(designOnly);
+  assert.equal(designOnly.current, "tasks");
+  designOnly = cascade.advanceOpenSpecArtifactRefreshCascade(designOnly);
   assert.equal(designOnly.status, "complete");
-  assert.deepEqual(designOnly.completed, ["specs", "design"]);
+  assert.deepEqual(designOnly.completed, ["design", "tasks"]);
+
+  let tasksOnly = cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "tasks", ["tasks"]);
+  assert.equal(tasksOnly.current, "tasks");
+  tasksOnly = cascade.advanceOpenSpecArtifactRefreshCascade(tasksOnly);
+  assert.equal(tasksOnly.status, "complete");
+  assert.deepEqual(tasksOnly.completed, ["tasks"]);
+
+  let guided = cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "design", ["design", "tasks"], "Комментарий к design");
+  assert.match(cascade.openSpecArtifactRefreshCascadeGoal(guided), /Комментарий к design/);
+  guided = cascade.advanceOpenSpecArtifactRefreshCascade(guided);
+  assert.doesNotMatch(cascade.openSpecArtifactRefreshCascadeGoal(guided), /Комментарий к design/);
 
   const interrupted = cascade.interruptOpenSpecArtifactRefreshCascade(
-    cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "specs"),
+    cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "specs", ["specs", "design", "tasks"]),
     "Результат отклонён",
   );
   assert.equal(interrupted.status, "interrupted");
@@ -294,6 +336,8 @@ test("projects client и controller покрывают CRUD, lifecycle и под
   assert.match(controller, /defaultAiProvider: provider/);
   assert.match(switcher, /role="dialog"/);
   assert.match(switcher, /event\.key === "Escape"/);
+  assert.match(switcher, /window\.addEventListener\("pointerdown", onPointerDown\)/);
+  assert.match(switcher, /!rootRef\.current\?\.contains\(event\.target as Node\)/);
   assert.match(switcher, /Удалить только метаданные/);
   assert.match(switcher, /Correlation ID:/);
   assert.match(switcher, /disabled=\{controller\.mutationPending\}/);
@@ -308,7 +352,7 @@ test("projects client и controller покрывают CRUD, lifecycle и под
 });
 
 test("низкоуровневый Git feature остаётся доступен как внутренняя диагностика, но скрыт из основного workspace", async () => {
-  const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, footer, diffParser] = await Promise.all([
+  const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, diffParser] = await Promise.all([
     readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/git/components/GitPanel.tsx", import.meta.url), "utf8"),
@@ -316,7 +360,6 @@ test("низкоуровневый Git feature остаётся доступен
     readFile(new URL("../src/features/git/model/git-operation.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
     importTypeScript("../src/features/git/model/unified-diff.ts"),
   ]);
   assert.match(client, /getGitStatus/);
@@ -360,7 +403,7 @@ test("низкоуровневый Git feature остаётся доступен
   assert.doesNotMatch(workspace, /<GitPanel/);
   assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("git"\)/);
   assert.doesNotMatch(sidebar, /Git-панель пока недоступна/);
-  assert.doesNotMatch(footer, /Git|Commit & Push/);
+  assert.doesNotMatch(workspace, /WorkspaceFooter|Commit & Push/);
 
   const files = diffParser.parseUnifiedDiff(`# Unstaged
 diff --git a/openspec/changes/example/design.md b/openspec/changes/example/design.md
@@ -385,7 +428,7 @@ index 123..456 100644
 });
 
 test("task context связывает workspace с задачей и публикует только OpenSpec-артефакты", async () => {
-  const [client, controller, selector, dialog, workspace, header, markdownEditor, documents, types, footer, css] = await Promise.all([
+  const [client, controller, selector, dialog, workspace, header, markdownEditor, documents, types, sidebar, css] = await Promise.all([
     readFile(new URL("../src/features/task-context/api/task-context-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/task-context/hooks/useTaskContextController.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/task-context/components/TaskContextSelector.tsx", import.meta.url), "utf8"),
@@ -395,7 +438,7 @@ test("task context связывает workspace с задачей и публи�
     readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/documents/hooks/useDocumentsController.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
-    readFile(new URL("../src/features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
@@ -420,6 +463,7 @@ test("task context связывает workspace с задачей и публи�
   assert.match(selector, /className="task-branch-icon"[\s\S]*aria-hidden="true"/);
   assert.match(selector, /className="task-context-branch"/);
   assert.match(selector, /className=\{`task-context-chevron/);
+  assert.ok(selector.indexOf("task-context-chevron") < selector.indexOf("task-branch-icon"));
   assert.match(selector, /aria-label=\{triggerLabel\}/);
   assert.match(selector, /overview\?\.remoteBranches \?\? \[\]/);
   assert.match(selector, /!localSet\.has\(name\.slice\("origin\/"\.length\)\)/);
@@ -427,6 +471,7 @@ test("task context связывает workspace с задачей и публи�
   assert.match(selector, /controller\.openRemoteTask\(remoteBranch\)/);
   assert.match(selector, /<span>Получить изменения<\/span>/);
   assert.match(selector, /<span>Опубликовать изменения<\/span>/);
+  assert.match(selector, /className="task-context-actions"[\s\S]*Получить изменения[\s\S]*Опубликовать изменения[\s\S]*className="task-context-list"/);
   assert.match(selector, /onReceive\(\)/);
   assert.match(selector, /onPublish\(\)/);
   assert.doesNotMatch(selector, /task-context-icon|task-context-copy|РАБОЧИЙ КОНТЕКСТ|Изменения каждой задачи сохраняются отдельно/);
@@ -447,16 +492,26 @@ test("task context связывает workspace с задачей и публи�
   assert.match(workspace, /result\.updated\) retryDocuments\(\)/);
   assert.match(documents, /item\.kind === "file" && item\.path === requestedPath/);
   assert.match(workspace, /<PublicationDialog/);
+  assert.match(workspace, /hideDocumentTree=\{openSpecCreationPageOpen\}/);
+  assert.match(workspace, /const changeWorkspaceMode = useCallback\(\(mode: WorkspaceMode\) => \{[\s\S]*setOpenSpecCreationPageOpen\(false\);[\s\S]*setWorkspaceMode\(mode\)/);
+  assert.match(workspace, /onWorkspaceModeChange=\{changeWorkspaceMode\}/);
+  assert.match(sidebar, /!hideDocumentTree && activeScope && workspaceMode === "documents"/);
+  assert.match(sidebar, /!hideDocumentTree && workspaceMode === "documents" && activeScope\?\.id === scope\.id \? "active"/);
+  assert.match(sidebar, /const preferredPath = `\$\{scope\.rootPath\}\/proposal\.md`/);
+  assert.match(sidebar, /if \(target\) documents\.select\(target\.path\)/);
+  assert.match(css, /\.change-creation-stepper \{[^}]*grid-template-columns:\s*repeat\(4, minmax\(150px, 220px\)\)[^}]*justify-content:\s*center/s);
   assert.match(header, /<TaskContextSelector[\s\S]*onPublish=\{onPublish\}[\s\S]*onReceive=\{onReceive\}/);
+  assert.match(header, /<div className="top-actions">[\s\S]*<TaskContextSelector[\s\S]*<div className="provider-settings">/);
   assert.doesNotMatch(header, /workspace-status|server-status|saved-state|useSystemStatus|draftSaved/);
   assert.doesNotMatch(header, /Локальный server|Файл сохранён/);
   assert.doesNotMatch(header, /Получить обновления|Публикация изменений|publish-icon-button|receive-icon-button|publication-icon-button/);
+  assert.match(css, /\.top-actions \{[^}]*margin-left:\s*auto[^}]*flex:\s*0 0 auto[^}]*justify-content:\s*flex-end/s);
   assert.match(css, /\.task-context-publish-group \{[^}]*display:\s*flex[^}]*gap:\s*2px/s);
   assert.match(css, /\.task-context-actions \{[^}]*display:\s*grid[^}]*border-top:\s*1px solid var\(--soft-line\)/s);
   assert.match(css, /\.task-context-actions > button \{[^}]*min-height:\s*36px[^}]*display:\s*flex[^}]*background:\s*transparent/s);
   assert.match(documents, /loadedWorkspaceContext/);
   assert.doesNotMatch(types, /"git"/);
-  assert.doesNotMatch(footer, /Локально|изменения разделены по задачам/);
+  assert.doesNotMatch(workspace, /WorkspaceFooter|Локально · изменения разделены по задачам/);
   assert.doesNotMatch(markdownEditor, /Файл сохранён/);
 });
 
@@ -657,18 +712,36 @@ test("AI operations feature требует review token и показывает 
   assert.equal(state.isAiTerminal("failed"), true);
 });
 
+test("OpenSpec автоматически применяет только пустой результат planning-операции", async () => {
+  const state = await importTypeScript("../src/features/openspec-workflow/model/openspec-state.ts");
+  const operation = {
+    id: "operation-1",
+    status: "awaiting_review",
+    openspecAction: "prepare_artifact",
+    result: JSON.stringify({ files: [], diagnostics: [] }),
+  };
+  assert.equal(state.openSpecOperationShouldAutoApply(operation), true);
+  assert.equal(state.openSpecOperationShouldAutoApply({
+    ...operation,
+    result: JSON.stringify({ files: [{ type: "update", path: "proposal.md" }], diagnostics: [] }),
+  }), false);
+  assert.equal(state.openSpecOperationShouldAutoApply({ ...operation, openspecAction: "explore" }), false);
+  assert.equal(state.openSpecOperationShouldAutoApply({
+    ...operation,
+    result: JSON.stringify({ files: [], diagnostics: [], exploration: { state: "needs_input" } }),
+  }), false);
+});
+
 test("OpenSpec workflow поддерживает read-only обзор, agent actions, stale refresh и полный review", async () => {
-  const [client, controller, panel, operationPanel, documentActions, actionPresentation, actionPresentationState, workspace, sidebar, footer, state] = await Promise.all([
+  const [client, controller, operationPanel, documentActions, actionPresentation, actionPresentationState, workspace, sidebar, state] = await Promise.all([
     readFile(new URL("../src/features/openspec-workflow/api/openspec-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/model/openspec-action-presentation.ts", import.meta.url), "utf8"),
     importTypeScript("../src/features/openspec-workflow/model/openspec-action-presentation.ts"),
     readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
     importTypeScript("../src/features/openspec-workflow/model/openspec-state.ts"),
   ]);
 
@@ -688,8 +761,10 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(controller, /cancelOpenSpecOperation/);
   assert.match(controller, /acceptOpenSpecOperation/);
   assert.match(controller, /writeOpenSpecDraft/);
-  assert.match(controller, /name === "awaiting_review"\) setOperationDialogOpen\(true\)/);
-  assert.match(controller, /const writtenDraft = await writeOpenSpecDraft\(projectId, draft\.id\);[\s\S]*setDraft\(writtenDraft\);[\s\S]*onStoreChanged\?\.\(operation \?\? undefined\)/);
+  assert.match(controller, /openSpecOperationShouldAutoApply\(operation\)/);
+  assert.match(controller, /automaticallyAppliedOperationIds\.current\.add\(operation\.id\);[\s\S]*setOperationDialogOpen\(false\);[\s\S]*void accept\(\)\.then/);
+  assert.match(controller, /const acceptedDraft = await acceptOpenSpecOperation\(projectId, operation\.id\);[\s\S]*return await writeDraftToStore\(acceptedDraft, acceptedOperation\)/);
+  assert.match(controller, /const writtenDraft = await writeOpenSpecDraft\(projectId, acceptedDraft\.id\);[\s\S]*setDraft\(writtenDraft\);[\s\S]*onStoreChanged\?\.\(acceptedOperation \?\? undefined\)/);
   assert.match(controller, /deleteOpenSpecChange/);
   assert.match(controller, /details\.fingerprint/);
   assert.match(controller, /runArtifactAction = useCallback/);
@@ -702,54 +777,40 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(controller, /retryArtifactRefresh = useCallback/);
   assert.match(controller, /resumeOpenSpecArtifactRefreshCascade/);
 
-  assert.match(panel, /Agent CLI не настроен\. Обзор и проверка доступны/);
-  assert.match(panel, /Артефакты и зависимости/);
-  assert.match(panel, /diagnostics\.map/);
-  assert.match(panel, /Исправить через agent/);
-  assert.match(panel, /fix_artifact/);
-  assert.match(panel, /<OpenSpecOperationPanel controller=\{controller\}/);
   assert.match(operationPanel, /mutation\.type/);
   assert.match(operationPanel, /create.*update.*delete.*rename/s);
   assert.match(operationPanel, /Архивирование принимается только целиком/);
   assert.match(operationPanel, /Принять весь набор/);
-  assert.match(operationPanel, /Записать .* изменений в Store/);
-  assert.match(panel, /Удалить change/);
-  assert.match(panel, /role="dialog"/);
-  assert.match(panel, /deletion\.files\.map/);
-  assert.match(panel, /deleteConfirmation !== changeName/);
+  assert.doesNotMatch(operationPanel, /Записать .* изменений в Store/);
+  assert.match(operationPanel, /Повторить запись в Store/);
   assert.match(workspace, /useOpenSpecWorkflowController/);
   assert.match(workspace, /documents\.retry/);
   assert.match(workspace, /const retryDocuments = documents\.retry;[\s\S]*const refreshTasks = tasks\.refresh;[\s\S]*const refreshStoreState = useCallback\(\(operation\?:[\s\S]*retryDocuments\(\);\s*refreshTasks\(\);/);
   assert.match(workspace, /useOpenSpecWorkflowController\([\s\S]*refreshStoreState,\s*workspaceContext/);
-  assert.match(workspace, /<OpenSpecPanel/);
+  assert.match(workspace, /<OpenSpecChangeCreationPage/);
   assert.match(workspace, /openSpecCreationPageOpen/);
+  assert.doesNotMatch(workspace, /activeWorkspaceMode === "openspec"|<WorkspaceFooter/);
   assert.match(workspace, /onAddOpenSpecChange=\{addOpenSpecChange\}/);
   assert.match(workspace, /changeDocumentContextFromPath/);
-  assert.match(workspace, /\(proposal\|design\)\\\.md/);
+  assert.match(workspace, /\(proposal\|design\|tasks\)\\\.md/);
   assert.match(workspace, /documentArtifact=\{changeDocument\.artifact\}/);
   assert.match(workspace, /<OpenSpecDocumentAction/);
   assert.match(workspace, /<OpenSpecDocumentReview/);
   assert.doesNotMatch(workspace, /continueOpenSpecChange|setWorkspaceMode\("openspec"\).*runArtifactAction/s);
   assert.match(documentActions, /documentDirty && !await onSave\(\)/);
   assert.match(documentActions, /controller\.runArtifactAction\(change, action\.artifact/);
-  assert.match(documentActions, /openSpecArtifactRefreshGoal\("specs"\)/);
-  assert.match(documentActions, /const downstreamCreated = designCreated \|\| tasksCreated/);
-  assert.match(documentActions, /documentArtifact === "proposal" && downstreamCreated/);
-  assert.match(documentActions, /Пересогласовать артефакты change\?/);
-  assert.match(documentActions, /Создать новый change/);
-  assert.match(documentActions, /Принять риск и обновить/);
-  assert.match(documentActions, /controller\.startArtifactRefresh\([\s\S]*change,[\s\S]*action\.artifact,[\s\S]*tasksCreated,[\s\S]*proposalCommentsGoal\(proposalComments\)/);
-  assert.match(documentActions, /proposal\.md \+ diff specs/);
+  assert.match(documentActions, /if \(refreshSource\) \{[\s\S]*controller\.startArtifactRefresh/);
+  assert.doesNotMatch(documentActions, /refreshWarningAction|artifact-refresh-warning|Будут обновлены|Принять риск/);
+  assert.match(documentActions, /const guidance = artifactCommentsGoal\(documentComments, documentArtifact\);[\s\S]*controller\.startArtifactRefresh\(change, action\.artifact, refreshSteps, guidance\)/);
   assert.match(documentActions, /openSpecDocumentActions\(controller\.details, hasSpecs, documentArtifact\)/);
   assert.match(documentActions, /actions\.map\(\(\{ action, label, primary \}\)/);
   assert.match(documentActions, /Загружаем состояние change/);
   assert.match(documentActions, /<OpenSpecOperationPanel\s+controller=\{controller\}/);
   assert.match(documentActions, /controller\.operationDialogOpen/);
-  assert.match(documentActions, /Просмотреть результат/);
-  assert.match(documentActions, /selectedOperation && selectedOperation\.status !== "accepted"/);
+  assert.doesNotMatch(documentActions, /Просмотреть результат|openspec-operation-summary|openspec-operation-view-button/);
   assert.match(documentActions, /Показать историю операций изменения/);
   assert.match(documentActions, /className="open-panel right openspec-operations-open"/);
-  assert.match(documentActions, /<span aria-hidden="true">‹<\/span>/);
+  assert.match(documentActions, /<span aria-hidden="true">Операции<\/span>/);
   assert.match(operationPanel, /createSplitLineDiff/);
   assert.match(operationPanel, /summarizeSplitLineDiff/);
   assert.match(operationPanel, /presentMarkdownDiff/);
@@ -796,8 +857,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(actionPresentation, /Создать design\.md/);
   assert.doesNotMatch(actionPresentation, /Обновить design\.md/);
   assert.match(actionPresentation, /label: "Обновить"/);
-  assert.match(actionPresentation, /Создать tasks\.md/);
-  assert.match(actionPresentation, /Обновить tasks\.md/);
+  assert.match(actionPresentation, /documentArtifact === "design" \|\| documentArtifact === "tasks"/);
   assert.match(actionPresentation, /if \(!specsDone\)/);
   assert.doesNotMatch(actionPresentation, /next\.artifact === "tasks"/);
   const artifactAction = (artifact, available = true) => ({ kind: "prepare_artifact", artifact, available });
@@ -823,22 +883,23 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.deepEqual(
     actionPresentationState.openSpecDocumentActions(documentActionDetails({ proposal: "done", specs: "done", design: "done", tasks: "ready" }), true, "design")
       .map(({ label, primary }) => ({ label, primary })),
-    [{ label: "Создать tasks.md", primary: true }],
+    [{ label: "Обновить", primary: false }],
   );
   assert.deepEqual(
     actionPresentationState.openSpecDocumentActions(documentActionDetails({ proposal: "done", specs: "done", design: "done", tasks: "done" }), true, "design")
       .map(({ label, primary }) => ({ label, primary })),
-    [{ label: "Обновить tasks.md", primary: true }],
+    [{ label: "Обновить", primary: false }],
   );
-  assert.match(panel, /<ChangeCreationWizard/);
-  assert.match(panel, /useChangeCreationController\(projectId\)/);
-  assert.match(panel, /onCreationPageOpenChange/);
-  assert.match(panel, /defaultOpenSpecActionGoal/);
-  assert.match(panel, /Дополнительные указания для agent/);
-  assert.match(panel, /Без текста Agent использует актуальный proposal/);
-  assert.doesNotMatch(panel, /needsAgent && !goal\.trim\(\)/);
-  assert.match(sidebar, /onWorkspaceModeChange\("openspec"\)/);
-  assert.match(footer, /workspaceMode === "openspec"/);
+  assert.deepEqual(
+    actionPresentationState.openSpecDocumentActions(documentActionDetails({ proposal: "done", specs: "done", design: "done", tasks: "done" }), true, "tasks")
+      .map(({ label, primary }) => ({ label, primary })),
+    [{ label: "Обновить", primary: false }],
+  );
+  assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("openspec"\)|active-heading/);
+  assert.match(sidebar, /className="files-heading-label">OpenSpec/);
+  assert.match(sidebar, /className="tree-section-add"[\s\S]*label="Добавить изменение"[\s\S]*onClick=\{onAddOpenSpecChange\}/);
+  assert.doesNotMatch(sidebar, /files-heading-label">OpenSpec<[\s\S]{0,300}label="Добавить изменение"/);
+  assert.doesNotMatch(sidebar, /files-heading-label">OpenSpec<[\s\S]{0,300}label="Обновить"/);
 
   assert.equal(state.reduceOpenSpecOperationStatus("running", "provider_event"), "running");
   assert.equal(state.reduceOpenSpecOperationStatus("running", "validating"), "validating");
@@ -849,10 +910,10 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
 });
 
 test("OpenSpec workflow проводит управляемые AI-итерации до proposal и создаёт change только после подтверждения", async () => {
-  const [model, controller, panel, operationPanel, wizard, creationController, client, workspace, css, state] = await Promise.all([
+  const [model, controller, creationPage, operationPanel, wizard, creationController, client, workspace, css, state] = await Promise.all([
     readFile(new URL("../src/features/openspec-workflow/model/openspec-types.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecChangeCreationPage.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/components/ChangeCreationWizard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/hooks/useChangeCreationController.ts", import.meta.url), "utf8"),
@@ -870,7 +931,10 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.match(controller, /kind: "explore"/);
   assert.match(controller, /createChange = useCallback\(async \(change: string, proposal: string\)/);
   assert.match(controller, /kind:\s*"create_change",\s*change,\s*proposal/);
-  assert.match(controller, /setSelectedChange\(operation\.openspecChange\)/);
+  assert.match(controller, /setSelectedChange\(acceptedOperation\.openspecChange\)/);
+  assert.match(controller, /acceptedOperation\?\.openspecAction === "create_change"[\s\S]*createOpenSpecArtifactRefreshCascade\([\s\S]*"specs",[\s\S]*openSpecArtifactRefreshSteps/);
+  assert.match(controller, /const artifactAliases = artifact === "spec" \|\| artifact === "specs" \? \["spec", "specs"\] : \[artifact\]/);
+  assert.match(controller, /openSpecArtifactRefreshCascadeGoal\(initial\)/);
   assert.match(controller, /setValidationStatus\("checking"\)/);
   assert.match(controller, /next\.valid \? "valid" : "invalid"/);
   assert.match(controller, /void validate\(false\)/);
@@ -887,15 +951,14 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.match(operationPanel, /Ответить и продолжить/);
   assert.match(operationPanel, /type=\{question\.kind === "single_choice" \? "radio" : "checkbox"\}/);
 
-  assert.match(panel, /Создать change/);
-  assert.doesNotMatch(panel, /className="openspec-add-change"/);
-  assert.doesNotMatch(css, /\.openspec-panel-header \.openspec-add-change/);
-  assert.match(panel, /ChangeCreationWizard/);
+  assert.match(creationPage, /ChangeCreationWizard/);
+  assert.match(creationPage, /useChangeCreationController\(projectId\)/);
   assert.match(wizard, /aria-labelledby="change-creation-title"/);
   assert.match(wizard, /className="openspec-panel change-creation-page"/);
-  assert.match(wizard, /Вернуться к списку изменений/);
+  assert.match(wizard, /Вернуться в рабочее пространство/);
   assert.doesNotMatch(wizard, /role="dialog"|aria-modal="true"|change-creation-backdrop/);
   assert.match(wizard, /Опишите замысел/);
+  assert.match(wizard, /label: "Описание изменения"/);
   assert.match(wizard, /READ-ONLY ИССЛЕДОВАНИЕ/);
   assert.match(wizard, /Ответьте на важные вопросы/);
   assert.match(wizard, /Продолжить с допущениями/);
@@ -907,6 +970,10 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.match(wizard, /suggestedNames\.map/);
   assert.match(wizard, /Подготовить change/);
   assert.match(wizard, /Записать change в Store/);
+  assert.match(wizard, /const creationArtifacts = \["proposal\.md", "diff specs", "design\.md", "tasks\.md"\]/);
+  assert.match(wizard, /className="creation-artifact-plan"/);
+  assert.match(wizard, /Принять и сформировать артефакты/);
+  assert.match(wizard, /if \(!await workflow\.accept\(\)\) return;[\s\S]*creation\.complete\(\);[\s\S]*onCreated/);
   assert.match(wizard, /onCreated\(`openspec\/changes\/\$\{name\}\/proposal\.md`\)/);
   assert.match(creationController, /setTimeout\(\(\) => \{/);
   assert.match(creationController, /saveChangeCreationDraft/);
@@ -917,16 +984,14 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.match(workspace, /pendingDocumentPath/);
   assert.match(workspace, /selectDocument\(pendingDocumentPath\)/);
   assert.match(workspace, /onChangeCreated=\{openCreatedChange\}/);
-  assert.match(panel, /Следующий шаг|СЛЕДУЮЩИЙ ШАГ/);
+  assert.match(workspace, /openSpecCreationPageOpen \? \(/);
   assert.match(workspace, /OpenSpecDocumentAction/);
-  assert.match(panel, /Спецификация валидна/);
   assert.match(operationPanel, /Готово к проверке/);
-  assert.match(panel, /Требует исправления/);
   assert.match(wizard, /formatElapsedTime/);
   assert.match(css, /\.change-creation-page \{[^}]*height:\s*100%[^}]*grid-template-rows:/s);
+  assert.match(css, /\.creation-artifact-plan \{[^}]*display:\s*flex[^}]*background:\s*#f7fbf9/s);
   assert.doesNotMatch(css, /\.change-creation-backdrop|\.change-creation-wizard/);
   assert.match(css, /\.change-creation-grid \{[^}]*grid-template-columns:/s);
-  assert.match(css, /\.openspec-validation-badge\.status-valid/);
 
   const empty = state.emptyChangeCreationDraft();
   assert.equal(empty.stage, "intent");
@@ -979,6 +1044,12 @@ test("proposal.md хранит видимые комментарии к фраг
   assert.match(richEditor, /Добавить комментарий к выделенному фрагменту/);
   assert.match(richEditor, /editor-comment-highlight/);
   assert.match(richEditor, /editor-inline-comment-slot/);
+  assert.match(richEditor, /mapEditorCommentRanges/);
+  assert.match(richEditor, /decorations: createCommentDecorations\(transaction\.doc, ranges\), ranges/);
+  assert.match(richEditor, /const preserveAnchor = \(\): EditorCommentRange\[\]/);
+  assert.match(richEditor, /partialRanges\.length \? partialRanges : preserveAnchor\(\)/);
+  assert.match(richEditor, /view: \(\) => \(\{[\s\S]*update: \(\) => scheduleCommentSlots\(\)/);
+  assert.match(richEditor, /current\[id\] === slots\[id\]/);
   assert.match(richEditor, /slot\.contentEditable = "false"/);
   assert.match(richEditor, /editor-inline-comment-panel editing" contentEditable=\{false\}/);
   assert.match(richEditor, /stopEvent: \(event\).*editor-inline-comment-panel/);
@@ -1010,7 +1081,7 @@ test("proposal.md хранит видимые комментарии к фраг
   assert.match(workspace, /proposalCommentsStorageKey/);
   assert.match(workspace, /pendingCommentUpdatePath/);
   assert.match(workspace, /clearFragmentComments/);
-  assert.match(documentActions, /proposalCommentsGoal\(proposalComments\)/);
+  assert.match(documentActions, /artifactCommentsGoal\(documentComments, documentArtifact\)/);
   assert.match(documentActions, /controller\.startArtifactRefresh/);
   assert.doesNotMatch(controller, /editDocument|mode: "inline"|createAiOperation/);
   assert.doesNotMatch(richEditor, /agent-inline-prompt|Редактировать изменение через agent/);
@@ -1040,6 +1111,14 @@ test("proposal.md хранит видимые комментарии к фраг
   }]);
   assert.match(goal, /Исходный фрагмент/);
   assert.match(goal, /Добавить ограничение/);
+  const designGoal = commentModel.artifactCommentsGoal([{
+    id: "comment-2",
+    selection: { text: "Техническое решение" },
+    text: "Уточнить последовательность",
+    createdAt: "2026-08-04T00:00:00.000Z",
+  }], "design");
+  assert.match(designGoal, /Обнови design\.md/);
+  assert.match(designGoal, /Уточнить последовательность/);
   assert.equal(logic.changeFromDocumentPath("openspec/changes/add-report/design.md"), "add-report");
   assert.equal(logic.changeFromDocumentPath("openspec/changes/archive/2026-01-01-add-report/design.md"), null);
   assert.equal(logic.actionMatchesDocument({ outputPaths: ["openspec/changes/add-report/specs/**/*.md"] }, "openspec/changes/add-report/specs/report/spec.md"), true);

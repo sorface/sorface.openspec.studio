@@ -37,16 +37,15 @@ export function WorkspaceHeader({ agentSettingsOpen, onAgentSettingsToggle, onPu
       </div>
 
       <ProjectSwitcher controller={projects} />
-      <div className="task-context-publish-group">
-        <TaskContextSelector
-          controller={tasks}
-          onPublish={onPublish}
-          onReceive={onReceive}
-          projectSelected={!!activeProject}
-        />
-      </div>
-
       <div className="top-actions">
+        <div className="task-context-publish-group">
+          <TaskContextSelector
+            controller={tasks}
+            onPublish={onPublish}
+            onReceive={onReceive}
+            projectSelected={!!activeProject}
+          />
+        </div>
         <div className="provider-settings">
           <button
             className="provider-button"

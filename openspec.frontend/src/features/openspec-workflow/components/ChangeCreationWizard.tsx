@@ -16,11 +16,13 @@ interface ChangeCreationWizardProps {
 }
 
 const steps = [
-  { id: "intent", label: "Замысел" },
+  { id: "intent", label: "Описание изменения" },
   { id: "clarifying", label: "Уточнение" },
   { id: "proposal", label: "Proposal" },
   { id: "naming", label: "Название" },
 ] as const;
+
+const creationArtifacts = ["proposal.md", "diff specs", "design.md", "tasks.md"] as const;
 
 function stepIndex(stage: ChangeCreationController["draft"]["stage"]): number {
   if (stage === "clarifying") return 1;
@@ -141,6 +143,14 @@ export function ChangeCreationWizard({
     onCreated(`openspec/changes/${name}/proposal.md`);
   };
 
+  const acceptCreatedChange = async () => {
+    const name = creation.draft.changeName ?? "";
+    if (!await workflow.accept()) return;
+    await creation.complete();
+    onClose();
+    onCreated(`openspec/changes/${name}/proposal.md`);
+  };
+
   const leftDocumentId = creation.draft.stage === "proposal" ? "change-creation-proposal" : "change-creation-intent";
   const leftMarkdown = creation.draft.stage === "proposal" ? creation.draft.proposal ?? "" : creation.draft.intent;
   const leftChange = creation.draft.stage === "proposal" ? creation.setProposal : creation.setIntent;
@@ -158,7 +168,7 @@ export function ChangeCreationWizard({
             <button
               type="button"
               className="creation-back"
-              aria-label="Вернуться к списку изменений"
+              aria-label="Вернуться в рабочее пространство"
               disabled={activeOperation}
               onClick={onClose}
             >←</button>
@@ -310,6 +320,9 @@ export function ChangeCreationWizard({
                     <small className={creation.nameValid ? "valid-name" : "invalid-name"}>{creation.nameValid ? "✓ Корректный kebab-case" : "Используйте английские буквы, цифры и дефисы"}</small>
                   </label>
                   <code>openspec/changes/{creation.draft.changeName || "…"}/proposal.md</code>
+                  <ol className="creation-artifact-plan" aria-label="Артефакты создаваемого change">
+                    {creationArtifacts.map((artifact) => <li key={artifact}>{artifact}</li>)}
+                  </ol>
 
                   {creation.draft.stage === "naming" && (
                     <button type="button" className="primary-submit creation-prepare" disabled={!creation.nameValid} onClick={() => void prepareChange()}>
@@ -323,9 +336,9 @@ export function ChangeCreationWizard({
                   {creationReview && workflow.operation?.status === "awaiting_review" && (
                     <section className="creation-final-review">
                       <b>Готово к принятию</b>
-                      <p>Будет создан {creationReview.files.length} файл(а). Delta specs пока не формируются.</p>
+                      <p>Сначала будет записан proposal.md, затем автоматически запустится полный planning-каскад.</p>
                       {creationReview.files.map((file) => <code key={file.path}>{file.type} · {file.path}</code>)}
-                      <button type="button" className="primary-submit" onClick={() => void workflow.accept()}>Принять подготовленный change</button>
+                      <button type="button" className="primary-submit" onClick={() => void acceptCreatedChange()}>Принять и сформировать артефакты</button>
                     </section>
                   )}
                   {workflow.draft?.status === "accepted" && (

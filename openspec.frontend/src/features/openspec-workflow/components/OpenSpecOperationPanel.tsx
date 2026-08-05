@@ -16,6 +16,7 @@ import {
   type MarkdownDiffInlineToken,
   type MarkdownDiffLinePresentation,
 } from "@/features/openspec-workflow/model/markdown-diff-presentation";
+import { parseStructuredOperationConclusion } from "@/features/openspec-workflow/model/operation-conclusion";
 import type {
   OpenSpecExplorationQuestion,
   OpenSpecFileMutation,
@@ -109,8 +110,9 @@ function MarkdownDiffLine({ line }: { line?: MarkdownDiffLinePresentation }) {
 }
 
 function OperationConclusion({ markdown }: { markdown: string }) {
-  const lines = presentMarkdownDiff(markdown);
-  if (!lines.length) return null;
+  const structured = parseStructuredOperationConclusion(markdown);
+  const lines = presentMarkdownDiff(structured?.summary ?? markdown);
+  if (!lines.length && !structured) return null;
 
   return (
     <section className="openspec-operation-conclusion" aria-label="Заключение агента">
@@ -122,9 +124,26 @@ function OperationConclusion({ markdown }: { markdown: string }) {
         </div>
       </header>
       <div className="openspec-operation-conclusion-body">
-        {lines.map((line, index) => (
-          <MarkdownDiffLine line={line} key={`${line.kind}-${index}`} />
-        ))}
+        {lines.length > 0 && (
+          <section className="openspec-operation-conclusion-summary">
+            {structured && <strong>Итог</strong>}
+            {lines.map((line, index) => (
+              <MarkdownDiffLine line={line} key={`${line.kind}-${index}`} />
+            ))}
+          </section>
+        )}
+        {!!structured?.assumptions.length && (
+          <section>
+            <strong>Принятые допущения</strong>
+            <ul>{structured.assumptions.map((item) => <li key={item}>{item}</li>)}</ul>
+          </section>
+        )}
+        {!!structured?.suggestedNames.length && (
+          <section className="openspec-operation-conclusion-names">
+            <strong>Предложенные названия</strong>
+            <ul>{structured.suggestedNames.map((name) => <li key={name}><code>{name}</code></li>)}</ul>
+          </section>
+        )}
       </div>
     </section>
   );
@@ -585,9 +604,9 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
           <div className="openspec-draft-card">
             <span className="openspec-draft-status-icon" aria-hidden="true">✓</span>
             <div className="openspec-draft-copy">
-              <b>{controller.draft.status === "written" ? "Записано в Store" : "Результат принят как draft"}</b>
+              <b>{controller.draft.status === "written" ? "Изменения приняты и записаны в Store" : "Запись в Store не завершена"}</b>
               {controller.draft.status === "accepted" && (
-                <p>Проверьте набор ещё раз — только явная запись изменит Store.</p>
+                <p>{controller.error?.message ?? "Повторите запись принятого набора изменений."}</p>
               )}
             </div>
             {controller.draft.status === "accepted" && (
@@ -597,7 +616,7 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
                 onClick={() => void controller.write()}
                 disabled={controller.pending}
               >
-                Записать {controller.draft.mutations.length} изменений в Store
+                {controller.pending ? "Записываем…" : "Повторить запись в Store"}
               </button>
             )}
           </div>

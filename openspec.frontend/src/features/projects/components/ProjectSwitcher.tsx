@@ -14,6 +14,7 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
   const [mode, setMode] = useState<EditorMode>("list");
   const [name, setName] = useState("");
   const [gitUrl, setGitUrl] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const emptyPromptShown = useRef(false);
 
@@ -26,15 +27,23 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
 
   useEffect(() => {
     if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-        setMode("list");
-      }
+    const closePanel = () => {
+      setOpen(false);
+      setMode("list");
     };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) closePanel();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closePanel();
+    };
+    window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
     panelRef.current?.querySelector<HTMLElement>("button, input")?.focus();
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, [mode, open]);
 
   const openEditor = (nextMode: EditorMode) => {
@@ -67,7 +76,7 @@ export function ProjectSwitcher({ controller }: ProjectSwitcherProps) {
     : controller.activeProject?.name ?? "Проекты не созданы";
 
   return (
-    <div className="project-switcher-wrap">
+    <div className="project-switcher-wrap" ref={rootRef}>
       <button
         className="project-switcher"
         type="button"

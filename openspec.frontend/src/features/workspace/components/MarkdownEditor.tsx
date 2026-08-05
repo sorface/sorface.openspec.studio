@@ -83,7 +83,6 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
                 onClick={history.show}
                 title={canEdit ? "Показать Git-аннотации и историю файла" : "Сначала выберите Markdown-файл"}
               >◴</IconButton>
-              <IconButton label="Ещё" disabled title="Дополнительные действия пока недоступны">•••</IconButton>
               <button className="save-button" onClick={onWrite} disabled={userReadOnly || !canEdit || !dirty || saving}>
                 {userReadOnly ? "Только просмотр" : saving ? "Запись…" : "Записать в файл"} {!userReadOnly && <span>{saveShortcutLabel}</span>}
               </button>

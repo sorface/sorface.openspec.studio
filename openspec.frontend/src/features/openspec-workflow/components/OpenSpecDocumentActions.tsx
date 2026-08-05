@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { OpenSpecOperationPanel } from "@/features/openspec-workflow/components/OpenSpecOperationPanel";
 import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
@@ -9,24 +9,23 @@ import {
   openSpecDocumentActions,
 } from "@/features/openspec-workflow/model/openspec-action-presentation";
 import {
-  openSpecArtifactRefreshGoal,
   openSpecArtifactRefreshStepLabel,
   openSpecArtifactRefreshStepNumber,
+  openSpecArtifactRefreshStepsForDocument,
 } from "@/features/openspec-workflow/model/artifact-refresh-cascade";
-import type { OpenSpecAction } from "@/features/openspec-workflow/model/openspec-types";
+import type { OpenSpecAction, OpenSpecFileMutation, OpenSpecOperation } from "@/features/openspec-workflow/model/openspec-types";
 import type { EditorFragmentComment } from "@/features/editor/model/fragment-comment";
-import { proposalCommentsGoal } from "@/features/editor/model/fragment-comment";
+import { artifactCommentsGoal } from "@/features/editor/model/fragment-comment";
 
 interface OpenSpecDocumentActionProps {
   controller: OpenSpecWorkflowController;
   change: string;
-  documentArtifact: "proposal" | "design";
+  documentArtifact: "proposal" | "design" | "tasks";
   hasSpecs: boolean;
   documentDirty: boolean;
   documentSaving: boolean;
-  proposalComments: EditorFragmentComment[];
+  documentComments: EditorFragmentComment[];
   onSave: () => Promise<boolean>;
-  onCreateChange: () => void;
   onCommentsSubmitted: () => void;
 }
 
@@ -42,29 +41,16 @@ export function OpenSpecDocumentAction({
   hasSpecs,
   documentDirty,
   documentSaving,
-  proposalComments,
+  documentComments,
   onSave,
-  onCreateChange,
   onCommentsSubmitted,
 }: OpenSpecDocumentActionProps) {
   const [startingArtifact, setStartingArtifact] = useState("");
   const [startError, setStartError] = useState("");
-  const [refreshWarningAction, setRefreshWarningAction] = useState<OpenSpecAction | null>(null);
-  const refreshWarningRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (controller.selectedChange !== change) controller.selectChange(change);
   }, [change, controller]);
-
-  useEffect(() => {
-    if (!refreshWarningAction) return;
-    refreshWarningRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setRefreshWarningAction(null);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [refreshWarningAction]);
 
   const actions = useMemo(() => {
     if (controller.details?.summary.name !== change) return [];
@@ -78,9 +64,12 @@ export function OpenSpecDocumentAction({
   const tasksCreated = controller.details?.summary.name === change && controller.details.artifacts.some((artifact) =>
     artifact.id === "tasks" && artifact.status === "done",
   );
-  const downstreamCreated = designCreated || tasksCreated;
+  const refreshSteps = useMemo(
+    () => openSpecArtifactRefreshStepsForDocument(documentArtifact, designCreated, tasksCreated),
+    [designCreated, documentArtifact, tasksCreated],
+  );
 
-  const disabledFor = (action: OpenSpecAction) => !!startingArtifact || !!refreshWarningAction || documentSaving || controller.pending ||
+  const disabledFor = (action: OpenSpecAction) => !!startingArtifact || documentSaving || controller.pending ||
     operationActive || !controller.agentAvailable || !action.available;
   const titleFor = (action: OpenSpecAction, label: string) => startingArtifact || operationActive
     ? "Подготовка артефакта уже выполняется"
@@ -100,14 +89,16 @@ export function OpenSpecDocumentAction({
     setStartError("");
     try {
       if (documentDirty && !await onSave()) return;
-      if (documentArtifact === "proposal" && downstreamCreated && ["spec", "specs"].includes(action.artifact)) {
-        setRefreshWarningAction(action);
+      const refreshSource = documentArtifact === "proposal"
+        ? ["spec", "specs"].includes(action.artifact)
+        : action.artifact === documentArtifact;
+      const guidance = artifactCommentsGoal(documentComments, documentArtifact);
+      if (refreshSource) {
+        await controller.startArtifactRefresh(change, action.artifact, refreshSteps, guidance);
+        if (guidance) onCommentsSubmitted();
         return;
       }
-      const goal = documentArtifact === "proposal" && hasSpecs && ["spec", "specs"].includes(action.artifact)
-        ? openSpecArtifactRefreshGoal("specs")
-        : defaultOpenSpecActionGoal(action);
-      const guidance = documentArtifact === "proposal" ? proposalCommentsGoal(proposalComments) : "";
+      const goal = defaultOpenSpecActionGoal(action);
       const operation = await controller.runArtifactAction(change, action.artifact, [goal, guidance].filter(Boolean).join("\n\n"));
       if (operation && guidance) onCommentsSubmitted();
     } catch (cause) {
@@ -115,32 +106,6 @@ export function OpenSpecDocumentAction({
     } finally {
       setStartingArtifact("");
     }
-  };
-
-  const startRefreshCascade = async () => {
-    const action = refreshWarningAction;
-    if (!action?.artifact) return;
-    setRefreshWarningAction(null);
-    setStartingArtifact(action.artifact);
-    setStartError("");
-    try {
-      await controller.startArtifactRefresh(
-        change,
-        action.artifact,
-        tasksCreated,
-        proposalCommentsGoal(proposalComments),
-      );
-      if (proposalComments.length) onCommentsSubmitted();
-    } catch (cause) {
-      setStartError(cause instanceof Error ? cause.message : "Не удалось запустить пересогласование артефактов");
-    } finally {
-      setStartingArtifact("");
-    }
-  };
-
-  const createSeparateChange = () => {
-    setRefreshWarningAction(null);
-    onCreateChange();
   };
 
   return (
@@ -165,61 +130,11 @@ export function OpenSpecDocumentAction({
             : documentDirty
               ? `Записать и ${label.toLowerCase()}`
               : label}</span>
-          {documentArtifact === "proposal" && proposalComments.length > 0 && (
-            <b className="proposal-comments-count" aria-label={`Комментариев: ${proposalComments.length}`}>{proposalComments.length}</b>
+          {documentComments.length > 0 && (
+            <b className="proposal-comments-count" aria-label={`Комментариев: ${documentComments.length}`}>{documentComments.length}</b>
           )}
         </button>
       ))}
-      {refreshWarningAction && createPortal((
-        <div
-          className="artifact-refresh-warning-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setRefreshWarningAction(null);
-          }}
-        >
-          <section
-            ref={refreshWarningRef}
-            className="artifact-refresh-warning"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="artifact-refresh-warning-title"
-            tabIndex={-1}
-          >
-            <header>
-              <div>
-                <small>ИЗМЕНЕНИЕ ПЛАНА</small>
-                <h2 id="artifact-refresh-warning-title">Пересогласовать артефакты change?</h2>
-              </div>
-              <button type="button" onClick={() => setRefreshWarningAction(null)} aria-label="Закрыть предупреждение">×</button>
-            </header>
-            <div className="artifact-refresh-warning-body">
-              <p>
-                Для <code>{change}</code> уже создан <code>{tasksCreated ? "tasks.md" : "design.md"}</code>. Обновление proposal повлияет на существующие planning-артефакты.
-              </p>
-              <ol aria-label="Артефакты, которые будут обновлены">
-                <li><b>1</b><span><strong>proposal.md + diff specs</strong><small>Текущий файл и требования будут пересогласованы одним review-набором</small></span></li>
-                <li><b>2</b><span><strong>design.md</strong><small>Техническое решение обновится по новым требованиям</small></span></li>
-                {tasksCreated && <li><b>3</b><span><strong>tasks.md</strong><small>План реализации будет сверён с новым design</small></span></li>}
-              </ol>
-              <div className="artifact-refresh-intent-warning">
-                <b>Проверьте намерение изменения</b>
-                <p>
-                  Если правка меняет исходную цель, scope или ожидаемое поведение, безопаснее создать новый change. Продолжайте здесь только для уточнения текущего намерения.
-                </p>
-              </div>
-              <p className="artifact-refresh-review-note">
-                Каждый этап будет показан отдельно. Следующий начнётся только после принятия и записи предыдущего результата.
-              </p>
-            </div>
-            <footer>
-              <button type="button" className="secondary-button" onClick={() => setRefreshWarningAction(null)}>Отмена</button>
-              <button type="button" className="secondary-button create-change" onClick={createSeparateChange}>Создать новый change</button>
-              <button type="button" className="primary-submit" onClick={() => void startRefreshCascade()}>Принять риск и обновить</button>
-            </footer>
-          </section>
-        </div>
-      ), document.body)}
     </div>
   );
 }
@@ -241,7 +156,7 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
         aria-label={`Показать историю операций изменения ${change}`}
         title="Показать историю операций"
       >
-        <span aria-hidden="true">‹</span>
+        <span aria-hidden="true">Операции</span>
       </button>
     ) : (
       <aside className="document-openspec-review" aria-label={`История операций OpenSpec: ${change}`}>
@@ -255,8 +170,28 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
           <span>
             {controller.artifactRefresh.status === "complete"
               ? "Готовность реализации определяется пунктами tasks.md"
-              : `Этап ${openSpecArtifactRefreshStepNumber(controller.artifactRefresh.current)} из 3 · ${openSpecArtifactRefreshStepLabel(controller.artifactRefresh.current)}`}
+              : `Этап ${openSpecArtifactRefreshStepNumber(controller.artifactRefresh.current, controller.artifactRefresh.steps)} из ${controller.artifactRefresh.steps.length} · ${openSpecArtifactRefreshStepLabel(controller.artifactRefresh.current)}`}
           </span>
+          <ol className="artifact-refresh-stages" aria-label="Стадии обновления артефактов">
+            {controller.artifactRefresh.steps.map((step) => {
+              const completed = controller.artifactRefresh!.completed.includes(step);
+              const current = controller.artifactRefresh!.current === step && controller.artifactRefresh!.status !== "complete";
+              const stageState = completed ? "completed" : current ? "current" : "planned";
+              const stateLabel = completed
+                ? "Выполнено"
+                : current && controller.artifactRefresh!.status === "interrupted"
+                  ? "Остановлено"
+                  : current
+                    ? "Выполняется"
+                    : "Запланировано";
+              return (
+                <li key={step} className={stageState}>
+                  <i aria-hidden="true">{completed ? "✓" : current ? "•" : ""}</i>
+                  <span><strong>{openSpecArtifactRefreshStepLabel(step)}</strong><small>{stateLabel}</small></span>
+                </li>
+              );
+            })}
+          </ol>
           {controller.artifactRefresh.reason && <small>{controller.artifactRefresh.reason}</small>}
           {controller.artifactRefresh.status === "interrupted" && controller.draft?.status !== "accepted" && (
             <button type="button" disabled={controller.pending} onClick={() => void controller.retryArtifactRefresh()}>
@@ -270,38 +205,47 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
         {!controller.operationsLoading && controller.operations.length === 0 && (
           <p>Для этого изменения операций пока нет.</p>
         )}
-        {controller.operations.map((operation) => (
+        {controller.operations.map((operation) => {
+          const changedFiles = openSpecOperationChangedFiles(operation);
+          const artifactKind = openSpecOperationArtifactKind(operation.openspecArtifact);
+          return (
           <button
             type="button"
             role="listitem"
             key={operation.id}
-            className={controller.operation?.id === operation.id ? "active" : ""}
+            className={[
+              controller.operation?.id === operation.id ? "active" : "",
+              operation.provider ? "ai-operation" : "",
+            ].filter(Boolean).join(" ")}
+            data-ai-provider={operation.provider || undefined}
+            data-artifact-kind={artifactKind}
             onClick={() => controller.selectOperation(operation)}
           >
-            <span>{openSpecDocumentOperationLabel(operation.openspecAction, operation.openspecArtifact)}</span>
+            <span className="openspec-operation-artifact">
+              <i aria-hidden="true">{openSpecOperationArtifactSymbol(artifactKind)}</i>
+              {openSpecDocumentOperationLabel(operation.openspecAction, operation.openspecArtifact)}
+            </span>
             <small>{new Intl.DateTimeFormat("ru", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(operation.createdAt))}</small>
             <b data-status={operation.status}>{operationStatusLabel(operation.status)}</b>
-          </button>
-        ))}
-      </div>
-        {selectedOperation && selectedOperation.status !== "accepted" && (
-          <div className="openspec-operation-summary">
-            <div>
-              <strong>{openSpecDocumentOperationLabel(selectedOperation.openspecAction, selectedOperation.openspecArtifact)}</strong>
-              <span>{operationStatusLabel(selectedOperation.status)}</span>
-            </div>
-            {activeOperation?.id === selectedOperation.id && (
-              <p>{controller.operationProgress || "Agent работает…"}</p>
+            {changedFiles.length > 0 && (
+              <span className="openspec-operation-files" aria-label={`Изменено файлов: ${changedFiles.length}`}>
+                <em>{changedFiles.length} {changedFiles.length === 1 ? "файл" : "файла"}</em>
+                {changedFiles.map((mutation, index) => (
+                  <span key={`${mutation.type}-${mutation.previousPath || ""}-${mutation.path}-${index}`}>
+                    <i data-mutation={mutation.type} aria-hidden="true">{openSpecMutationSymbol(mutation.type)}</i>
+                    <code title={mutation.previousPath ? `${mutation.previousPath} → ${mutation.path}` : mutation.path}>
+                      {mutation.previousPath
+                        ? `${openSpecFileName(mutation.previousPath)} → ${openSpecFileName(mutation.path)}`
+                        : openSpecFileName(mutation.path)}
+                    </code>
+                  </span>
+                ))}
+              </span>
             )}
-            <button
-              type="button"
-              className="openspec-operation-view-button"
-              onClick={() => controller.setOperationDialogOpen(true)}
-            >
-              Просмотреть результат
-            </button>
-          </div>
-        )}
+          </button>
+          );
+        })}
+      </div>
       </aside>
     )}
     {controller.operationDialogOpen && selectedOperation && createPortal((
@@ -325,6 +269,38 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
 function openSpecDocumentOperationLabel(action: string, artifact?: string): string {
   if (artifact) return artifact.endsWith(".md") ? artifact : `${artifact}.md`;
   return action === "create_change" ? "Создание change" : action === "explore" ? "Исследование" : action;
+}
+
+type OpenSpecOperationArtifactKind = "proposal" | "specs" | "design" | "tasks" | "other";
+
+function openSpecOperationArtifactKind(artifact?: string): OpenSpecOperationArtifactKind {
+  if (artifact === "spec" || artifact === "specs") return "specs";
+  if (artifact === "proposal" || artifact === "design" || artifact === "tasks") return artifact;
+  return "other";
+}
+
+function openSpecOperationArtifactSymbol(kind: OpenSpecOperationArtifactKind): string {
+  return ({ proposal: "P", specs: "S", design: "D", tasks: "T", other: "·" })[kind];
+}
+
+function openSpecOperationChangedFiles(operation: OpenSpecOperation): OpenSpecFileMutation[] {
+  if (!operation.result) return [];
+  try {
+    const parsed = JSON.parse(operation.result) as { files?: OpenSpecFileMutation[] };
+    return Array.isArray(parsed.files)
+      ? parsed.files.filter((file) => file && typeof file.path === "string" && file.path.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function openSpecMutationSymbol(type: OpenSpecFileMutation["type"]): string {
+  return type === "create" ? "+" : type === "delete" ? "−" : type === "rename" ? "→" : "~";
+}
+
+function openSpecFileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
 }
 
 function operationStatusLabel(status: string): string {

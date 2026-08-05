@@ -2,7 +2,12 @@
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
+import {
+  mapEditorCommentRanges,
+  type EditorCommentRange,
+  type EditorFragmentComment,
+  type EditorTextSelection,
+} from "@/features/editor/model/fragment-comment";
 import { historyShortcut } from "@/features/system/model/platform-shortcuts";
 
 interface RichMarkdownEditorProps {
@@ -105,6 +110,7 @@ export function RichMarkdownEditor({
     let removeSelectionListener: (() => void) | undefined;
     let headingSelectorObserver: MutationObserver | undefined;
     let commentSlotFrame: number | undefined;
+    let scheduleCommentSlots: () => void = () => undefined;
 
     async function initialize() {
       const root = rootRef.current;
@@ -128,44 +134,54 @@ export function RichMarkdownEditor({
         ]);
         if (disposed) return;
 
-        const commentsKey = new PluginKey("editor-fragment-comments");
-        const commentsPlugin = $prose(() => new Plugin({
+        const createCommentDecorations = (doc: Parameters<typeof DecorationSet.create>[0], ranges: EditorCommentRange[]) => {
+          const inlineDecorations = ranges.flatMap((range) => range.from < range.to ? [Decoration.inline(
+            range.from,
+            range.to,
+            {
+              class: `editor-comment-highlight${range.draft ? " editor-comment-highlight-draft" : ""}`,
+              "data-comment-id": range.id,
+            },
+          )] : []);
+          const anchors = new Map<string, { to: number; draft?: boolean }>();
+          for (const range of ranges) {
+            const currentAnchor = anchors.get(range.id);
+            if (!currentAnchor || range.to > currentAnchor.to) anchors.set(range.id, { to: range.to, draft: range.draft });
+          }
+          const widgets = Array.from(anchors, ([id, anchor]) => Decoration.widget(anchor.to, () => {
+            const slot = document.createElement("span");
+            slot.className = `editor-inline-comment-slot${anchor.draft ? " draft" : ""}`;
+            slot.dataset.commentSlot = id;
+            slot.contentEditable = "false";
+            return slot;
+          }, {
+            key: `comment-slot-${id}`,
+            side: -1,
+            stopEvent: (event) => event.target instanceof Element && Boolean(event.target.closest(".editor-inline-comment-panel")),
+          }));
+          return DecorationSet.create(doc, [...inlineDecorations, ...widgets]);
+        };
+        const commentsKey = new PluginKey<{ decorations: InstanceType<typeof DecorationSet>; ranges: EditorCommentRange[] }>("editor-fragment-comments");
+        const commentsPlugin = $prose(() => new Plugin<{ decorations: InstanceType<typeof DecorationSet>; ranges: EditorCommentRange[] }>({
           key: commentsKey,
           state: {
-            init: () => DecorationSet.empty,
+            init: () => ({ decorations: DecorationSet.empty, ranges: [] }),
             apply: (transaction, current) => {
-              const ranges = transaction.getMeta(commentsKey) as Array<{ id: string; from: number; to: number; draft?: boolean }> | undefined;
-              if (ranges === undefined) return current.map(transaction.mapping, transaction.doc);
-              const inlineDecorations = ranges.map((range) => Decoration.inline(
-                range.from,
-                range.to,
-                {
-                  class: `editor-comment-highlight${range.draft ? " editor-comment-highlight-draft" : ""}`,
-                  "data-comment-id": range.id,
-                },
-              ));
-              const anchors = new Map<string, { to: number; draft?: boolean }>();
-              for (const range of ranges) {
-                const currentAnchor = anchors.get(range.id);
-                if (!currentAnchor || range.to > currentAnchor.to) anchors.set(range.id, { to: range.to, draft: range.draft });
-              }
-              const widgets = Array.from(anchors, ([id, anchor]) => Decoration.widget(anchor.to, () => {
-                const slot = document.createElement("span");
-                slot.className = `editor-inline-comment-slot${anchor.draft ? " draft" : ""}`;
-                slot.dataset.commentSlot = id;
-                slot.contentEditable = "false";
-                return slot;
-              }, {
-                key: `comment-slot-${id}`,
-                side: -1,
-                stopEvent: (event) => event.target instanceof Element && Boolean(event.target.closest(".editor-inline-comment-panel")),
-              }));
-              return DecorationSet.create(transaction.doc, [...inlineDecorations, ...widgets]);
+              const incoming = transaction.getMeta(commentsKey) as EditorCommentRange[] | undefined;
+              const ranges = incoming ?? mapEditorCommentRanges(
+                current.ranges,
+                (position, association) => transaction.mapping.map(position, association),
+                transaction.doc.content.size,
+              );
+              return { decorations: createCommentDecorations(transaction.doc, ranges), ranges };
             },
           },
           props: {
-            decorations: (state) => commentsKey.getState(state),
+            decorations: (state) => commentsKey.getState(state)?.decorations ?? DecorationSet.empty,
           },
+          view: () => ({
+            update: () => scheduleCommentSlots(),
+          }),
         }));
 
         const editor = new Crepe({
@@ -246,9 +262,14 @@ export function RichMarkdownEditor({
             }
             slots[slot.dataset.commentSlot] = slot;
           }
-          setCommentSlotTargets(slots);
+          setCommentSlotTargets((current) => {
+            const ids = Object.keys(slots);
+            return ids.length === Object.keys(current).length && ids.every((id) => current[id] === slots[id])
+              ? current
+              : slots;
+          });
         };
-        const scheduleCommentSlots = () => {
+        scheduleCommentSlots = () => {
           if (commentSlotFrame !== undefined) window.cancelAnimationFrame(commentSlotFrame);
           commentSlotFrame = window.requestAnimationFrame(() => {
             commentSlotFrame = window.requestAnimationFrame(syncCommentSlots);
@@ -256,6 +277,7 @@ export function RichMarkdownEditor({
         };
         showCommentsRef.current = (nextComments) => editor.editor.action((context) => {
           const view = context.get(editorViewCtx);
+          const existingRanges = commentsKey.getState(view.state)?.ranges ?? [];
           const entries = draftSelectionRef.current
             ? [...nextComments, { id: "draft-comment", selection: draftSelectionRef.current, text: "", createdAt: "" }]
             : nextComments;
@@ -263,6 +285,12 @@ export function RichMarkdownEditor({
             const { from, to, text } = comment.selection;
             const needle = text.trim();
             if (!needle) return [];
+            const preserveAnchor = (): EditorCommentRange[] => {
+              const current = existingRanges.filter((range) => range.id === comment.id);
+              if (current.length) return current;
+              const fallback = Math.max(0, Math.min(view.state.doc.content.size, to ?? from ?? view.state.doc.content.size));
+              return [{ id: comment.id, from: fallback, to: fallback, draft: comment.id === "draft-comment" }];
+            };
             if (from !== undefined && to !== undefined && from < to && to <= view.state.doc.content.size &&
               view.state.doc.textBetween(from, to, "\n").trim() === needle) {
               return [{ id: comment.id, from, to, draft: comment.id === "draft-comment" }];
@@ -290,13 +318,14 @@ export function RichMarkdownEditor({
             const matchIndex = normalizedDocument.indexOf(normalizedNeedle);
             const lastMatchIndex = normalizedDocument.lastIndexOf(normalizedNeedle);
             if (matchIndex < 0 || matchIndex !== lastMatchIndex) {
-              if (normalizedNeedle.length < 80) return [];
-              return textNodes.flatMap((textNode) => {
+              if (normalizedNeedle.length < 80) return preserveAnchor();
+              const partialRanges = textNodes.flatMap((textNode) => {
                 const normalizedText = textNode.text.trim().replace(/\s+/g, " ");
                 return normalizedText.length >= 3 && normalizedNeedle.includes(normalizedText)
                   ? [{ id: comment.id, from: textNode.from, to: textNode.to, draft: comment.id === "draft-comment" }]
                   : [];
               });
+              return partialRanges.length ? partialRanges : preserveAnchor();
             }
             const fallbackRanges: Array<{ id: string; from: number; to: number; nodeIndex: number }> = [];
             for (const character of normalizedCharacters.slice(matchIndex, matchIndex + normalizedNeedle.length)) {
@@ -368,6 +397,7 @@ export function RichMarkdownEditor({
           headingSelectorObserver?.disconnect();
           window.removeEventListener("resize", handleCommentSlotResize);
           if (commentSlotFrame !== undefined) window.cancelAnimationFrame(commentSlotFrame);
+          scheduleCommentSlots = () => undefined;
           root.removeEventListener("keydown", handleHistoryShortcut, true);
           editor.destroy();
           return;
@@ -377,6 +407,7 @@ export function RichMarkdownEditor({
           headingSelectorObserver?.disconnect();
           window.removeEventListener("resize", handleCommentSlotResize);
           if (commentSlotFrame !== undefined) window.cancelAnimationFrame(commentSlotFrame);
+          scheduleCommentSlots = () => undefined;
           root.removeEventListener("keydown", handleHistoryShortcut, true);
           showCommentsRef.current = () => undefined;
           setToolbarTarget((current) => current === nextToolbarTarget ? null : current);

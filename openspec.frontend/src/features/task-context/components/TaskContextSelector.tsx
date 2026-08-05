@@ -98,15 +98,15 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
           setOpen((current) => !current);
         }}
       >
+        <svg className={`task-context-chevron ${open ? "open" : ""}`} viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
+        <b className="task-context-branch">{controller.switching ? "Переключаем…" : active?.branch || "Выбрать задачу"}</b>
+        {active?.dirty && <i className="task-dirty-dot" aria-hidden="true" />}
         <svg className="task-branch-icon" viewBox="0 0 16 16" aria-hidden="true">
           <circle cx="4" cy="3" r="1.5" />
           <circle cx="12" cy="5" r="1.5" />
           <circle cx="4" cy="13" r="1.5" />
           <path d="M4 4.5v7M5.5 10h1A5.5 5.5 0 0 0 12 6.5" />
         </svg>
-        <b className="task-context-branch">{controller.switching ? "Переключаем…" : active?.branch || "Выбрать задачу"}</b>
-        {active?.dirty && <i className="task-dirty-dot" aria-hidden="true" />}
-        <svg className={`task-context-chevron ${open ? "open" : ""}`} viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
       </button>
 
       {open && (
@@ -130,6 +130,32 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
               {controller.error.correlationId && <small>Код: {controller.error.correlationId}</small>}
             </div>
           )}
+          <div className="task-context-actions" aria-label="Действия текущей ветки">
+            <button
+              type="button"
+              disabled={actionDisabled}
+              title={controller.syncing ? "Получаем изменения…" : "Получить изменения текущей ветки из remote"}
+              onClick={() => {
+                setOpen(false);
+                onReceive();
+              }}
+            >
+              <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 3.2v9.2m0 0 3.3-3.3M9 12.4 5.7 9.1M4 13v.5A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5V13" /></svg>
+              <span>Получить изменения</span>
+            </button>
+            <button
+              type="button"
+              disabled={actionDisabled}
+              title={controller.preparing ? "Готовим публикацию…" : "Опубликовать OpenSpec-артефакты текущей ветки"}
+              onClick={() => {
+                setOpen(false);
+                onPublish();
+              }}
+            >
+              <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 12.8V3.6m0 0L5.7 6.9M9 3.6l3.3 3.3M4 11.4v2.1A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-2.1" /></svg>
+              <span>Опубликовать изменения</span>
+            </button>
+          </div>
           {(localChoices.length > 0 || remoteChoices.length > 0) && (
             <div className="task-context-list">
               {localChoices.length > 0 && <small>Локальные ветки</small>}
@@ -161,32 +187,6 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
               ))}
             </div>
           )}
-          <div className="task-context-actions" aria-label="Действия текущей задачи">
-            <button
-              type="button"
-              disabled={actionDisabled}
-              title={controller.syncing ? "Получаем изменения…" : "Получить изменения текущей задачи из remote"}
-              onClick={() => {
-                setOpen(false);
-                onReceive();
-              }}
-            >
-              <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 3.2v9.2m0 0 3.3-3.3M9 12.4 5.7 9.1M4 13v.5A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5V13" /></svg>
-              <span>Получить изменения</span>
-            </button>
-            <button
-              type="button"
-              disabled={actionDisabled}
-              title={controller.preparing ? "Готовим публикацию…" : "Опубликовать OpenSpec-артефакты текущей задачи"}
-              onClick={() => {
-                setOpen(false);
-                onPublish();
-              }}
-            >
-              <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 12.8V3.6m0 0L5.7 6.9M9 3.6l3.3 3.3M4 11.4v2.1A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-2.1" /></svg>
-              <span>Опубликовать изменения</span>
-            </button>
-          </div>
         </div>
       )}
     </div>

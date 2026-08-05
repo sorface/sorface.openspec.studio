@@ -1,7 +1,7 @@
 export type ViewMode = "edit" | "preview" | "split";
 
 
-export type WorkspaceMode = "documents" | "context" | "openspec";
+export type WorkspaceMode = "documents" | "context";
 
 export interface WorkspaceFile {
   id: string;

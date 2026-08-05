@@ -1,4 +1,5 @@
 export type OpenSpecArtifactRefreshStep = "specs" | "design" | "tasks";
+export type OpenSpecPlanningDocumentArtifact = "proposal" | "design" | "tasks";
 export type OpenSpecArtifactRefreshStatus = "active" | "interrupted" | "complete";
 
 export interface OpenSpecArtifactRefreshCascade {
@@ -8,7 +9,7 @@ export interface OpenSpecArtifactRefreshCascade {
   completed: OpenSpecArtifactRefreshStep[];
   status: OpenSpecArtifactRefreshStatus;
   specsArtifact: "spec" | "specs";
-  proposalGuidance?: string;
+  guidance?: string;
   operationId?: string;
   reason?: string;
 }
@@ -25,6 +26,20 @@ export const openSpecArtifactRefreshSteps: OpenSpecArtifactRefreshStep[] = [
   "tasks",
 ];
 
+export function openSpecArtifactRefreshStepsForDocument(
+  artifact: OpenSpecPlanningDocumentArtifact,
+  designExists: boolean,
+  tasksExists: boolean,
+): OpenSpecArtifactRefreshStep[] {
+  if (artifact === "tasks") return ["tasks"];
+  if (artifact === "design") return tasksExists ? ["design", "tasks"] : ["design"];
+  return [
+    "specs",
+    ...(designExists ? ["design" as const] : []),
+    ...(tasksExists ? ["tasks" as const] : []),
+  ];
+}
+
 export function normalizeOpenSpecArtifactRefreshStep(
   artifact?: string,
 ): OpenSpecArtifactRefreshStep | null {
@@ -35,18 +50,20 @@ export function normalizeOpenSpecArtifactRefreshStep(
 
 export function createOpenSpecArtifactRefreshCascade(
   change: string,
-  specsArtifact: string,
-  includeTasks = true,
-  proposalGuidance = "",
+  artifact: string,
+  steps: OpenSpecArtifactRefreshStep[],
+  guidance = "",
 ): OpenSpecArtifactRefreshCascade {
+  const current = normalizeOpenSpecArtifactRefreshStep(artifact) ?? "specs";
+  const normalizedSteps = steps.length ? steps : [current];
   return {
     change,
-    current: "specs",
-    steps: includeTasks ? openSpecArtifactRefreshSteps : openSpecArtifactRefreshSteps.slice(0, 2),
+    current,
+    steps: normalizedSteps,
     completed: [],
     status: "active",
-    specsArtifact: specsArtifact === "spec" ? "spec" : "specs",
-    ...(proposalGuidance ? { proposalGuidance } : {}),
+    specsArtifact: artifact === "spec" ? "spec" : "specs",
+    ...(guidance ? { guidance } : {}),
   };
 }
 
@@ -126,8 +143,8 @@ export function openSpecArtifactRefreshGoal(step: OpenSpecArtifactRefreshStep): 
 
 export function openSpecArtifactRefreshCascadeGoal(cascade: OpenSpecArtifactRefreshCascade): string {
   const goal = openSpecArtifactRefreshGoal(cascade.current);
-  return cascade.current === "specs" && cascade.proposalGuidance
-    ? `${goal}\n\n${cascade.proposalGuidance}`
+  return cascade.current === cascade.steps[0] && cascade.guidance
+    ? `${goal}\n\n${cascade.guidance}`
     : goal;
 }
 

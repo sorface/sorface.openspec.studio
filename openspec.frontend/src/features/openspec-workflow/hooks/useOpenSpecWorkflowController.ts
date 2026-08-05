@@ -18,6 +18,7 @@ import {
 } from "@/features/openspec-workflow/api/openspec-client";
 import {
   isOpenSpecOperationTerminal,
+  openSpecOperationShouldAutoApply,
   openSpecViewStatus,
   reduceOpenSpecOperationStatus,
 } from "@/features/openspec-workflow/model/openspec-state";
@@ -29,8 +30,10 @@ import {
   openSpecArtifactRefreshActionArtifact,
   openSpecArtifactRefreshCascadeGoal,
   openSpecArtifactRefreshMatchesOperation,
+  openSpecArtifactRefreshSteps,
   resumeOpenSpecArtifactRefreshCascade,
   type OpenSpecArtifactRefreshCascade,
+  type OpenSpecArtifactRefreshStep,
 } from "@/features/openspec-workflow/model/artifact-refresh-cascade";
 import type {
   OpenSpecAction,
@@ -78,7 +81,7 @@ export interface OpenSpecWorkflowController {
   deleteChange: (confirmation: string) => Promise<void>;
   runAction: (action: OpenSpecAction, goal: string) => Promise<void>;
   runArtifactAction: (change: string, artifact: string, goal: string) => Promise<OpenSpecOperation | undefined>;
-  startArtifactRefresh: (change: string, specsArtifact: string, includeTasks: boolean, proposalGuidance?: string) => Promise<void>;
+  startArtifactRefresh: (change: string, artifact: string, steps: OpenSpecArtifactRefreshStep[], guidance?: string) => Promise<void>;
   retryArtifactRefresh: () => Promise<void>;
   respondToClarification: (answers: Record<string, string[]>) => Promise<void>;
   repeatWithFeedback: (comments: string[]) => Promise<boolean>;
@@ -151,7 +154,7 @@ export function useOpenSpecWorkflowController(
   const [operation, setOperation] = useState<OpenSpecOperation | null>(null);
   const [operations, setOperations] = useState<OpenSpecOperation[]>([]);
   const [operationsLoading, setOperationsLoading] = useState(false);
-  const [operationsPanelOpen, setOperationsPanelOpen] = useState(true);
+  const [operationsPanelOpen, setOperationsPanelOpen] = useState(false);
   const [operationDialogOpen, setOperationDialogOpen] = useState(false);
   const [draft, setDraft] = useState<OpenSpecDraftSet | null>(null);
   const [status, setStatus] = useState<OpenSpecViewStatus>(projectId ? "loading" : "idle");
@@ -164,6 +167,7 @@ export function useOpenSpecWorkflowController(
   const [error, setError] = useState<ApiError | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
   const operationStartInFlight = useRef(false);
+  const automaticallyAppliedOperationIds = useRef(new Set<string>());
 
   useEffect(() => {
     if (!projectId) {
@@ -194,7 +198,7 @@ export function useOpenSpecWorkflowController(
       setOperation(null);
       setOperations([]);
       setDraft(null);
-      setOperationsPanelOpen(true);
+      setOperationsPanelOpen(false);
       setOperationDialogOpen(false);
       setOperationProgress("");
       setOperationActivity([]);
@@ -367,8 +371,9 @@ export function useOpenSpecWorkflowController(
     } finally {
       setPending(false);
     }
+    const artifactAliases = artifact === "spec" || artifact === "specs" ? ["spec", "specs"] : [artifact];
     const action = latest.actions.find((candidate) =>
-      candidate.artifact === artifact &&
+      artifactAliases.includes(candidate.artifact ?? "") &&
       (candidate.kind === "prepare_artifact" || candidate.kind === "fix_artifact"),
     );
     if (!action?.available) {
@@ -382,7 +387,7 @@ export function useOpenSpecWorkflowController(
     return execute({
       kind: action.kind,
       change,
-      artifact,
+      artifact: action.artifact ?? artifact,
       goal,
       provider,
       model,
@@ -449,8 +454,8 @@ export function useOpenSpecWorkflowController(
     }
   }, [operation, projectId, runArtifactAction]);
 
-  const startArtifactRefresh = useCallback(async (change: string, specsArtifact: string, includeTasks: boolean, proposalGuidance = "") => {
-    const initial = createOpenSpecArtifactRefreshCascade(change, specsArtifact, includeTasks, proposalGuidance);
+  const startArtifactRefresh = useCallback(async (change: string, artifact: string, steps: OpenSpecArtifactRefreshStep[], guidance = "") => {
+    const initial = createOpenSpecArtifactRefreshCascade(change, artifact, steps, guidance);
     setArtifactRefresh(initial);
     try {
       const nextOperation = await runArtifactAction(
@@ -460,7 +465,7 @@ export function useOpenSpecWorkflowController(
       );
       if (!nextOperation) {
         setArtifactRefresh((current) => current?.status === "active"
-          ? interruptOpenSpecArtifactRefreshCascade(current, "Операция обновления specs не запущена")
+          ? interruptOpenSpecArtifactRefreshCascade(current, `Операция обновления ${initial.current} не запущена`)
           : current);
         return;
       }
@@ -592,7 +597,6 @@ export function useOpenSpecWorkflowController(
           setOperationProgress(message);
           setOperationActivity((current) => appendOperationActivity(current, message));
         }
-        if (name === "awaiting_review") setOperationDialogOpen(true);
         void refreshOperation();
       });
     });
@@ -641,25 +645,6 @@ export function useOpenSpecWorkflowController(
     }) ? interruptOpenSpecArtifactRefreshCascade(current!, "Операция отменена пользователем") : current);
   }, [operation, projectId]);
 
-  const accept = useCallback(async () => {
-    if (!projectId || operation?.status !== "awaiting_review") return false;
-    setPending(true);
-    setError(null);
-    try {
-      setDraft(await acceptOpenSpecOperation(projectId, operation.id));
-      setOperation((current) => current ? { ...current, status: "accepted" } : current);
-      setOperations((current) => operation
-        ? upsertOperation(current, { ...operation, status: "accepted" })
-        : current);
-      return true;
-    } catch (cause) {
-      setError(toApiError(cause, "Результат не принят"));
-      return false;
-    } finally {
-      setPending(false);
-    }
-  }, [operation, projectId]);
-
   const reject = useCallback(async () => {
     if (!projectId || operation?.status !== "awaiting_review") return;
     const next = await rejectOpenSpecOperation(projectId, operation.id);
@@ -673,25 +658,53 @@ export function useOpenSpecWorkflowController(
     }) ? interruptOpenSpecArtifactRefreshCascade(current!, "Результат текущего этапа отклонён") : current);
   }, [operation, projectId]);
 
-  const write = useCallback(async () => {
-    if (!projectId || !draft) return false;
-    setPending(true);
+  const writeDraftToStore = useCallback(async (
+    acceptedDraft: OpenSpecDraftSet,
+    acceptedOperation: OpenSpecOperation | null,
+  ) => {
+    if (!projectId) return false;
     try {
-      const writtenDraft = await writeOpenSpecDraft(projectId, draft.id);
+      const writtenDraft = await writeOpenSpecDraft(projectId, acceptedDraft.id);
       setDraft(writtenDraft);
-      if (operation?.openspecAction === "create_change" && operation.openspecChange) {
-        setSelectedChange(operation.openspecChange);
+      if (acceptedOperation?.openspecAction === "create_change" && acceptedOperation.openspecChange) {
+        setSelectedChange(acceptedOperation.openspecChange);
       }
       setValidation(null);
       setValidationStatus("idle");
-      onStoreChanged?.(operation ?? undefined);
+      onStoreChanged?.(acceptedOperation ?? undefined);
+      if (acceptedOperation?.openspecAction === "create_change" && acceptedOperation.openspecChange) {
+        const initial = createOpenSpecArtifactRefreshCascade(
+          acceptedOperation.openspecChange,
+          "specs",
+          openSpecArtifactRefreshSteps,
+        );
+        setArtifactRefresh(initial);
+        try {
+          const nextOperation = await runArtifactAction(
+            initial.change,
+            openSpecArtifactRefreshActionArtifact(initial),
+            openSpecArtifactRefreshCascadeGoal(initial),
+          );
+          setArtifactRefresh((current) => current?.status === "active" && current.change === initial.change
+            ? bindOpenSpecArtifactRefreshOperation(current, nextOperation?.id)
+            : current);
+        } catch (cause) {
+          setArtifactRefresh((current) => current?.status === "active" && current.change === initial.change
+            ? interruptOpenSpecArtifactRefreshCascade(
+              current,
+              cause instanceof Error ? cause.message : "Подготовка полного плана не запущена",
+            )
+            : current);
+        }
+        return true;
+      }
       const refreshForWrite = artifactRefresh?.status === "interrupted"
         ? resumeOpenSpecArtifactRefreshCascade(artifactRefresh)
         : artifactRefresh;
       const advancesArtifactRefresh = openSpecArtifactRefreshMatchesOperation(refreshForWrite, {
-        id: operation?.id,
-        change: operation?.openspecChange,
-        artifact: operation?.openspecArtifact,
+        id: acceptedOperation?.id,
+        change: acceptedOperation?.openspecChange,
+        artifact: acceptedOperation?.openspecArtifact,
       }, true);
       if (advancesArtifactRefresh) {
         const nextCascade = advanceOpenSpecArtifactRefreshCascade(refreshForWrite!);
@@ -722,18 +735,60 @@ export function useOpenSpecWorkflowController(
       }
       return true;
     } catch (cause) {
+      setDraft(acceptedDraft);
       const nextError = toApiError(cause, "Draft не записан в Store");
       setError(nextError);
       setArtifactRefresh((current) => openSpecArtifactRefreshMatchesOperation(current, {
-        id: operation?.id,
-        change: operation?.openspecChange,
-        artifact: operation?.openspecArtifact,
+        id: acceptedOperation?.id,
+        change: acceptedOperation?.openspecChange,
+        artifact: acceptedOperation?.openspecArtifact,
       }) ? interruptOpenSpecArtifactRefreshCascade(current!, nextError.message) : current);
+      return false;
+    }
+  }, [artifactRefresh, onStoreChanged, projectId, runArtifactAction]);
+
+  const accept = useCallback(async () => {
+    if (!projectId || operation?.status !== "awaiting_review") return false;
+    setPending(true);
+    setError(null);
+    try {
+      const acceptedDraft = await acceptOpenSpecOperation(projectId, operation.id);
+      const acceptedOperation: OpenSpecOperation = { ...operation, status: "accepted" };
+      setOperation(acceptedOperation);
+      setOperations((current) => upsertOperation(current, acceptedOperation));
+      return await writeDraftToStore(acceptedDraft, acceptedOperation);
+    } catch (cause) {
+      setError(toApiError(cause, "Результат не принят"));
       return false;
     } finally {
       setPending(false);
     }
-  }, [artifactRefresh, draft, onStoreChanged, operation, projectId, runArtifactAction]);
+  }, [operation, projectId, writeDraftToStore]);
+
+  useEffect(() => {
+    if (operation?.status !== "awaiting_review" || !operation.result) return;
+    if (!openSpecOperationShouldAutoApply(operation)) {
+      setOperationDialogOpen(true);
+      return;
+    }
+    if (automaticallyAppliedOperationIds.current.has(operation.id)) return;
+    automaticallyAppliedOperationIds.current.add(operation.id);
+    setOperationDialogOpen(false);
+    void accept().then((applied) => {
+      if (!applied) setOperationDialogOpen(true);
+    });
+  }, [accept, operation]);
+
+  const write = useCallback(async () => {
+    if (!draft) return false;
+    setPending(true);
+    setError(null);
+    try {
+      return await writeDraftToStore(draft, operation);
+    } finally {
+      setPending(false);
+    }
+  }, [draft, operation, writeDraftToStore]);
 
   useEffect(() => {
     if (!operation || !["failed", "cancelled", "rejected"].includes(operation.status)) return;
@@ -749,21 +804,23 @@ export function useOpenSpecWorkflowController(
 
   const selectChange = useCallback((change: string) => {
     setSelectedChange(change);
-    setOperationsPanelOpen(true);
     setOperationDialogOpen(false);
     setValidation(null);
     setValidationStatus("idle");
   }, []);
 
   const selectOperation = useCallback((next: OpenSpecOperation) => {
+    const selectsCurrentOperation = operation?.id === next.id;
     setOperation(next);
-    setDraft(null);
-    setOperationProgress("");
-    setOperationActivity([]);
-    setOperationElapsedSeconds(0);
-    setError(null);
+    if (!selectsCurrentOperation) {
+      setDraft(null);
+      setOperationProgress("");
+      setOperationActivity([]);
+      setOperationElapsedSeconds(0);
+      setError(null);
+    }
     setOperationDialogOpen(true);
-  }, []);
+  }, [operation?.id]);
 
   const resetOperation = useCallback(() => {
     setOperation(null);

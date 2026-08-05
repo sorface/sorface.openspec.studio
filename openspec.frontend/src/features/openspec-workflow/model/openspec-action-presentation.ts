@@ -37,7 +37,7 @@ export function openSpecActionLabel(action: OpenSpecAction): string {
 export function openSpecDocumentActions(
   details: OpenSpecChangeDetails,
   hasSpecs: boolean,
-  documentArtifact: "proposal" | "design" = "proposal",
+  documentArtifact: "proposal" | "design" | "tasks" = "proposal",
 ): OpenSpecDocumentActionPresentation[] {
   const actionFor = (...artifacts: string[]) => details.actions.find((candidate) =>
     artifacts.includes(candidate.artifact ?? "") &&
@@ -51,12 +51,13 @@ export function openSpecDocumentActions(
   const design = actionFor("design");
   const tasks = actionFor("tasks");
 
-  if (documentArtifact === "design") {
-    if (!specsDone || !artifactDone("design") || !tasks) return [];
+  if (documentArtifact === "design" || documentArtifact === "tasks") {
+    const action = documentArtifact === "design" ? design : tasks;
+    if (!artifactDone(documentArtifact) || !action) return [];
     return [{
-      action: tasks,
-      label: artifactDone("tasks") ? "Обновить tasks.md" : "Создать tasks.md",
-      primary: true,
+      action,
+      label: "Обновить",
+      primary: false,
     }];
   }
 

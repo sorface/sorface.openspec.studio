@@ -8,7 +8,7 @@ import { proposalCommentsStorageKey } from "@/features/editor/model/fragment-com
 import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
-import { OpenSpecPanel } from "@/features/openspec-workflow/components/OpenSpecPanel";
+import { OpenSpecChangeCreationPage } from "@/features/openspec-workflow/components/OpenSpecChangeCreationPage";
 import {
   OpenSpecDocumentAction,
   OpenSpecDocumentReview,
@@ -23,7 +23,6 @@ import { RepositoriesPanel } from "@/features/repositories/components/Repositori
 import { AgentCliPanel } from "./AgentCliPanel";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ProjectLoadingLanding } from "./ProjectLoadingLanding";
-import { WorkspaceFooter } from "./WorkspaceFooter";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import type { ViewMode, WorkspaceMode } from "@/features/workspace/model/workspace-types";
@@ -39,13 +38,13 @@ import {
 
 interface ChangeDocumentContext {
   change: string;
-  artifact: "proposal" | "design";
+  artifact: "proposal" | "design" | "tasks";
 }
 
 const DOCUMENT_AUTOSAVE_DELAY_MS = 3_000;
 
 function changeDocumentContextFromPath(path: string | null): ChangeDocumentContext | null {
-  const match = path?.match(/^openspec\/changes\/([^/]+)\/(proposal|design)\.md$/);
+  const match = path?.match(/^openspec\/changes\/([^/]+)\/(proposal|design|tasks)\.md$/);
   if (!match) return null;
   return { change: match[1], artifact: match[2] as ChangeDocumentContext["artifact"] };
 }
@@ -97,11 +96,13 @@ export function OpenSpecWorkspace() {
   }, []);
 
   const refreshStoreState = useCallback((operation?: { openspecChange?: string; openspecArtifact?: string }) => {
-    const expectedPath = operation?.openspecChange
-      ? `openspec/changes/${operation.openspecChange}/proposal.md`
+    const operationArtifact = ["spec", "specs"].includes(operation?.openspecArtifact ?? "")
+      ? "proposal"
+      : operation?.openspecArtifact;
+    const expectedPath = operation?.openspecChange && operationArtifact
+      ? `openspec/changes/${operation.openspecChange}/${operationArtifact}.md`
       : "";
-    if (pendingCommentUpdatePath.current && expectedPath === pendingCommentUpdatePath.current &&
-      ["spec", "specs"].includes(operation?.openspecArtifact ?? "")) {
+    if (pendingCommentUpdatePath.current && expectedPath === pendingCommentUpdatePath.current) {
       clearFragmentComments(pendingCommentUpdatePath.current);
       pendingCommentUpdatePath.current = "";
     }
@@ -266,12 +267,18 @@ export function OpenSpecWorkspace() {
   }, []);
 
   const addOpenSpecChange = useCallback(() => {
-    setWorkspaceMode("openspec");
+    setWorkspaceMode("documents");
     setOpenSpecCreationPageOpen(true);
+  }, []);
+
+  const changeWorkspaceMode = useCallback((mode: WorkspaceMode) => {
+    setOpenSpecCreationPageOpen(false);
+    setWorkspaceMode(mode);
   }, []);
 
   const openCreatedChange = useCallback((proposalPath: string) => {
     setPendingDocumentPath(proposalPath);
+    setOpenSpecCreationPageOpen(false);
     setWorkspaceMode("documents");
   }, []);
 
@@ -299,23 +306,23 @@ export function OpenSpecWorkspace() {
         <WorkspaceSidebar
           key={projects.activeProject?.id ?? "no-project"}
           documents={documents}
+          hideDocumentTree={openSpecCreationPageOpen}
           onClose={() => setLeftOpen(false)}
           repositories={repositories}
           projectSelected={!!projects.activeProject}
           workspaceMode={activeWorkspaceMode}
-          onWorkspaceModeChange={setWorkspaceMode}
+          onWorkspaceModeChange={changeWorkspaceMode}
           onAddOpenSpecChange={addOpenSpecChange}
         />
         {!leftOpen && <button className="open-panel left" onClick={() => setLeftOpen(true)}>›</button>}
 
         {activeWorkspaceMode === "context" ? (
           <RepositoriesPanel controller={repositories} enabled={!!projects.activeProject} />
-        ) : activeWorkspaceMode === "openspec" ? (
-          <OpenSpecPanel
+        ) : openSpecCreationPageOpen ? (
+          <OpenSpecChangeCreationPage
             controller={openSpec}
             projectId={projects.activeProject?.id}
-            creationPageOpen={openSpecCreationPageOpen}
-            onCreationPageOpenChange={setOpenSpecCreationPageOpen}
+            onClose={() => setOpenSpecCreationPageOpen(false)}
             onChangeCreated={openCreatedChange}
           />
         ) : (
@@ -335,7 +342,7 @@ export function OpenSpecWorkspace() {
             userReadOnly={userReadOnlySpec}
             hideHeaderActions={masterSpecReadOnly}
             readOnlyLabel={masterSpecReadOnly ? "Master spec · только просмотр" : "Diff spec · только просмотр"}
-            comments={changeDocument?.artifact === "proposal" ? activeFragmentComments : undefined}
+            comments={changeDocument ? activeFragmentComments : undefined}
             toolbarActions={changeDocument ? (
               <OpenSpecDocumentAction
                 controller={openSpec}
@@ -344,9 +351,8 @@ export function OpenSpecWorkspace() {
                 hasSpecs={changeHasSpecs}
                 documentDirty={documents.dirty}
                 documentSaving={documents.saving}
-                proposalComments={changeDocument.artifact === "proposal" ? activeFragmentComments : []}
+                documentComments={activeFragmentComments}
                 onSave={writeFile}
-                onCreateChange={addOpenSpecChange}
                 onCommentsSubmitted={() => {
                   if (documents.selectedPath && activeFragmentComments.length) {
                     pendingCommentUpdatePath.current = documents.selectedPath;
@@ -368,9 +374,9 @@ export function OpenSpecWorkspace() {
               <OpenSpecDocumentReview controller={openSpec} change={changeDocument.change} />
             ) : undefined}
             onBlur={() => undefined}
-            onAddComment={changeDocument?.artifact === "proposal" ? addFragmentComment : undefined}
-            onUpdateComment={changeDocument?.artifact === "proposal" ? updateFragmentComment : undefined}
-            onDeleteComment={changeDocument?.artifact === "proposal" ? deleteFragmentComment : undefined}
+            onAddComment={changeDocument ? addFragmentComment : undefined}
+            onUpdateComment={changeDocument ? updateFragmentComment : undefined}
+            onDeleteComment={changeDocument ? deleteFragmentComment : undefined}
             onChange={userReadOnlySpec ? () => undefined : documents.change}
             onViewModeChange={setViewMode}
             onWrite={writeFile}
@@ -381,11 +387,6 @@ export function OpenSpecWorkspace() {
         {agentSettingsOpen && <AgentCliPanel onClose={() => setAgentSettingsOpen(false)} projects={projects} />}
       </section>
 
-      <WorkspaceFooter
-        workspaceMode={activeWorkspaceMode}
-        projectSelected={!!projects.activeProject}
-        onWorkspaceModeChange={setWorkspaceMode}
-      />
       <PublicationDialog controller={tasks} onPublished={(task) => notify(`Артефакты задачи ${task} отправляются`)} />
       {toast && <div className="toast">✓ {toast}</div>}
     </main>
