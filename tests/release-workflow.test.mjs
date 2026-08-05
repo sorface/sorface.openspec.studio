@@ -13,9 +13,13 @@ test("release workflow проверяет, собирает и публикуе�
   assert.match(workflow, /actions\/checkout@v6/);
   assert.match(workflow, /actions\/setup-node@v6/);
   assert.match(workflow, /actions\/setup-go@v6/);
-  assert.match(workflow, /npm ci/);
-  assert.match(workflow, /npm run check/);
-  assert.match(workflow, /npm run release/);
+  assert.match(workflow, /npm --prefix openspec\.frontend ci/);
+  assert.match(workflow, /npm --prefix openspec\.frontend run check/);
+  assert.match(workflow, /npm --prefix openspec\.frontend run release/);
+  assert.match(workflow, /go-version-file: openspec\.backend\/go\.mod/);
+  assert.match(workflow, /-C out\/release/);
+  assert.match(workflow, /out\/release\/openspec-studio-windows-amd64\.exe/);
+  assert.match(workflow, /out\/artifacts/);
   assert.match(workflow, /refs\/tags\/\$\{release_tag\}/);
 
   for (const asset of [

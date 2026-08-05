@@ -1,4 +1,4 @@
-module github.com/sorface/openspec-studio
+module github.com/sorface/openspec-studio/backend
 
 go 1.24.0
 

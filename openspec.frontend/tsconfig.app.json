@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": [
+    "src/app/**/*.ts",
+    "src/app/**/*.tsx",
+    "src/components/**/*.ts",
+    "src/components/**/*.tsx",
+    "src/features/**/*.ts",
+    "src/features/**/*.tsx",
+    "src/web/**/*.ts",
+    "src/web/**/*.tsx",
+    "tooling/scripts/**/*.mjs",
+    "vite.local.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "../openspec.backend/internal/web/dist"
+  ]
+}

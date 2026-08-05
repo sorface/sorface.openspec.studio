@@ -67,6 +67,7 @@ export function OpenSpecWorkspace() {
   useEffect(() => {
     const projectId = projects.activeProject?.id ?? "";
     if (!projectId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Restore project-scoped state after the external storage key changes.
       setFragmentCommentsByPath({});
       setCommentsProjectId("");
       return;

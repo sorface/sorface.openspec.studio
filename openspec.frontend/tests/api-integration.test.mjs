@@ -24,7 +24,7 @@ function jsonResponse(body, status = 200) {
 test("API transport возвращает JSON и типизированную безопасную ошибку", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => { globalThis.fetch = originalFetch; });
-  const api = await importTypeScript("../features/api/api-client.ts");
+  const api = await importTypeScript("../src/features/api/api-client.ts");
 
   globalThis.fetch = async () => jsonResponse({ status: "ready" });
   assert.deepEqual(await api.apiRequest("/api/v1/system/health"), { status: "ready" });
@@ -47,7 +47,7 @@ test("API transport возвращает JSON и типизированную б
 });
 
 test("считает выполненные задачи текущего tasks.md", async () => {
-  const progress = await importTypeScript("../features/workspace/model/task-progress.ts");
+  const progress = await importTypeScript("../src/features/workspace/model/task-progress.ts");
   assert.equal(progress.isOpenSpecTasksPath("openspec/changes/add-proxy-log/tasks.md"), true);
   assert.equal(progress.isOpenSpecTasksPath("openspec/changes/add-proxy-log/design.md"), false);
   assert.deepEqual(progress.taskProgressFromMarkdown(`
@@ -60,7 +60,7 @@ test("считает выполненные задачи текущего tasks.
 });
 
 test("разворачивает диапазоны Git-аннотаций в построчное представление", async () => {
-  const annotations = await importTypeScript("../features/documents/model/document-annotations.ts");
+  const annotations = await importTypeScript("../src/features/documents/model/document-annotations.ts");
   const lines = annotations.expandDocumentAnnotations([
     {
       startLine: 4,
@@ -91,7 +91,7 @@ test("разворачивает диапазоны Git-аннотаций в п
 });
 
 test("split diff выравнивает изменённые строки и считает добавления с удалениями", async () => {
-  const diff = await importTypeScript("../features/openspec-workflow/model/split-line-diff.ts");
+  const diff = await importTypeScript("../src/features/openspec-workflow/model/split-line-diff.ts");
   const rows = diff.createSplitLineDiff(
     "one\nold\ntail",
     "one\nnew\nextra\ntail",
@@ -115,7 +115,7 @@ test("split diff выравнивает изменённые строки и с�
 });
 
 test("Markdown presentation для diff форматирует блоки и оставляет HTML текстом", async () => {
-  const markdown = await importTypeScript("../features/openspec-workflow/model/markdown-diff-presentation.ts");
+  const markdown = await importTypeScript("../src/features/openspec-workflow/model/markdown-diff-presentation.ts");
   const lines = markdown.presentMarkdownDiff([
     "## План для `gateway`",
     "",
@@ -153,7 +153,7 @@ test("Markdown presentation для diff форматирует блоки и о�
 });
 
 test("каскад пересогласования проходит specs, design и tasks и безопасно прерывается", async () => {
-  const cascade = await importTypeScript("../features/openspec-workflow/model/artifact-refresh-cascade.ts");
+  const cascade = await importTypeScript("../src/features/openspec-workflow/model/artifact-refresh-cascade.ts");
   let state = cascade.createOpenSpecArtifactRefreshCascade("add-proxy-log", "spec");
 
   assert.equal(state.current, "specs");
@@ -210,7 +210,7 @@ test("каскад пересогласования проходит specs, desi
 test("API transport преобразует сетевую ошибку в backend unavailable", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => { globalThis.fetch = originalFetch; });
-  const api = await importTypeScript("../features/api/api-client.ts");
+  const api = await importTypeScript("../src/features/api/api-client.ts");
   globalThis.fetch = async () => { throw new TypeError("connection refused"); };
 
   await assert.rejects(
@@ -222,7 +222,7 @@ test("API transport преобразует сетевую ошибку в backen
 test("мутация получает CSRF token и повторяется после CSRF_REJECTED только один раз", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => { globalThis.fetch = originalFetch; });
-  const api = await importTypeScript("../features/api/api-client.ts");
+  const api = await importTypeScript("../src/features/api/api-client.ts");
   const calls = [];
   let sessionNumber = 0;
   let mutationNumber = 0;
@@ -254,7 +254,7 @@ test("мутация получает CSRF token и повторяется по�
 test("API transport корректно обрабатывает 204 No Content", async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => { globalThis.fetch = originalFetch; });
-  const api = await importTypeScript("../features/api/api-client.ts");
+  const api = await importTypeScript("../src/features/api/api-client.ts");
   globalThis.fetch = async (path) => path === "/api/v1/system/session"
     ? jsonResponse({ csrfToken: "token" })
     : new Response(null, { status: 204 });
@@ -263,7 +263,7 @@ test("API transport корректно обрабатывает 204 No Content",
 });
 
 test("выбор проекта восстанавливается безопасно и получает fallback после удаления", async () => {
-  const selection = await importTypeScript("../features/projects/model/project-selection.ts");
+  const selection = await importTypeScript("../src/features/projects/model/project-selection.ts");
   const projects = [{ id: "one" }, { id: "two" }, { id: "three" }];
 
   assert.equal(selection.resolveActiveProjectId(projects, "two"), "two");
@@ -275,9 +275,9 @@ test("выбор проекта восстанавливается безопа�
 
 test("projects client и controller покрывают CRUD, lifecycle и подтверждённое состояние", async () => {
   const [client, controller, switcher] = await Promise.all([
-    readFile(new URL("../features/projects/api/projects-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/projects/hooks/useProjectsController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/projects/components/ProjectSwitcher.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/projects/api/projects-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/projects/hooks/useProjectsController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/projects/components/ProjectSwitcher.tsx", import.meta.url), "utf8"),
   ]);
 
   for (const method of ["listProjects", "getProject", "createProject", "createProjectFromGit", "updateProject", "deleteProject"]) {
@@ -309,15 +309,15 @@ test("projects client и controller покрывают CRUD, lifecycle и под
 
 test("низкоуровневый Git feature остаётся доступен как внутренняя диагностика, но скрыт из основного workspace", async () => {
   const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, footer, diffParser] = await Promise.all([
-    readFile(new URL("../features/git/api/git-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/git/components/GitPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/git/components/GitChangesPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/git/model/git-operation.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
-    importTypeScript("../features/git/model/unified-diff.ts"),
+    readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/components/GitPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/components/GitChangesPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/model/git-operation.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
+    importTypeScript("../src/features/git/model/unified-diff.ts"),
   ]);
   assert.match(client, /getGitStatus/);
   assert.match(client, /projectGitPath\(projectId, "status"\)/);
@@ -386,17 +386,17 @@ index 123..456 100644
 
 test("task context связывает workspace с задачей и публикует только OpenSpec-артефакты", async () => {
   const [client, controller, selector, dialog, workspace, header, markdownEditor, documents, types, footer, css] = await Promise.all([
-    readFile(new URL("../features/task-context/api/task-context-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/task-context/hooks/useTaskContextController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/task-context/components/TaskContextSelector.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/task-context/components/PublicationDialog.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/documents/hooks/useDocumentsController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/task-context/api/task-context-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/task-context/hooks/useTaskContextController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/task-context/components/TaskContextSelector.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/task-context/components/PublicationDialog.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/documents/hooks/useDocumentsController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   for (const method of ["getTaskWorkspaces", "openTaskWorkspace", "syncTaskWorkspace", "previewTaskPublication", "generateTaskPublicationMessage", "publishTaskArtifacts"]) {
@@ -462,11 +462,11 @@ test("task context связывает workspace с задачей и публи�
 
 test("agent CLI settings используют capabilities и сохранённые настройки проекта", async () => {
   const [header, panel, customSelect, workspace, controller] = await Promise.all([
-    readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/AgentCliPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../components/ui/CustomSelect.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/ai-operations/hooks/useAiOperationsController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/AgentCliPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ui/CustomSelect.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/ai-operations/hooks/useAiOperationsController.ts", import.meta.url), "utf8"),
   ]);
   assert.match(panel, /Настройка Agent CLI/);
   assert.match(header, /availableProviders/);
@@ -480,7 +480,7 @@ test("agent CLI settings используют capabilities и сохранённ
   assert.doesNotMatch(panel, /Каталог .* CLI|CLI не предоставил каталог моделей|provider-model-hint/);
   assert.match(customSelect, /aria-haspopup="listbox"/);
   assert.match(customSelect, /ArrowDown|ArrowUp/);
-  assert.match(await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"), /\.agent-cli-form \{[^}]*flex:\s*1 1 auto/s);
+  assert.match(await readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"), /\.agent-cli-form \{[^}]*flex:\s*1 1 auto/s);
   assert.match(workspace, /agentSettingsOpen/);
   assert.match(workspace, /\)\}\s*\{agentSettingsOpen && <AgentCliPanel/s);
   assert.doesNotMatch(workspace, /defaultAiProvider \?\? "codex"/);
@@ -489,13 +489,13 @@ test("agent CLI settings используют capabilities и сохранённ
 
 test("страница Контекст покрывает clone, SSE, cancel и server-backed состояние", async () => {
   const [client, controller, panel, sidebar, workspace, css, state] = await Promise.all([
-    readFile(new URL("../features/repositories/api/repositories-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/repositories/hooks/useRepositoriesController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/repositories/components/RepositoriesPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
-    importTypeScript("../features/repositories/model/repository-operation.ts"),
+    readFile(new URL("../src/features/repositories/api/repositories-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/repositories/hooks/useRepositoriesController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/repositories/components/RepositoriesPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    importTypeScript("../src/features/repositories/model/repository-operation.ts"),
   ]);
   for (const method of [
     "listRepositories", "switchRepositoryBranch", "updateRepository",
@@ -559,13 +559,13 @@ test("страница Контекст покрывает clone, SSE, cancel и
 
 test("documents feature читает дерево, содержимое и Git-историю и записывает файл через backend", async () => {
   const [client, controller, historyController, historyPanel, sidebar, editor, workspace] = await Promise.all([
-    readFile(new URL("../features/documents/api/documents-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/documents/hooks/useDocumentsController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/documents/hooks/useDocumentHistoryController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/documents/components/DocumentHistoryPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/documents/api/documents-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/documents/hooks/useDocumentsController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/documents/hooks/useDocumentHistoryController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/documents/components/DocumentHistoryPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
   ]);
   for (const method of ["listDocuments", "getDocument", "getDocumentAnnotations", "getDocumentHistory", "writeDocument"]) {
     assert.match(client, new RegExp(`function ${method}`));
@@ -618,7 +618,7 @@ test("documents feature читает дерево, содержимое и Git-�
 });
 
 test("платформенные shortcuts поддерживают macOS, Windows/Linux и удалённые клавиатуры", async () => {
-  const shortcuts = await importTypeScript("../features/system/model/platform-shortcuts.ts");
+  const shortcuts = await importTypeScript("../src/features/system/model/platform-shortcuts.ts");
   const macOS = { platform: "MacIntel" };
   const windows = { platform: "Win32" };
   const event = (overrides) => ({
@@ -644,9 +644,9 @@ test("платформенные shortcuts поддерживают macOS, Windo
 
 test("AI operations feature требует review token и показывает review-ready diff", async () => {
   const [client, controller, state] = await Promise.all([
-    readFile(new URL("../features/ai-operations/api/ai-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/ai-operations/hooks/useAiOperationsController.ts", import.meta.url), "utf8"),
-    importTypeScript("../features/ai-operations/model/ai-operation-state.ts"),
+    readFile(new URL("../src/features/ai-operations/api/ai-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/ai-operations/hooks/useAiOperationsController.ts", import.meta.url), "utf8"),
+    importTypeScript("../src/features/ai-operations/model/ai-operation-state.ts"),
   ]);
   assert.match(client, /context-manifests/);
   assert.match(client, /reviewToken/);
@@ -659,17 +659,17 @@ test("AI operations feature требует review token и показывает 
 
 test("OpenSpec workflow поддерживает read-only обзор, agent actions, stale refresh и полный review", async () => {
   const [client, controller, panel, operationPanel, documentActions, actionPresentation, actionPresentationState, workspace, sidebar, footer, state] = await Promise.all([
-    readFile(new URL("../features/openspec-workflow/api/openspec-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/model/openspec-action-presentation.ts", import.meta.url), "utf8"),
-    importTypeScript("../features/openspec-workflow/model/openspec-action-presentation.ts"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
-    importTypeScript("../features/openspec-workflow/model/openspec-state.ts"),
+    readFile(new URL("../src/features/openspec-workflow/api/openspec-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/model/openspec-action-presentation.ts", import.meta.url), "utf8"),
+    importTypeScript("../src/features/openspec-workflow/model/openspec-action-presentation.ts"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceFooter.tsx", import.meta.url), "utf8"),
+    importTypeScript("../src/features/openspec-workflow/model/openspec-state.ts"),
   ]);
 
   for (const method of [
@@ -841,16 +841,16 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
 
 test("OpenSpec workflow проводит управляемые AI-итерации до proposal и создаёт change только после подтверждения", async () => {
   const [model, controller, panel, operationPanel, wizard, creationController, client, workspace, css, state] = await Promise.all([
-    readFile(new URL("../features/openspec-workflow/model/openspec-types.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/ChangeCreationWizard.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/hooks/useChangeCreationController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/api/openspec-client.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
-    importTypeScript("../features/openspec-workflow/model/change-creation-state.ts"),
+    readFile(new URL("../src/features/openspec-workflow/model/openspec-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/ChangeCreationWizard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/hooks/useChangeCreationController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/api/openspec-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    importTypeScript("../src/features/openspec-workflow/model/change-creation-state.ts"),
   ]);
 
   assert.match(model, /"explore" \| "create_change"/);
@@ -951,14 +951,14 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
 
 test("proposal.md хранит видимые комментарии к фрагментам и применяет их через полное обновление", async () => {
   const [richEditor, markdownEditor, workspace, controller, documentActions, css, logic, commentModel] = await Promise.all([
-    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
-    importTypeScript("../features/openspec-workflow/model/openspec-document-action.ts"),
-    importTypeScript("../features/editor/model/fragment-comment.ts"),
+    readFile(new URL("../src/features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    importTypeScript("../src/features/openspec-workflow/model/openspec-document-action.ts"),
+    importTypeScript("../src/features/editor/model/fragment-comment.ts"),
   ]);
 
   assert.match(richEditor, /selectionchange/);

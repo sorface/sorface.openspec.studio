@@ -38,22 +38,22 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: openspec.frontend/package-lock.json
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          go-version-file: openspec.backend/go.mod
+          cache-dependency-path: openspec.backend/go.sum
 
       - name: Install dependencies
-        run: npm ci
+        run: npm --prefix openspec.frontend ci
 
       - name: Run checks
-        run: npm run check
+        run: npm --prefix openspec.frontend run check
 
       - name: Build release binaries
-        run: npm run release
+        run: npm --prefix openspec.frontend run release
 
       - name: Resolve and validate release tag
         id: release
@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts
+          mkdir -p out/artifacts
 
           for binary in \
             openspec-studio-darwin-amd64 \
@@ -90,15 +90,15 @@ jobs:
             openspec-studio-linux-amd64 \
             openspec-studio-linux-arm64
           do
-            tar -czf "artifacts/${binary}.tar.gz" -C release "$binary"
+            tar -czf "out/artifacts/${binary}.tar.gz" -C out/release "$binary"
           done
 
           zip -j \
-            artifacts/openspec-studio-windows-amd64.zip \
-            release/openspec-studio-windows-amd64.exe
+            out/artifacts/openspec-studio-windows-amd64.zip \
+            out/release/openspec-studio-windows-amd64.exe
 
           (
-            cd artifacts
+            cd out/artifacts
             sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
           )
 
@@ -108,9 +108,9 @@ jobs:
           set -euo pipefail
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" artifacts/* --clobber
+            gh release upload "$RELEASE_TAG" out/artifacts/* --clobber
           else
-            gh release create "$RELEASE_TAG" artifacts/* \
+            gh release create "$RELEASE_TAG" out/artifacts/* \
               --verify-tag \
               --generate-notes \
               --title "OpenSpec Studio $RELEASE_TAG"

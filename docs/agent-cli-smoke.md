@@ -4,7 +4,7 @@
 модели. Сквозной запуск выполняется backend-тестом с локальным fake executable:
 
 ```bash
-go test ./backend/internal/ai -run TestFakeAgentEndToEnd -v
+go -C openspec.backend test ./internal/ai -run TestFakeAgentEndToEnd -v
 ```
 
 Тест подтверждает поток context review → изолированный workspace → JSONL output

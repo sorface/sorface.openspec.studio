@@ -8,7 +8,7 @@
 Для сборки из исходников нужны Node.js 22+ и Go 1.24+. Затем:
 
 ```bash
-npm run setup
+npm --prefix openspec.frontend run setup
 ```
 
 Команда установит зависимости, выполнит проверки, соберёт единый локальный
@@ -18,17 +18,17 @@ npm run setup
 Для последующих запусков достаточно:
 
 ```bash
-npm start
+npm --prefix openspec.frontend start
 ```
 
 ## Команды разработки
 
 ```bash
-npm run dev       # локальная разработка с автообновлением
-npm run build     # frontend + единый бинарник текущей ОС
-npm run release   # бинарники macOS, Linux и Windows
-npm test          # frontend- и backend-тесты
-npm run check     # типы/правила, сборка и тесты
+npm --prefix openspec.frontend run dev       # локальная разработка с автообновлением
+npm --prefix openspec.frontend run build     # frontend + единый бинарник текущей ОС
+npm --prefix openspec.frontend run release   # бинарники macOS, Linux и Windows
+npm --prefix openspec.frontend test          # frontend- и backend-тесты
+npm --prefix openspec.frontend run check     # типы/правила, сборка и тесты
 ```
 
 ## Выпуск новой версии
@@ -60,7 +60,7 @@ delta specs, design и tasks. Код изменяется только посл�
 2. Проверить proposal, delta specs, design и tasks в
    `openspec/changes/<change-name>/`.
 3. Запустить `$openspec-apply-change` для реализации утверждённых задач.
-4. Выполнить `npm run check`; команда включает strict validation всех baseline
+4. Выполнить `npm --prefix openspec.frontend run check`; команда включает strict validation всех baseline
    specs.
 5. После завершения использовать `$openspec-archive-change`, чтобы
    синхронизировать change с baseline и перенести его в архив.
@@ -76,16 +76,18 @@ devDependencies, поэтому отдельная глобальная уста
 предметной области, а не по техническому типу файла.
 
 ```text
-app/                              маршруты, layout и глобальный entry CSS
-components/ui/                    небольшие переиспользуемые UI-примитивы
-features/
-  editor/                         визуальный Markdown-редактор
-  system/                         API-клиент и состояние local server
-  workspace/
-    components/                   композиция и панели workspace
-    model/                        типы и данные предметной области
-    styles/                       стили только этой функции
-backend/
+openspec.frontend/
+  src/
+    app/                          маршруты, layout и глобальный entry CSS
+    components/ui/                небольшие переиспользуемые UI-примитивы
+    db/                           D1 schema для Sites
+    features/                     feature-first frontend-модули
+    web/                          entrypoint локального Vite frontend
+    worker/                       Cloudflare Worker entrypoint
+  tests/                          frontend-тесты
+  tooling/sites/                  Sites-specific Vite plugin
+  package.json                    frontend-команды и зависимости
+openspec.backend/
   cmd/openspec-studio/            точка входа единого бинарника
   internal/
     config/                       безопасная локальная конфигурация
@@ -95,14 +97,17 @@ backend/
     tools/                        обнаружение Git/OpenSpec/AI CLI
     platform/browser/             открытие browser на трёх ОС
     web/                          встроенный собранный frontend
-scripts/                          dev, build, start и cross-platform release
-tests/                            интеграционные и архитектурные тесты
+tooling/
+  scripts/                        dev, build, start и cross-platform release
+tests/                            cross-project/release тесты
+docs/assets/screenshots/          снимки интерфейса и review-артефакты
+out/                              игнорируемые binary/release outputs
 ```
 
 Правила зависимостей:
 
-- `app` только собирает страницы из готовых features;
-- feature может использовать `components/ui`, но UI-примитивы не знают о
+- `openspec.frontend/src/app` только собирает страницы из готовых features;
+- feature может использовать `openspec.frontend/src/components/ui`, но UI-примитивы не знают о
   feature;
 - типы и данные предметной области находятся в `model`;
 - компоненты получают зависимости через типизированные props;
@@ -140,7 +145,7 @@ notifications. Код компонентов реализован локальн
 подключается и не загружается.
 
 Для markdown-native WYSIWYG используется Milkdown Crepe. Он изолирован внутри
-`features/editor`, загружается только в browser и уничтожается при размонтировании
+`openspec.frontend/src/features/editor`, загружается только в browser и уничтожается при размонтировании
 компонента. Аналитику не требуется знать Markdown-синтаксис, но итоговый файл
 остаётся обычным переносимым `.md`.
 

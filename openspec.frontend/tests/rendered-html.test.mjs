@@ -35,9 +35,9 @@ test("рендерит продуктовый workspace вместо старт�
 
 test("показывает loading landing до завершения анимации и инициализации проекта", async () => {
   const [workspace, landing, css] = await Promise.all([
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/ProjectLoadingLanding.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/ProjectLoadingLanding.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(landing, /PROJECT_LOADING_ANIMATION_MAX_MS = 1_600/);
@@ -57,17 +57,17 @@ test("показывает loading landing до завершения анима�
 });
 
 test("переключатель проекта использует портфель без избыточной подписи", async () => {
-  const switcher = await readFile(new URL("../features/projects/components/ProjectSwitcher.tsx", import.meta.url), "utf8");
+  const switcher = await readFile(new URL("../src/features/projects/components/ProjectSwitcher.tsx", import.meta.url), "utf8");
   assert.match(switcher, /className="project-icon"/);
   assert.match(switcher, /<svg viewBox="0 0 24 24"/);
   assert.match(switcher, /className=\{`project-chevron/);
   assert.doesNotMatch(switcher, />ПРОЕКТ</);
   assert.doesNotMatch(switcher, />⌄</);
-  assert.match(await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"), /\.project-chevron \{[^}]*fill:\s*none[^}]*stroke-width:\s*1\.35/s);
+  assert.match(await readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"), /\.project-chevron \{[^}]*fill:\s*none[^}]*stroke-width:\s*1\.35/s);
 });
 
 test("логотип OpenSpec Studio изображает горные вершины", async () => {
-  const logo = await readFile(new URL("../components/ui/LogoMark.tsx", import.meta.url), "utf8");
+  const logo = await readFile(new URL("../src/components/ui/LogoMark.tsx", import.meta.url), "utf8");
   assert.match(logo, /className="logo-mark-peak logo-mark-peak-back"/);
   assert.match(logo, /className="logo-mark-peak logo-mark-peak-front"/);
   assert.doesNotMatch(logo, /<rect|logo-mark-ground|logo-mark-summits/);
@@ -76,7 +76,7 @@ test("логотип OpenSpec Studio изображает горные верш�
 
 test("покрывает навигацию по Store и подключённым репозиториям", async () => {
   const html = await (await render()).text();
-  const sidebar = await readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8");
+  const sidebar = await readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8");
   for (const expected of [
     "Рабочее пространство",
     "Контекст",
@@ -91,9 +91,9 @@ test("покрывает навигацию по Store и подключённы
 
 test("Контекст становится доступной страницей подключения репозиториев после выбора проекта", async () => {
   const [workspace, sidebar, panel] = await Promise.all([
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/repositories/components/RepositoriesPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/repositories/components/RepositoriesPanel.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(sidebar, /onWorkspaceModeChange\("context"\)/);
   assert.match(sidebar, /disabled=\{!projectSelected\}/);
@@ -113,10 +113,10 @@ test("Контекст становится доступной странице�
 
 test("форма проекта поддерживает переносимый .openspec/context.yaml", async () => {
   const [switcher, controller, types, css] = await Promise.all([
-    readFile(new URL("../features/projects/components/ProjectSwitcher.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/projects/hooks/useProjectsController.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/projects/model/project-types.ts", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/projects/components/ProjectSwitcher.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/projects/hooks/useProjectsController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/projects/model/project-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
   assert.match(types, /name\?: string/);
   assert.match(types, /contextImport\?: ContextImportSummary/);
@@ -143,9 +143,9 @@ test("покрывает визуальное Markdown-редактирован�
 
 test("Git-аннотации и история выбранного файла подключены к read-only панели", async () => {
   const [editor, panel, css] = await Promise.all([
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/documents/components/DocumentHistoryPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/documents/components/DocumentHistoryPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(editor, /label="Git-аннотации файла"/);
@@ -173,8 +173,8 @@ test("Git-аннотации и история выбранного файла �
 
 test("Preview использует read-only Milkdown вместо сырого Markdown pre", async () => {
   const [editor, preview] = await Promise.all([
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/editor/components/MarkdownPreview.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/editor/components/MarkdownPreview.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(editor, /<MarkdownPreview documentId=\{activeFile!\} markdown=\{markdown\} \/>/);
@@ -187,9 +187,9 @@ test("Preview использует read-only Milkdown вместо сырого 
 
 test("визуальный редактор сохраняет Markdown, undo/redo и платформенное сохранение", async () => {
   const [editor, workspace, markdownEditor, packageJson] = await Promise.all([
-    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -220,8 +220,8 @@ test("визуальный редактор сохраняет Markdown, undo/re
 
 test("heading-селектор использует обычный Paragraph и жирный Heading", async () => {
   const [css, editor] = await Promise.all([
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
-    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(css, /\.top-bar-heading-label,[\s\S]*\.top-bar-heading-option\.active:first-child\s*\{[\s\S]*font-weight:\s*400/);
   assert.match(css, /\.top-bar-heading-button\.heading-active \.top-bar-heading-label,[\s\S]*\.top-bar-heading-option\.active:not\(:first-child\)\s*\{[\s\S]*font-weight:\s*700/);
@@ -230,13 +230,13 @@ test("heading-селектор использует обычный Paragraph и 
 });
 
 test("уровни заголовков редактора визуально отличаются от основного текста", async () => {
-  const css = await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8");
   assert.match(css, /\.rich-editor-shell \.milkdown \.ProseMirror h2 \{[^}]*font-size:\s*24px[^}]*font-weight:\s*700/s);
   assert.match(css, /\.rich-editor-shell \.milkdown \.ProseMirror h3 \{[^}]*font-size:\s*19px[^}]*font-weight:\s*650/s);
 });
 
 test("code block редактора оформлен как минималистичная карточка", async () => {
-  const css = await readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8");
   assert.match(css, /\.rich-editor-shell \.milkdown \.milkdown-code-block \{[^}]*border:\s*1px solid #dfe6e2[^}]*border-radius:\s*8px[^}]*box-shadow:\s*none/s);
   assert.match(css, /\.milkdown-code-block \.cm-gutters \{ display:\s*none;/);
   assert.match(css, /\.milkdown-code-block \.tools \{[^}]*position:\s*absolute[^}]*top:\s*6px[^}]*right:\s*6px[^}]*pointer-events:\s*auto/s);
@@ -249,7 +249,7 @@ test("code block редактора оформлен как минималист
 
 test("не рендерит удалённую панель AI-ассистента", async () => {
   const html = await (await render()).text();
-  const workspace = await readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8");
+  const workspace = await readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(html, /AI-ассистент|Чем помочь со спецификацией|Инструкция для AI/);
   assert.doesNotMatch(workspace, /AiAssistantPanel|useAiOperationsController|rightOpen|assistantMode/);
 });
@@ -270,9 +270,9 @@ test("покрывает задачу и OpenSpec-навигацию без Git-
 test("сохраняет доступные имена у интерактивных icon-only controls", async () => {
   const html = await (await render()).text();
   const [header, sidebar, agentPanel] = await Promise.all([
-    readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/AgentCliPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/AgentCliPanel.tsx", import.meta.url), "utf8"),
   ]);
   for (const label of [
     "Свернуть панель",
@@ -290,12 +290,12 @@ test("сохраняет доступные имена у интерактивн
 
 test("дерево OpenSpec прокручивается, каталоги сворачиваются, а AI selector использует chevron", async () => {
   const [sidebar, header, richEditor, documentActions, operationPanel, css] = await Promise.all([
-    readFile(new URL("../features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(sidebar, /collapsedDirectories/);
@@ -479,8 +479,8 @@ test("дерево OpenSpec прокручивается, каталоги св�
 test("использует самостоятельную реализацию без Untitled UI runtime-зависимости", async () => {
   const [packageJson, workspace, css] = await Promise.all([
     readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   assert.doesNotMatch(packageJson, /untitledui|react-aria|lucide/i);
@@ -511,13 +511,13 @@ test("использует самостоятельную реализацию �
 
 test("сохраняет feature-first архитектуру и тонкий route entry point", async () => {
   const [page, workspace, editor, model, uiPrimitive, richEditor, css] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
-    readFile(new URL("../components/ui/IconButton.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/model/workspace-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/ui/IconButton.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /OpenSpecWorkspace/);
@@ -538,9 +538,9 @@ test("сохраняет feature-first архитектуру и тонкий ro
 
 test("открывает baseline и delta specs пользователю только для просмотра", async () => {
   const [workspace, editor, classifier] = await Promise.all([
-    readFile(new URL("../features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../features/workspace/model/openspec-document.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/model/openspec-document.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(classifier, /\^openspec\\\/specs\\\/\[\^\/\]\+\\\/spec\\\.md\$/);

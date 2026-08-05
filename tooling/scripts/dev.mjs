@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../openspec.frontend");
 const children = [
-  spawn(npmCommand, ["run", "dev:backend"], { stdio: "inherit" }),
-  spawn(npmCommand, ["run", "dev:web"], { stdio: "inherit" }),
+  spawn(npmCommand, ["run", "dev:backend"], { stdio: "inherit", cwd: frontendRoot }),
+  spawn(npmCommand, ["run", "dev:web"], { stdio: "inherit", cwd: frontendRoot }),
 ];
 
 const stop = () => {
