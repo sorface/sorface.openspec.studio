@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
+import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
+import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
 import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
 import { openSpecActionLabels } from "@/features/openspec-workflow/model/openspec-action-presentation";
 import {
@@ -300,9 +302,15 @@ function MutationReview({ mutation, onOpenFinal }: { mutation: OpenSpecFileMutat
   );
 }
 
-interface ReviewComment {
-  id: string;
-  text: string;
+type ReviewComment = EditorFragmentComment;
+
+function reviewCommentFeedback(comment: ReviewComment): string {
+  return [
+    "Фрагмент итогового Markdown:",
+    `<<<FRAGMENT\n${comment.selection.text.trim()}\nFRAGMENT`,
+    "Комментарий:",
+    `<<<COMMENT\n${comment.text.trim()}\nCOMMENT`,
+  ].join("\n");
 }
 
 function ResultMarkdownDialog({
@@ -327,29 +335,27 @@ function ResultMarkdownDialog({
   onAccept: () => Promise<boolean>;
 }) {
   const titleId = useId();
-  const [draft, setDraft] = useState("");
-  const [editingId, setEditingId] = useState("");
-  const markdown = presentMarkdownDiff(mutation.after ?? "");
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.key === "Escape" && !target?.closest(".editor-inline-comment-panel")) onClose();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
-  const saveComment = () => {
-    const text = draft.trim().slice(0, 1000);
-    if (!text) return;
-    if (editingId) {
-      onCommentsChange(comments.map((comment) => comment.id === editingId ? { ...comment, text } : comment));
-    } else if (comments.length < 8) {
-      onCommentsChange([...comments, { id: `${Date.now()}-${comments.length}`, text }]);
-    }
-    setDraft("");
-    setEditingId("");
+  const addComment = (selection: EditorTextSelection, text: string) => {
+    onCommentsChange([...comments, {
+      id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${comments.length}`,
+      selection,
+      text: text.trim(),
+      createdAt: new Date().toISOString(),
+    }]);
   };
+  const updateComment = (commentId: string, text: string) => onCommentsChange(comments.map((comment) =>
+    comment.id === commentId ? { ...comment, text: text.trim() } : comment));
+  const deleteComment = (commentId: string) => onCommentsChange(comments.filter((comment) => comment.id !== commentId));
 
   return createPortal(
     <div className="openspec-result-dialog-backdrop">
@@ -361,51 +367,25 @@ function ResultMarkdownDialog({
           </div>
           <button type="button" aria-label="Закрыть полноэкранный просмотр" onClick={onClose}>×</button>
         </header>
-        <div className={`openspec-result-dialog-content ${reviewable ? "" : "view-only"}`}>
+        <div className="openspec-result-dialog-content view-only">
           <main className="openspec-result-markdown" aria-label={`Итоговый Markdown ${mutation.path}`}>
-            {markdown.length ? markdown.map((line, index) => (
-              <MarkdownDiffLine line={line} key={`${line.kind}-${index}`} />
-            )) : <p>Итоговый Markdown пуст.</p>}
+            <RichMarkdownEditor
+              documentId={`openspec-result:${mutation.path}`}
+              markdown={mutation.after ?? ""}
+              comments={comments}
+              readOnly
+              onBlur={() => undefined}
+              onChange={() => undefined}
+              onAddComment={reviewable ? addComment : undefined}
+              onUpdateComment={reviewable ? updateComment : undefined}
+              onDeleteComment={reviewable ? deleteComment : undefined}
+            />
           </main>
-          {reviewable && <aside className="openspec-result-comments" aria-label="Замечания к итоговому Markdown">
-            <header>
-              <div><small>ПРОВЕРКА</small><h4>Комментарии</h4></div>
-              <span>{comments.length}/8</span>
-            </header>
-            <div className="openspec-result-comments-list">
-              {comments.length === 0 && <p>Добавьте замечания, чтобы повторить этот этап с их учётом.</p>}
-              {comments.map((comment, index) => (
-                <article key={comment.id}>
-                  <strong>Комментарий {index + 1}</strong>
-                  <p>{comment.text}</p>
-                  <div>
-                    <button type="button" onClick={() => { setEditingId(comment.id); setDraft(comment.text); }}>Редактировать</button>
-                    <button type="button" onClick={() => onCommentsChange(comments.filter((item) => item.id !== comment.id))}>Удалить</button>
-                  </div>
-                </article>
-              ))}
-            </div>
-            <label className="openspec-result-comment-editor">
-              <span>{editingId ? "Редактировать комментарий" : "Новый комментарий"}</span>
-              <textarea
-                value={draft}
-                maxLength={1000}
-                rows={5}
-                placeholder="Опишите, что нужно изменить в итоговом Markdown…"
-                onChange={(event) => setDraft(event.target.value)}
-              />
-            </label>
-            <div className="openspec-result-comment-editor-actions">
-              {editingId && <button type="button" onClick={() => { setEditingId(""); setDraft(""); }}>Отменить</button>}
-              <button type="button" onClick={saveComment} disabled={!draft.trim() || (!editingId && comments.length >= 8)}>
-                {editingId ? "Сохранить" : "Добавить комментарий"}
-              </button>
-            </div>
-          </aside>}
         </div>
         <footer>
           <button type="button" className="secondary-action" onClick={onClose}>Вернуться к сравнению</button>
           {reviewable && <div>
+            <span className="openspec-result-comment-count" aria-live="polite">Комментарии {comments.length}</span>
             {canRepeat && (
               <button type="button" className="secondary-action" disabled={pending || comments.length === 0} onClick={() => void onRepeat()}>
                 {pending ? "Запускаем…" : "Повторить этап с комментариями"}
@@ -450,7 +430,7 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
     comments,
   }));
   const repeatWithFeedback = async () => {
-    const repeated = await controller.repeatWithFeedback(reviewComments.map((comment) => comment.text));
+    const repeated = await controller.repeatWithFeedback(reviewComments.map(reviewCommentFeedback));
     if (repeated) {
       changeReviewComments([]);
       closeResultDialog();

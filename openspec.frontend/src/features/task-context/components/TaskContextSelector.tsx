@@ -5,10 +5,12 @@ import type { TaskContextController } from "@/features/task-context/hooks/useTas
 
 interface TaskContextSelectorProps {
   controller: TaskContextController;
+  onPublish: () => void;
+  onReceive: () => void;
   projectSelected: boolean;
 }
 
-export function TaskContextSelector({ controller, projectSelected }: TaskContextSelectorProps) {
+export function TaskContextSelector({ controller, onPublish, onReceive, projectSelected }: TaskContextSelectorProps) {
   const [open, setOpen] = useState(false);
   const [branch, setBranch] = useState("");
   const root = useRef<HTMLDivElement>(null);
@@ -16,6 +18,7 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
   const triggerLabel = active
     ? `Задача: ${active.branch}${active.dirty ? ", есть локальные изменения" : ""}`
     : "Задача: выбрать";
+  const actionDisabled = !active || controller.switching || controller.syncing || controller.preparing || controller.publishing;
   const { localChoices, remoteChoices } = useMemo(() => {
     const existing = new Map(controller.overview?.items.map((item) => [item.branch, item]) ?? []);
     const localNames = Array.from(new Set([
@@ -158,6 +161,32 @@ export function TaskContextSelector({ controller, projectSelected }: TaskContext
               ))}
             </div>
           )}
+          <div className="task-context-actions" aria-label="Действия текущей задачи">
+            <button
+              type="button"
+              disabled={actionDisabled}
+              title={controller.syncing ? "Получаем изменения…" : "Получить изменения текущей задачи из remote"}
+              onClick={() => {
+                setOpen(false);
+                onReceive();
+              }}
+            >
+              <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 3.2v9.2m0 0 3.3-3.3M9 12.4 5.7 9.1M4 13v.5A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5V13" /></svg>
+              <span>Получить изменения</span>
+            </button>
+            <button
+              type="button"
+              disabled={actionDisabled}
+              title={controller.preparing ? "Готовим публикацию…" : "Опубликовать OpenSpec-артефакты текущей задачи"}
+              onClick={() => {
+                setOpen(false);
+                onPublish();
+              }}
+            >
+              <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 12.8V3.6m0 0L5.7 6.9M9 3.6l3.3 3.3M4 11.4v2.1A1.5 1.5 0 0 0 5.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-2.1" /></svg>
+              <span>Опубликовать изменения</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

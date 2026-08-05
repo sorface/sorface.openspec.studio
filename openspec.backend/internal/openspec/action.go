@@ -461,7 +461,8 @@ func (service *ActionService) runProvider(
 	result, runErr := service.runner.Run(ctx, processrunner.Command{
 		Executable: executable, Arguments: arguments, Directory: working, Stdin: prompt,
 		Timeout: service.timeout, DisableTimeout: execution.Input.Kind == ActionExplore, MaxOutputBytes: 1 << 20,
-		OnStdout: providerProgressCallback(service.store, item.ID, item.OpenSpecAction),
+		AllowStderrTruncation: true,
+		OnStdout:              providerProgressCallback(service.store, item.ID, item.OpenSpecAction),
 	})
 	_ = service.store.SaveAudit(context.Background(), operation.Audit{
 		OperationID: item.ID, Executable: filepath.Base(executable),
@@ -1261,6 +1262,8 @@ func actionErrorCode(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "AI_TIMEOUT"
+	case errors.Is(err, processrunner.ErrOutputLimit):
+		return "AI_OUTPUT_LIMIT"
 	case errors.Is(err, ErrProviderUnavailable):
 		return "AI_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrScopeViolation):
@@ -1280,6 +1283,8 @@ func safeActionDiagnostic(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "Agent не завершил операцию за предельное время. Сократите описание задачи или повторите запрос"
+	case errors.Is(err, processrunner.ErrOutputLimit):
+		return "Agent вернул слишком большой основной результат. Сократите описание задачи или повторите запрос"
 	case errors.Is(err, ErrScopeViolation):
 		return err.Error()
 	case errors.Is(err, ErrValidationFailed):

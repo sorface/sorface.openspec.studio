@@ -125,20 +125,12 @@ function upsertOperation(current: OpenSpecOperation[], item: OpenSpecOperation):
 
 export function openSpecReviewFeedbackGoal(artifact: string, comments: string[]): string {
   const normalized = comments
-    .map((comment) => comment.trim().slice(0, 1000))
-    .filter(Boolean)
-    .slice(0, 8);
-  let remaining = 6000;
-  const bounded = normalized.flatMap((comment) => {
-    if (remaining <= 0) return [];
-    const next = comment.slice(0, remaining);
-    remaining -= next.length;
-    return next ? [next] : [];
-  });
+    .map((comment) => comment.trim())
+    .filter(Boolean);
   return [
     `Повтори подготовку артефакта ${artifact}, сохранив согласованный scope change.`,
     "Учти все замечания пользователя к предыдущему итоговому Markdown:",
-    ...bounded.map((comment, index) => `${index + 1}. ${comment}`),
+    ...normalized.map((comment, index) => `${index + 1}. ${comment}`),
     "Верни полный исправленный результат через обычный review-before-write workflow.",
   ].join("\n\n");
 }

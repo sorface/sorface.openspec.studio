@@ -31,6 +31,19 @@ func TestRunnerAndOutputLimit(t *testing.T) {
 	}
 }
 
+func TestRunnerCanTruncateSuccessfulStderr(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-only")
+	}
+	result, err := (Runner{}).Run(context.Background(), Command{
+		Executable: "/bin/sh", Arguments: []string{"-c", "printf ok; printf 123456 >&2"},
+		Directory: t.TempDir(), MaxOutputBytes: 3, AllowStderrTruncation: true,
+	})
+	if err != nil || result.Stdout != "ok" || result.Stderr != "123" || result.StopReason != "stderr_truncated" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
 func TestRunnerCanDisableTimeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-only")

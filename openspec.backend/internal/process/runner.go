@@ -20,17 +20,18 @@ var (
 )
 
 type Command struct {
-	Executable     string
-	Arguments      []string
-	Redact         map[int]bool
-	Directory      string
-	Stdin          string
-	Environment    map[string]string
-	Timeout        time.Duration
-	DisableTimeout bool
-	MaxOutputBytes int64
-	OnStdout       func([]byte)
-	OnStderr       func([]byte)
+	Executable            string
+	Arguments             []string
+	Redact                map[int]bool
+	Directory             string
+	Stdin                 string
+	Environment           map[string]string
+	Timeout               time.Duration
+	DisableTimeout        bool
+	MaxOutputBytes        int64
+	AllowStderrTruncation bool
+	OnStdout              func([]byte)
+	OnStderr              func([]byte)
 }
 
 type Result struct {
@@ -92,7 +93,7 @@ func (Runner) Run(parent context.Context, command Command) (Result, error) {
 		terminateProcess(cmd)
 		return result, ctx.Err()
 	}
-	if stdout.exceeded || stderr.exceeded {
+	if stdout.exceeded {
 		result.StopReason = "output_limit"
 		return result, ErrOutputLimit
 	}
@@ -102,6 +103,12 @@ func (Runner) Run(parent context.Context, command Command) (Result, error) {
 			result.ExitCode = exitErr.ExitCode()
 		}
 		return result, waitErr
+	}
+	if stderr.exceeded {
+		result.StopReason = "stderr_truncated"
+		if !command.AllowStderrTruncation {
+			return result, ErrOutputLimit
+		}
 	}
 	return result, nil
 }

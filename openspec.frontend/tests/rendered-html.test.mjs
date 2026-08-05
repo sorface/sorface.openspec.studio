@@ -29,7 +29,7 @@ test("рендерит продуктовый workspace вместо старт�
   assert.doesNotMatch(html, /AI-ассистент/);
   assert.doesNotMatch(html, /Локально · изменения разделены по задачам|Файл сохранён/);
   assert.match(html, /Задача/);
-  assert.match(html, /Опубликовать/);
+  assert.match(html, /task-context-chevron/);
   assert.doesNotMatch(html, /Your site is taking shape|codex-preview|react-loading-skeleton/i);
 });
 
@@ -43,6 +43,8 @@ test("показывает loading landing до завершения анима�
   assert.match(landing, /PROJECT_LOADING_ANIMATION_MAX_MS = 1_600/);
   assert.match(landing, /setAnimationComplete\(true\)/);
   assert.match(landing, /if \(!animationComplete \|\| !initializationComplete \|\| phase !== "visible"\) return/);
+  assert.match(landing, /className="project-loading-flight" aria-hidden="true"/);
+  assert.match(landing, /className="project-loading-swallow"/);
   assert.match(landing, /<LogoMark \/>/);
   assert.match(landing, /<strong>OpenSpec<\/strong>/);
   assert.match(landing, /<span>Studio<\/span>/);
@@ -54,6 +56,11 @@ test("показывает loading landing до завершения анима�
   assert.match(css, /\.project-loading-landing \{[^}]*position:\s*fixed[^}]*z-index:\s*500/s);
   assert.match(css, /@keyframes project-loading-logo/);
   assert.match(css, /@keyframes project-loading-copy/);
+  assert.match(css, /offset-path:\s*path\("M -55 27 C 32 -53 158 -73 270 -30"\)/);
+  assert.match(css, /offset-distance:\s*0%/);
+  assert.match(css, /@keyframes project-loading-bird-flight/);
+  assert.doesNotMatch(css, /project-loading-landing::before|project-loading-aura/);
+  assert.match(css, /prefers-reduced-motion:\s*reduce/);
 });
 
 test("переключатель проекта использует портфель без избыточной подписи", async () => {
@@ -200,7 +207,7 @@ test("визуальный редактор сохраняет Markdown, undo/re
   assert.match(editor, /normalizedInitialMarkdown = editor\.getMarkdown\(\);\s*editorReady = true/);
   assert.doesNotMatch(editor, /event\.isTrusted|hasUserInteraction/);
   assert.match(editor, /onChangeRef\.current\(nextMarkdown === normalizedInitialMarkdown \? initialMarkdown : nextMarkdown\)/);
-  assert.match(editor, /\[Crepe\.Feature\.TopBar\]: true/);
+  assert.match(editor, /\[Crepe\.Feature\.TopBar\]: !readOnly/);
   assert.match(editor, /\[Crepe\.Feature\.ImageBlock\]: false/);
   assert.match(editor, /\[Crepe\.Feature\.Table\]|Crepe\.Feature\.TopBar/);
   assert.match(editor, /historyShortcut\(event\)/);
@@ -256,9 +263,10 @@ test("не рендерит удалённую панель AI-ассистен�
 
 test("покрывает задачу и OpenSpec-навигацию без Git-терминов и локальных status-индикаторов", async () => {
   const html = await (await render()).text();
-  for (const expected of ["Задача", "Опубликовать", "OpenSpec"]) {
+  for (const expected of ["Задача", "OpenSpec"]) {
     assert.match(html, new RegExp(expected));
   }
+  assert.match(html, /task-context-chevron/);
   assert.doesNotMatch(html, /Локально · изменения разделены по задачам|Файл сохранён/);
   assert.doesNotMatch(html, /Операции|История операций пока недоступна/);
   assert.doesNotMatch(html, /Git-панель пока недоступна/);
@@ -413,14 +421,17 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(operationPanel, /className="openspec-mutation-open-final"[\s\S]*Открыть итоговый Markdown/);
   assert.match(operationPanel, /className="openspec-result-dialog"[\s\S]*aria-modal="true"/);
   assert.match(operationPanel, /className="openspec-result-markdown"/);
-  assert.match(operationPanel, /className="openspec-result-comments"[\s\S]*Замечания к итоговому Markdown/);
-  assert.match(operationPanel, /Редактировать[\s\S]*Удалить[\s\S]*Добавить комментарий/);
+  assert.match(operationPanel, /<RichMarkdownEditor[\s\S]*readOnly/);
+  assert.match(operationPanel, /onAddComment=\{reviewable \? addComment : undefined\}/);
+  assert.doesNotMatch(operationPanel, /comments\.length [<>]=? 8|Комментарии \{comments\.length\}\/8|slice\(0, 1000\)/);
+  assert.match(operationPanel, /reviewComments\.map\(reviewCommentFeedback\)/);
+  assert.doesNotMatch(operationPanel, /openspec-result-comments/);
   assert.match(operationPanel, /Повторить этап с комментариями/);
   assert.match(operationPanel, /Принять исправления/);
   assert.match(css, /\.openspec-result-dialog-backdrop \{[^}]*position:\s*fixed[^}]*z-index:\s*1300[^}]*inset:\s*0/s);
   assert.match(css, /\.openspec-result-dialog \{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto[^}]*overflow:\s*hidden/s);
-  assert.match(css, /\.openspec-result-dialog-content \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(320px, 390px\)/s);
-  assert.match(css, /\.openspec-result-comments \{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto auto/s);
+  assert.match(css, /\.openspec-result-dialog-content \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
+  assert.match(css, /\.openspec-result-markdown > \.rich-editor-shell \{[^}]*height:\s*100%/s);
   assert.match(css, /\.openspec-split-diff-head \{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
   assert.match(css, /\.openspec-split-diff-row \{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/s);
   assert.match(css, /\.openspec-split-diff-cell \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);

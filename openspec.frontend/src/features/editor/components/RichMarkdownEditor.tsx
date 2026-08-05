@@ -9,6 +9,7 @@ interface RichMarkdownEditorProps {
   documentId: string;
   markdown: string;
   comments?: EditorFragmentComment[];
+  readOnly?: boolean;
   toolbarActions?: ReactNode;
   onBlur: () => void;
   onChange: (markdown: string) => void;
@@ -24,7 +25,7 @@ interface SelectionCandidate extends EditorTextSelection {
 }
 
 export function RichMarkdownEditor({
-  documentId, markdown, comments = [], toolbarActions, onBlur, onChange, onAddComment, onUpdateComment, onDeleteComment,
+  documentId, markdown, comments = [], readOnly = false, toolbarActions, onBlur, onChange, onAddComment, onUpdateComment, onDeleteComment,
 }: RichMarkdownEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const onBlurRef = useRef(onBlur);
@@ -172,7 +173,8 @@ export function RichMarkdownEditor({
           defaultValue: initialMarkdown,
           features: {
             [Crepe.Feature.Cursor]: false,
-            [Crepe.Feature.TopBar]: true,
+            [Crepe.Feature.BlockEdit]: !readOnly,
+            [Crepe.Feature.TopBar]: !readOnly,
             [Crepe.Feature.ImageBlock]: false,
             [Crepe.Feature.Latex]: false,
             [Crepe.Feature.AI]: false,
@@ -187,6 +189,7 @@ export function RichMarkdownEditor({
             },
           },
         });
+        editor.setReadonly(readOnly);
         editor.editor.use(commentsPlugin);
 
         const handleHistoryShortcut = (event: KeyboardEvent) => {
@@ -391,7 +394,7 @@ export function RichMarkdownEditor({
       disposed = true;
       destroy?.();
     };
-  }, [documentId]);
+  }, [documentId, readOnly]);
 
   const renderCommentForm = (slotId: string) => {
     const target = commentSlotTargets[slotId];
@@ -420,7 +423,7 @@ export function RichMarkdownEditor({
 
   return (
     <div
-      className="rich-editor-shell"
+      className={`rich-editor-shell${readOnly ? " read-only" : ""}`}
       data-editor-status={status}
     >
       <div
@@ -429,6 +432,7 @@ export function RichMarkdownEditor({
         role="textbox"
         aria-label="Визуальный Markdown-редактор"
         aria-multiline="true"
+        aria-readonly={readOnly}
       />
       {status === "loading" && <div className="editor-loading">Подготавливаем визуальный редактор…</div>}
       {status === "failed" && (
@@ -440,11 +444,26 @@ export function RichMarkdownEditor({
         <div className="rich-editor-context-actions">{toolbarActions}</div>,
         toolbarTarget,
       )}
-      {selectionToolbarTarget && selectionCandidate && !commentRequest && onAddComment && createPortal(
+      {!readOnly && selectionToolbarTarget && selectionCandidate && !commentRequest && onAddComment && createPortal(
         <button type="button" className="toolbar-item editor-comment-toolbar-action" aria-label="Добавить комментарий к выделенному фрагменту" title="Добавить комментарий" data-testid="editor-comment-action" onMouseDown={(event) => event.preventDefault()} onClick={openNewComment}>
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12v8.2H9l-3.8 3v-3H4Z" /><path d="M7 8.5h6M10 5.8v5.4" /></svg>
         </button>,
         selectionToolbarTarget,
+      )}
+      {readOnly && selectionCandidate && !commentRequest && onAddComment && createPortal(
+        <button
+          type="button"
+          className="editor-comment-floating-action"
+          aria-label="Добавить комментарий к выделенному фрагменту"
+          title="Добавить комментарий"
+          data-testid="editor-comment-action"
+          style={{ top: selectionCandidate.top, left: selectionCandidate.left }}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={openNewComment}
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12v8.2H9l-3.8 3v-3H4Z" /><path d="M7 8.5h6M10 5.8v5.4" /></svg>
+        </button>,
+        document.body,
       )}
       {comments.map((comment) => {
         const target = commentSlotTargets[comment.id];
