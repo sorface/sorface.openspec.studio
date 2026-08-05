@@ -1,0 +1,4 @@
+openspec:
+  server:
+    data-dir: ${java.io.tmpdir}/openspec-studio-tests/${random.uuid}
+    no-browser: true

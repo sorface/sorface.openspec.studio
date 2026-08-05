@@ -2,38 +2,21 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const workflowUrl = new URL("../.github/workflows/release.yml", import.meta.url);
-
-test("release workflow проверяет, собирает и публикует все поддерживаемые платформы", async () => {
-  const workflow = await readFile(workflowUrl, "utf8");
-
-  assert.match(workflow, /tags:\s*\n\s+- "v\*"/);
-  assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /permissions:\s*\n\s+contents: write/);
-  assert.match(workflow, /actions\/checkout@v6/);
-  assert.match(workflow, /actions\/setup-node@v6/);
-  assert.match(workflow, /actions\/setup-go@v6/);
-  assert.match(workflow, /npm --prefix openspec\.frontend ci/);
+test("release workflow проверяет Kotlin coverage и собирает self-contained matrix", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  const release = await readFile(new URL("../tooling/scripts/release.mjs", import.meta.url), "utf8");
+  assert.match(workflow, /tags: \["v\*"\]/);
+  assert.match(workflow, /actions\/setup-java@v5/);
   assert.match(workflow, /npm --prefix openspec\.frontend run check/);
-  assert.match(workflow, /npm --prefix openspec\.frontend run release/);
-  assert.match(workflow, /go-version-file: openspec\.backend\/go\.mod/);
-  assert.match(workflow, /-C out\/release/);
-  assert.match(workflow, /out\/release\/openspec-studio-windows-amd64\.exe/);
-  assert.match(workflow, /out\/artifacts/);
-  assert.match(workflow, /refs\/tags\/\$\{release_tag\}/);
-
-  for (const asset of [
-    "openspec-studio-darwin-amd64",
-    "openspec-studio-darwin-arm64",
-    "openspec-studio-linux-amd64",
-    "openspec-studio-linux-arm64",
-    "openspec-studio-windows-amd64",
-  ]) {
-    assert.match(workflow, new RegExp(asset));
-  }
-
+  assert.match(workflow, /needs: verify/);
+  assert.match(workflow, /Smoke-test application image/);
+  assert.doesNotMatch(workflow, /setup-go|go-version-file|go\.mod/);
+  for (const asset of ["openspec-studio-darwin-amd64", "openspec-studio-darwin-arm64", "openspec-studio-linux-amd64", "openspec-studio-linux-arm64", "openspec-studio-windows-amd64"]) assert.match(workflow, new RegExp(asset));
   assert.match(workflow, /sha256sum/);
   assert.match(workflow, /gh release create/);
-  assert.match(workflow, /gh release upload/);
   assert.match(workflow, /--clobber/);
+  assert.match(release, /jpackage/);
+  assert.match(release, /--type", "app-image/);
+  assert.match(release, /openspec-studio\.jar/);
+  assert.doesNotMatch(release, /goCommand|GOOS|GOARCH/);
 });

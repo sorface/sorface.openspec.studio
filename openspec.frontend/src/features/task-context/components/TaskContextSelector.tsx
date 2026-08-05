@@ -111,7 +111,7 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
 
       {open && (
         <div className="task-context-popover" role="dialog" aria-label="Выбор задачи">
-          <form onSubmit={submit}>
+          <form className="task-context-open-form" onSubmit={submit}>
             <label htmlFor="task-branch">Номер задачи или ветка</label>
             <div>
               <input
@@ -122,6 +122,9 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
                 value={branch}
                 onChange={(event) => setBranch(event.target.value)}
               />
+              <button type="submit" disabled={!branch.trim() || controller.switching}>
+                {controller.switching ? "Открываем…" : "Открыть задачу"}
+              </button>
             </div>
           </form>
           {controller.error && (

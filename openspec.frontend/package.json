@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node ../tooling/scripts/dev.mjs",
     "dev:web": "vite --config vite.local.config.ts",
-    "dev:backend": "go -C ../openspec.backend run ./cmd/openspec-studio --no-browser --address 127.0.0.1:8787",
+    "dev:backend": "node ../tooling/scripts/dev-backend.mjs",
     "build": "node ../tooling/scripts/build.mjs",
     "build:web": "vite build --config vite.local.config.ts",
     "build:site": "vinext build",
@@ -18,9 +18,10 @@
     "start:site": "vinext start",
     "setup": "npm install && npm run check && npm run build && npm start",
     "check": "npm run lint && npm run typecheck && npm test",
-    "test": "npm run test:web && npm run test:backend && npm run test:openspec",
+    "test": "npm run test:web && npm run test:backend && npm run test:kotlin-http && npm run test:openspec",
     "test:web": "npm run build:site && node --test tests/*.test.mjs",
-    "test:backend": "go -C ../openspec.backend test ./...",
+    "test:backend": "mvn -q -f ../openspec.backend/pom.xml verify",
+    "test:kotlin-http": "node ../tooling/scripts/test-kotlin-http.mjs",
     "test:openspec": "openspec validate --specs --strict --json --no-interactive",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc -p tsconfig.app.json"

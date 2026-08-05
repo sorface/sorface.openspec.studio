@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: openspec-studio
+  liquibase:
+    change-log: classpath:/db/changelog/db.changelog-master.yaml
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+server:
+  address: 127.0.0.1
+  port: 0
+  shutdown: graceful
+
+openspec:
+  server:
+    address: ${server.address}:${server.port}
+    data-dir: ${user.home}/.osstudio
+    no-browser: false

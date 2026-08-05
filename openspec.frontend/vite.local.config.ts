@@ -12,13 +12,13 @@ export default defineConfig({
   },
   build: {
     emptyOutDir: true,
-    outDir: "../../../openspec.backend/internal/web/dist",
+    outDir: "../../../openspec.backend/src/main/frontend-dist",
   },
   server: {
     host: "127.0.0.1",
     port: 3000,
     proxy: {
-      "/api": "http://127.0.0.1:8787",
+      "/api": process.env.OPENSPEC_BACKEND_URL ?? "http://127.0.0.1:8787",
     },
   },
 });

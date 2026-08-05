@@ -16,6 +16,7 @@
 # next.js
 /openspec.frontend/.next/
 /openspec.frontend/.vinext/
+/openspec.frontend/.wrangler/
 /out/
 
 # misc
@@ -37,12 +38,12 @@ yarn-error.log*
 # typescript
 next-env.d.ts
 /openspec.frontend/dist/
-/openspec.frontend/.wrangler/
 /outputs/
 /work/
 /bin/
 /release/
 /.idea/
 *.tsbuildinfo
-/openspec.backend/internal/web/dist/*
-!/openspec.backend/internal/web/dist/index.html
+/openspec.backend/src/main/frontend-dist/*
+!/openspec.backend/src/main/frontend-dist/index.html
+/openspec.backend/target/

@@ -457,8 +457,9 @@ test("task context связывает workspace с задачей и публи�
   assert.match(controller, /generateTaskPublicationMessage\(projectId, preview\.token\)/);
   assert.match(controller, /token: preview\.token/);
   assert.match(selector, /Номер задачи или ветка/);
-  assert.match(selector, /<form onSubmit=\{submit\}>/);
-  assert.doesNotMatch(selector, /Открыть задачу/);
+  assert.match(selector, /<form className="task-context-open-form" onSubmit=\{submit\}>/);
+  assert.match(selector, /type="submit"[\s\S]*Открыть задачу/);
+  assert.match(selector, /disabled=\{!branch\.trim\(\) \|\| controller\.switching\}/);
   assert.match(selector, /active\?\.branch/);
   assert.match(selector, /className="task-branch-icon"[\s\S]*aria-hidden="true"/);
   assert.match(selector, /className="task-context-branch"/);

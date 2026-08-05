@@ -5,14 +5,14 @@
 
 ## Самый простой запуск
 
-Для сборки из исходников нужны Node.js 22+ и Go 1.24+. Затем:
+Для сборки из исходников нужны Node.js 22+, JDK 21+ и Maven 3.9+. Затем:
 
 ```bash
 npm --prefix openspec.frontend run setup
 ```
 
-Команда установит зависимости, выполнит проверки, соберёт единый локальный
-бинарник и запустит его. Сервер выберет свободный loopback-порт и откроет
+Команда установит зависимости, выполнит проверки, соберёт frontend и исполняемый JVM JAR,
+а затем запустит Kotlin backend. Сервер выберет свободный loopback-порт и откроет
 браузер автоматически.
 
 Для последующих запусков достаточно:
@@ -25,8 +25,8 @@ npm --prefix openspec.frontend start
 
 ```bash
 npm --prefix openspec.frontend run dev       # локальная разработка с автообновлением
-npm --prefix openspec.frontend run build     # frontend + единый бинарник текущей ОС
-npm --prefix openspec.frontend run release   # бинарники macOS, Linux и Windows
+npm --prefix openspec.frontend run build     # frontend + исполняемый JVM JAR
+npm --prefix openspec.frontend run release   # self-contained image для текущей ОС
 npm --prefix openspec.frontend test          # frontend- и backend-тесты
 npm --prefix openspec.frontend run check     # типы/правила, сборка и тесты
 ```
@@ -80,23 +80,17 @@ openspec.frontend/
   src/
     app/                          маршруты, layout и глобальный entry CSS
     components/ui/                небольшие переиспользуемые UI-примитивы
-    db/                           D1 schema для Sites
     features/                     feature-first frontend-модули
     web/                          entrypoint локального Vite frontend
-    worker/                       Cloudflare Worker entrypoint
   tests/                          frontend-тесты
   tooling/sites/                  Sites-specific Vite plugin
   package.json                    frontend-команды и зависимости
 openspec.backend/
-  cmd/openspec-studio/            точка входа единого бинарника
-  internal/
-    config/                       безопасная локальная конфигурация
-    httpapi/                      REST API, CSRF, origin и correlation ID
-    project/                      доменная модель и application service
-    storage/                      SQLite repository и миграция
-    tools/                        обнаружение Git/OpenSpec/AI CLI
-    platform/browser/             открытие browser на трёх ОС
-    web/                          встроенный собранный frontend
+  pom.xml                         Maven/Spring Boot build и JaCoCo gate
+  src/main/kotlin/                Kotlin domain, application, API и adapters
+  src/main/resources/             Liquibase schema и runtime configuration
+  src/test/kotlin/                unit- и integration tests
+  src/main/frontend-dist/         встроенный production frontend
 tooling/
   scripts/                        dev, build, start и cross-platform release
 tests/                            cross-project/release тесты
@@ -127,16 +121,16 @@ out/                              игнорируемые binary/release output
 - AI-панель с быстрыми действиями и review контекста;
 - состояние Store, worktree, подключённых репозиториев и Git;
 - адаптивные сворачиваемые панели и доступные подписи controls;
-- Go local server, доступный только через loopback;
+- Kotlin/Spring Boot local server, доступный только через loopback;
 - автоматический выбор свободного порта и открытие browser;
-- встроенный frontend внутри Go-бинарника;
+- встроенный frontend внутри Spring Boot artifact и self-contained application image;
 - SQLite-хранилище проектов, сохраняющее данные после перезапуска;
 - `/api/v1/system/health`, session/CSRF и capability detection;
 - CRUD API проектов;
 - origin-, CSRF- и correlation ID middleware;
 - обнаружение Git, OpenSpec, Codex и GigaCode CLI;
 - отмена server lifecycle через системные сигналы;
-- CGO-free сборка для macOS, Linux и Windows;
+- `jpackage` application images со встроенной JVM для macOS, Linux и Windows;
 - тесты реализованных frontend- и backend-сценариев.
 
 Визуальные паттерны следуют Untitled UI: компактные application panels,
