@@ -5,7 +5,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import type { DocumentsController } from "@/features/documents/hooks/useDocumentsController";
 import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
 import type { RepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
-import type { WorkspaceMode } from "@/features/workspace/model/workspace-types";
+import type { WorkRole, WorkspaceMode } from "@/features/workspace/model/workspace-types";
 import { isDeltaSpecPath, isMasterSpecPath } from "@/features/workspace/model/openspec-document";
 import {
   isOpenSpecTasksPath,
@@ -22,7 +22,9 @@ interface WorkspaceSidebarProps {
   workspaceMode: WorkspaceMode;
   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
   onAddOpenSpecChange: () => void;
+  canAddOpenSpecChange?: boolean;
   onArchiveOpenSpecChange?: (change: string) => void;
+  workRole: WorkRole;
 }
 
 type ArtifactRole = "analyst" | "developer";
@@ -124,7 +126,9 @@ export function WorkspaceSidebar({
   workspaceMode,
   onWorkspaceModeChange,
   onAddOpenSpecChange,
+  canAddOpenSpecChange = true,
   onArchiveOpenSpecChange,
+  workRole,
 }: WorkspaceSidebarProps) {
   const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(() => new Set());
   const [collapsedSections, setCollapsedSections] = useState<Set<NavigationSectionId>>(
@@ -213,13 +217,6 @@ export function WorkspaceSidebar({
         title={projectSelected ? "Подключённые Git-репозитории и контекст проекта" : "Сначала выберите проект"}
         onClick={() => onWorkspaceModeChange("context")}
       ><span>▱</span> Контекст <small>{repositories.repositories.length}</small></button>
-      <button
-        className={`nav-item ${projectSelected && workspaceMode === "git" ? "active" : ""}`}
-        type="button"
-        disabled={!projectSelected}
-        title={projectSelected ? "Git active Store и получение обновлений" : "Сначала выберите проект"}
-        onClick={() => onWorkspaceModeChange("git")}
-      ><span>⑂</span> Git</button>
       {projectSelected && (
         <>
           <div className="sidebar-heading files-heading">
@@ -262,8 +259,11 @@ export function WorkspaceSidebar({
                       <IconButton
                         className="tree-section-add"
                         label="Добавить изменение"
+                        disabled={!canAddOpenSpecChange}
                         onClick={onAddOpenSpecChange}
-                        title="Исследовать задачу и создать изменение"
+                        title={canAddOpenSpecChange
+                          ? "Исследовать задачу и создать изменение"
+                          : "Сначала выберите задачу в верхней панели, чтобы изменение создавалось в нужной ветке"}
                       >＋</IconButton>
                     )}
                   </div>
@@ -276,7 +276,7 @@ export function WorkspaceSidebar({
                       const selectedTasksIncomplete = selectedTasksChange === scope.label &&
                         !!selectedTasksProgress &&
                         selectedTasksProgress.completed < selectedTasksProgress.total;
-                      const archiveAvailable = !!change?.archiveAvailable && !selectedTasksIncomplete && !openSpec?.pending;
+                      const archiveAvailable = workRole === "analyst" && !!change?.archiveAvailable && !selectedTasksIncomplete && !openSpec?.pending;
                       return (
                         <div className="tree-scope-entry" key={scope.id}>
                           <div

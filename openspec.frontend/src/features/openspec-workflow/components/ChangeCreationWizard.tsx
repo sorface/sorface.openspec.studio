@@ -18,11 +18,11 @@ interface ChangeCreationWizardProps {
 const steps = [
   { id: "intent", label: "Описание изменения" },
   { id: "clarifying", label: "Уточнение" },
-  { id: "proposal", label: "Proposal" },
+  { id: "proposal", label: "Согласование намерения" },
   { id: "naming", label: "Название" },
 ] as const;
 
-const creationArtifacts = ["proposal.md", "diff specs", "design.md", "tasks.md"] as const;
+const creationArtifacts = ["proposal.md", "diff specs"] as const;
 
 function stepIndex(stage: ChangeCreationController["draft"]["stage"]): number {
   if (stage === "clarifying") return 1;
@@ -151,12 +151,26 @@ export function ChangeCreationWizard({
     onCreated(`openspec/changes/${name}/proposal.md`);
   };
 
-  const leftDocumentId = creation.draft.stage === "proposal" ? "change-creation-proposal" : "change-creation-intent";
+  const returnToStep = (index: number) => {
+    if (activeOperation || index >= currentStep) return;
+    if (index === 0) creation.markIntent();
+    if (index === 1) creation.markClarifying();
+    if (index === 2 && creation.draft.proposal?.trim()) creation.applyExploration({
+      state: "proposal_ready",
+      summary: creation.draft.summary ?? "",
+      questions: creation.draft.questions,
+      assumptions: creation.draft.assumptions,
+      proposal: creation.draft.proposal,
+      suggestedNames: creation.draft.suggestedNames,
+    });
+  };
+
+  const leftDocumentId = creation.draft.stage === "proposal" ? "change-creation-aligned-intent" : "change-creation-intent";
   const leftMarkdown = creation.draft.stage === "proposal" ? creation.draft.proposal ?? "" : creation.draft.intent;
   const leftChange = creation.draft.stage === "proposal" ? creation.setProposal : creation.setIntent;
   const title = useMemo(() => {
     if (creation.draft.stage === "clarifying") return "Уточняем намерение";
-    if (creation.draft.stage === "proposal") return "Проверяем proposal";
+    if (creation.draft.stage === "proposal") return "Согласуем намерение";
     if (creation.draft.stage === "naming" || creation.draft.stage === "creating") return "Создаём change";
     return "Опишите замысел";
   }, [creation.draft.stage]);
@@ -192,9 +206,17 @@ export function ChangeCreationWizard({
 
         <nav className="change-creation-stepper" aria-label="Этапы создания change">
           {steps.map((step, index) => (
-            <span key={step.id} className={index === currentStep ? "active" : index < currentStep ? "done" : ""}>
+            <button
+              key={step.id}
+              type="button"
+              className={index === currentStep ? "active" : index < currentStep ? "done" : ""}
+              disabled={activeOperation || index >= currentStep}
+              onClick={() => returnToStep(index)}
+              aria-current={index === currentStep ? "step" : undefined}
+              aria-label={index < currentStep ? `Вернуться к шагу ${index + 1}: ${step.label}` : undefined}
+            >
               <i>{index < currentStep ? "✓" : index + 1}</i>{step.label}
-            </span>
+            </button>
           ))}
         </nav>
 
@@ -202,7 +224,7 @@ export function ChangeCreationWizard({
           <div className="change-creation-grid">
             <section className="change-creation-document">
               <header>
-                <div><small>{creation.draft.stage === "proposal" || currentStep >= 3 ? "OPENSPEC ARTIFACT" : "ВАШ ЗАМЫСЕЛ"}</small><b>{currentStep >= 3 ? "proposal.md" : `${leftDocumentId}.md`}</b></div>
+                <div><small>{creation.draft.stage === "proposal" ? "СОГЛАСОВАННОЕ НАМЕРЕНИЕ" : currentStep >= 3 ? "OPENSPEC ARTIFACT" : "ВАШ ЗАМЫСЕЛ"}</small><b>{currentStep >= 3 ? "proposal.md" : `${leftDocumentId}.md`}</b></div>
                 <span>Markdown</span>
               </header>
               {currentStep >= 3 ? (
@@ -287,8 +309,9 @@ export function ChangeCreationWizard({
 
               {creation.draft.stage === "proposal" && (
                 <div className="creation-proposal-meta">
-                  <small>PROPOSAL ГОТОВ</small>
+                  <small>СОГЛАСОВАНИЕ НАМЕРЕНИЯ</small>
                   <h3>Проверьте смысл изменения</h3>
+                  <p>После подтверждения по этому намерению будет запущен процесс формирования структурированного proposal.md.</p>
                   <p className="creation-summary">{creation.draft.summary}</p>
                   {!!creation.draft.assumptions.length && (
                     <section><b>Допущения</b><ul>{creation.draft.assumptions.map((item) => <li key={item}>{item}</li>)}</ul></section>
@@ -298,8 +321,8 @@ export function ChangeCreationWizard({
                     <textarea value={creation.draft.feedback ?? ""} onChange={(event) => creation.setFeedback(event.target.value)} placeholder="Необязательное замечание для следующей AI-итерации…" />
                   </label>
                   <div className="creation-inline-actions">
-                    <button type="button" disabled={!creation.draft.feedback?.trim()} onClick={() => void runExplore()}>✦ Уточнить proposal</button>
-                    <button type="button" className="primary-submit" onClick={creation.acceptProposal}>Принять proposal</button>
+                    <button type="button" disabled={!creation.draft.feedback?.trim()} onClick={() => void runExplore()}>✦ Уточнить намерение</button>
+                    <button type="button" className="primary-submit" onClick={creation.acceptProposal}>Согласовать намерение</button>
                   </div>
                 </div>
               )}
@@ -336,9 +359,9 @@ export function ChangeCreationWizard({
                   {creationReview && workflow.operation?.status === "awaiting_review" && (
                     <section className="creation-final-review">
                       <b>Готово к принятию</b>
-                      <p>Сначала будет записан proposal.md, затем автоматически запустится полный planning-каскад.</p>
+                      <p>Сначала будет записан proposal.md, затем автоматически будут подготовлены только diff specs.</p>
                       {creationReview.files.map((file) => <code key={file.path}>{file.type} · {file.path}</code>)}
-                      <button type="button" className="primary-submit" onClick={() => void acceptCreatedChange()}>Принять и сформировать артефакты</button>
+                      <button type="button" className="primary-submit" onClick={() => void acceptCreatedChange()}>Принять и сформировать specs</button>
                     </section>
                   )}
                   {workflow.draft?.status === "accepted" && (

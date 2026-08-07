@@ -1,10 +1,9 @@
-import type { ReactNode } from "react";
-import { IconButton } from "@/components/ui/IconButton";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ApiError } from "@/features/api/api-client";
 import { DocumentHistoryPanel } from "@/features/documents/components/DocumentHistoryPanel";
 import type { DocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
 import { MarkdownPreview } from "@/features/editor/components/MarkdownPreview";
-import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
+import { FlyingOperationBird, RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
 import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
 import type { DocumentViewStatus } from "@/features/documents/model/document-types";
 import type { ViewMode } from "@/features/workspace/model/workspace-types";
@@ -20,12 +19,12 @@ interface MarkdownEditorProps {
   conflict: boolean;
   error: ApiError | null;
   history: DocumentHistoryController;
-  saveShortcutLabel: string;
   viewMode: ViewMode;
   userReadOnly?: boolean;
   hideHeaderActions?: boolean;
   readOnlyLabel?: string;
   comments?: EditorFragmentComment[];
+  toolbarLoading?: boolean;
   toolbarActions?: ReactNode;
   contextPanel?: ReactNode;
   onBlur: () => void;
@@ -34,7 +33,6 @@ interface MarkdownEditorProps {
   onDeleteComment?: (path: string, commentId: string) => void;
   onChange: (markdown: string) => void;
   onViewModeChange: (mode: ViewMode) => void;
-  onWrite: () => void;
   onRetry: () => void;
 }
 
@@ -43,14 +41,29 @@ const viewModes: ViewMode[] = ["edit", "preview", "split"];
 export function MarkdownEditor(props: MarkdownEditorProps) {
   const {
     activeFile, lines, markdown, documentStatus, loadingDocument, saving, dirty, conflict,
-    error, history, saveShortcutLabel, viewMode, userReadOnly = false, hideHeaderActions = false,
-    readOnlyLabel = "Только просмотр", comments,
-    toolbarActions, contextPanel, onBlur, onAddComment, onUpdateComment, onDeleteComment, onChange, onViewModeChange, onWrite, onRetry,
+    error, history, viewMode, userReadOnly = false, hideHeaderActions = false,
+    readOnlyLabel = "Только просмотр", comments, toolbarLoading = false,
+    toolbarActions, contextPanel, onBlur, onAddComment, onUpdateComment, onDeleteComment, onChange, onViewModeChange, onRetry,
   } = props;
   const breadcrumbs = activeFile?.split("/") ?? [];
   const canEdit = documentStatus === "ready" && !!activeFile && !loadingDocument;
   const effectiveViewMode: ViewMode = userReadOnly ? "preview" : viewMode;
   const wordCount = markdown.trim() ? markdown.trim().split(/\s+/).length : 0;
+  const previousToolbarLoading = useRef(toolbarLoading);
+  const [editorRevision, setEditorRevision] = useState(0);
+  useEffect(() => {
+    if (previousToolbarLoading.current && !toolbarLoading) {
+      setEditorRevision((current) => current + 1);
+    }
+    previousToolbarLoading.current = toolbarLoading;
+  }, [toolbarLoading]);
+  const autosaveTooltip = userReadOnly
+    ? readOnlyLabel
+    : saving
+      ? "Автосохранение выполняется…"
+      : dirty
+        ? "Есть несохранённые изменения. Автосохранение запустится автоматически."
+        : "Изменения сохранены автоматически.";
 
   return (
     <section className="editor-area">
@@ -77,15 +90,6 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
                   </button>
                 ))}
               </div>
-              <IconButton
-                label="Git-аннотации файла"
-                disabled={!canEdit}
-                onClick={history.show}
-                title={canEdit ? "Показать Git-аннотации и историю файла" : "Сначала выберите Markdown-файл"}
-              >◴</IconButton>
-              <button className="save-button" onClick={onWrite} disabled={userReadOnly || !canEdit || !dirty || saving}>
-                {userReadOnly ? "Только просмотр" : saving ? "Запись…" : "Записать в файл"} {!userReadOnly && <span>{saveShortcutLabel}</span>}
-              </button>
             </>
           )}
         </div>
@@ -118,9 +122,11 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
         )}
         {canEdit && !userReadOnly && effectiveViewMode !== "preview" && (
           <RichMarkdownEditor
+            key={`${activeFile}:${editorRevision}`}
             documentId={activeFile!}
             markdown={markdown}
             comments={comments}
+            toolbarLoading={toolbarLoading}
             toolbarActions={toolbarActions}
             onAddComment={onAddComment ? (selection, comment) => onAddComment(activeFile!, selection, comment) : undefined}
             onUpdateComment={onUpdateComment ? (commentId, comment) => onUpdateComment(activeFile!, commentId, comment) : undefined}
@@ -135,13 +141,18 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
             <MarkdownPreview documentId={activeFile!} markdown={markdown} />
           </article>
         )}
+        {toolbarLoading && (
+          <div className="document-operation-loading" role="status" aria-label="Agent выполняет операцию">
+            <FlyingOperationBird />
+          </div>
+        )}
       </div>
       {contextPanel}
       </div>
 
       {history.open && activeFile && <DocumentHistoryPanel controller={history} path={activeFile} />}
 
-      <footer className="editor-statusbar">
+      <footer className="editor-statusbar" title={autosaveTooltip} aria-label={autosaveTooltip}>
         {(userReadOnly || saving || dirty) && (
           <span className="draft-label"><i /> {userReadOnly ? readOnlyLabel : saving ? "Запись…" : "Есть изменения"}</span>
         )}

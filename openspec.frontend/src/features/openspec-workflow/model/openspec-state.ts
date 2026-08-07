@@ -8,6 +8,10 @@ export function isOpenSpecOperationTerminal(status: OpenSpecOperationStatus): bo
   return terminalStatuses.has(status);
 }
 
+export function isOpenSpecOperationBusy(status: OpenSpecOperationStatus): boolean {
+  return !["accepted", "rejected", "cancelled", "failed"].includes(status);
+}
+
 export function reduceOpenSpecOperationStatus(
   current: OpenSpecOperationStatus,
   event: string,

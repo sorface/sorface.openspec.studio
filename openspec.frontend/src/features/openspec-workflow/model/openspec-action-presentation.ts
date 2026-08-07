@@ -51,11 +51,25 @@ export function openSpecDocumentActions(
   const design = actionFor("design");
   const tasks = actionFor("tasks");
 
-  if (documentArtifact === "design" || documentArtifact === "tasks") {
-    const action = documentArtifact === "design" ? design : tasks;
-    if (!artifactDone(documentArtifact) || !action) return [];
+  if (documentArtifact === "design") {
+    if (!artifactDone("design")) return [];
+    if (!artifactDone("tasks") && tasks?.available) return [{
+      action: tasks,
+      label: "Создать tasks.md",
+      primary: true,
+    }];
+    if (!design) return [];
     return [{
-      action,
+      action: design,
+      label: "Обновить",
+      primary: false,
+    }];
+  }
+
+  if (documentArtifact === "tasks") {
+    if (!artifactDone("tasks") || !tasks) return [];
+    return [{
+      action: tasks,
       label: "Обновить",
       primary: false,
     }];

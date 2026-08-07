@@ -7,18 +7,21 @@ import type { GitStatusController } from "@/features/git/hooks/useGitStatusContr
 import type { ProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { TaskContextSelector } from "@/features/task-context/components/TaskContextSelector";
 import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
+import type { WorkRole } from "@/features/workspace/model/workspace-types";
 
 interface WorkspaceHeaderProps {
   agentSettingsOpen: boolean;
   onAgentSettingsToggle: () => void;
   onPublish: () => void;
   onReceive: () => void;
+  onWorkRoleChange: (role: WorkRole) => void;
   git: GitStatusController;
   projects: ProjectsController;
   tasks: TaskContextController;
+  workRole: WorkRole;
 }
 
-export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle, onPublish, onReceive, onWorkRoleChange, projects, tasks, workRole }: WorkspaceHeaderProps) {
   const activeProject = projects.activeProject;
   const provider = activeProject?.defaultAiProvider;
   const model = activeProject?.defaultModel;
@@ -48,6 +51,22 @@ export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle,
             onReceive={onReceive}
             projectSelected={!!activeProject}
           />
+        </div>
+        <div className="work-role-toggle" role="group" aria-label="Режим работы">
+          <button
+            type="button"
+            className={workRole === "analyst" ? "active" : ""}
+            onClick={() => onWorkRoleChange("analyst")}
+            aria-pressed={workRole === "analyst"}
+            title="Аналитик работает с proposal.md и diff specs"
+          >Аналитик</button>
+          <button
+            type="button"
+            className={workRole === "developer" ? "active" : ""}
+            onClick={() => onWorkRoleChange("developer")}
+            aria-pressed={workRole === "developer"}
+            title="Разработчик работает с design.md и tasks.md"
+          >Разработчик</button>
         </div>
         <div className="provider-settings">
           <button

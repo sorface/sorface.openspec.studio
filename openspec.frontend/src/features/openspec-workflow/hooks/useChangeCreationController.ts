@@ -31,6 +31,7 @@ export interface ChangeCreationController {
   setFeedback: (feedback: string) => void;
   acceptProposal: () => void;
   setChangeName: (name: string) => void;
+  markIntent: () => void;
   markClarifying: () => void;
   markCreating: () => void;
   applyExploration: (result: OpenSpecExplorationResult) => void;
@@ -120,6 +121,10 @@ export function useChangeCreationController(projectId?: string): ChangeCreationC
     update((current) => ({ ...current, changeName: normalized }));
   }, [update]);
 
+  const markIntent = useCallback(() => {
+    update((current) => ({ ...current, stage: "intent" }));
+  }, [update]);
+
   const markClarifying = useCallback(() => {
     update((current) => ({ ...current, stage: "clarifying" }));
   }, [update]);
@@ -162,6 +167,7 @@ export function useChangeCreationController(projectId?: string): ChangeCreationC
     setFeedback,
     acceptProposal,
     setChangeName,
+    markIntent,
     markClarifying,
     markCreating,
     applyExploration,
@@ -170,7 +176,7 @@ export function useChangeCreationController(projectId?: string): ChangeCreationC
     complete,
   }), [
     acceptProposal, applyExploration, complete, draft, error, handoff, loading,
-    markClarifying, markCreating, reset, saving, setAnswer, setChangeName, setFeedback,
+    markClarifying, markCreating, markIntent, reset, saving, setAnswer, setChangeName, setFeedback,
     setIntent, setProposal,
   ]);
 }

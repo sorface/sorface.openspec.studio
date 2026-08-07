@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
-import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
+import { FlyingOperationBird, RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
 import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
 import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
 import { openSpecActionLabels } from "@/features/openspec-workflow/model/openspec-action-presentation";
@@ -25,6 +25,7 @@ import type {
 interface OpenSpecOperationPanelProps {
   controller: OpenSpecWorkflowController;
   onClose?: () => void;
+  onReviewFeedback?: (message: string) => void;
 }
 
 const operationStatusLabels = {
@@ -421,7 +422,7 @@ function ResultMarkdownDialog({
   );
 }
 
-export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperationPanelProps) {
+export function OpenSpecOperationPanel({ controller, onClose, onReviewFeedback }: OpenSpecOperationPanelProps) {
   const operation = controller.operation;
   const [reviewState, setReviewState] = useState<{
     operationId: string;
@@ -458,7 +459,14 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
   };
   const acceptResult = async () => {
     const accepted = await controller.accept();
-    if (accepted) closeResultDialog();
+    if (accepted) {
+      closeResultDialog();
+      controller.setOperationsPanelOpen(false);
+      onClose?.();
+      onReviewFeedback?.("Изменения успешно приняты");
+    } else {
+      onReviewFeedback?.(controller.error?.message ?? "Не удалось принять изменения");
+    }
     return accepted;
   };
 
@@ -593,7 +601,7 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
             <button type="button" className="secondary-danger" onClick={() => void controller.reject()} disabled={controller.pending}>
               Отклонить
             </button>
-            <button type="button" className="primary-submit" onClick={() => void controller.accept()} disabled={controller.pending}>
+            <button type="button" className="primary-submit" onClick={() => void acceptResult()} disabled={controller.pending}>
               {controller.pending ? "Принимаем…" : "Принять весь набор"}
             </button>
           </div>
@@ -620,6 +628,11 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
               </button>
             )}
           </div>
+        </div>
+      )}
+      {controller.pending && (
+        <div className="openspec-operation-pending-overlay" role="status" aria-label="Применяем изменения">
+          <FlyingOperationBird />
         </div>
       )}
     </section>

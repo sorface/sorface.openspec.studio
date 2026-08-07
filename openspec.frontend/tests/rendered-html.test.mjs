@@ -143,7 +143,7 @@ test("покрывает визуальное Markdown-редактирован�
   assert.match(html, />Preview</);
   assert.match(html, />Split</);
   assert.doesNotMatch(html, /Файл сохранён/);
-  assert.match(html, /Записать в файл/);
+  assert.doesNotMatch(html, /Записать в файл/);
   assert.match(html, /Scope: Store only/);
 });
 
@@ -154,8 +154,8 @@ test("Git-аннотации и история выбранного файла �
     readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(editor, /label="Git-аннотации файла"/);
-  assert.match(editor, /onClick=\{history\.show\}/);
+  assert.doesNotMatch(editor, /label="Git-аннотации файла"/);
+  assert.doesNotMatch(editor, /onClick=\{history\.show\}/);
   assert.match(editor, /<DocumentHistoryPanel controller=\{history\}/);
   assert.doesNotMatch(editor, /История файла пока недоступна/);
   assert.match(panel, /Git-аннотации/);
@@ -253,8 +253,9 @@ test("визуальный редактор сохраняет Markdown, undo/re
   assert.match(workspace, /isSaveShortcut\(event\)/);
   assert.match(workspace, /window\.addEventListener\("keydown", handleSaveShortcut, true\)/);
   assert.match(workspace, /window\.removeEventListener\("keydown", handleSaveShortcut, true\)/);
-  assert.match(workspace, /primaryShortcutLabel\("S"\)/);
-  assert.match(markdownEditor, /\{saveShortcutLabel\}/);
+  assert.doesNotMatch(workspace, /primaryShortcutLabel\("S"\)/);
+  assert.doesNotMatch(markdownEditor, /saveShortcutLabel/);
+  assert.match(markdownEditor, /Изменения сохранены автоматически/);
   assert.doesNotMatch(markdownEditor, /<span>⌘S<\/span>/);
   assert.doesNotMatch(markdownEditor, /label="Ещё"|Дополнительные действия пока недоступны|•••/);
 });
@@ -318,7 +319,6 @@ test("сохраняет доступные имена у интерактивн
   ]);
   for (const label of [
     "Свернуть панель",
-    "Git-аннотации файла",
   ]) {
     assert.match(html, new RegExp(`aria-label="${label}"`));
   }
@@ -330,10 +330,11 @@ test("сохраняет доступные имена у интерактивн
 });
 
 test("дерево OpenSpec прокручивается, каталоги сворачиваются, а AI selector использует chevron", async () => {
-  const [sidebar, header, richEditor, documentActions, workflowController, operationPanel, css] = await Promise.all([
+  const [sidebar, header, richEditor, markdownPreview, documentActions, workflowController, operationPanel, css] = await Promise.all([
     readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/editor/components/MarkdownPreview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
@@ -341,6 +342,7 @@ test("дерево OpenSpec прокручивается, каталоги св�
   ]);
 
   assert.match(sidebar, /collapsedDirectories/);
+  assert.match(markdownPreview, /className="editor-bird-loader"/);
   assert.match(sidebar, /collapsedSections/);
   assert.match(sidebar, /new Set<NavigationSectionId>\(\["documentation", "archive"\]\)/);
   for (const label of ["Master Spec", "Изменения", "Архив"]) {
@@ -506,6 +508,9 @@ test("дерево OpenSpec прокручивается, каталоги св�
   assert.match(css, /\.openspec-markdown-line\.kind-heading\.level-2 \{[^}]*font-size:\s*15px/s);
   assert.match(css, /\.markdown-task-box \{[^}]*border-radius:\s*3px/s);
   assert.match(operationPanel, /className="primary-submit"[\s\S]*Принять весь набор/);
+  assert.match(operationPanel, /onClick=\{\(\) => void acceptResult\(\)\}/);
+  assert.match(operationPanel, /controller\.setOperationsPanelOpen\(false\)/);
+  assert.match(operationPanel, /onReviewFeedback\?\.\("Изменения успешно приняты"\)/);
   assert.match(operationPanel, /className="openspec-review-action-error" role="alert"/);
   assert.match(operationPanel, /controller\.pending \? "Принимаем…" : "Принять весь набор"/);
   assert.match(documentActions, /controller\.operationDialogOpen && selectedOperation && createPortal\(/);

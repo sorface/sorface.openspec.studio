@@ -30,7 +30,6 @@ import {
   openSpecArtifactRefreshActionArtifact,
   openSpecArtifactRefreshCascadeGoal,
   openSpecArtifactRefreshMatchesOperation,
-  openSpecArtifactRefreshSteps,
   resumeOpenSpecArtifactRefreshCascade,
   type OpenSpecArtifactRefreshCascade,
   type OpenSpecArtifactRefreshStep,
@@ -723,7 +722,7 @@ export function useOpenSpecWorkflowController(
         const initial = createOpenSpecArtifactRefreshCascade(
           acceptedOperation.openspecChange,
           "specs",
-          openSpecArtifactRefreshSteps,
+          ["specs"],
         );
         setArtifactRefresh(initial);
         try {

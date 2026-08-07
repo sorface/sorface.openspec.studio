@@ -15,6 +15,7 @@ interface RichMarkdownEditorProps {
   markdown: string;
   comments?: EditorFragmentComment[];
   readOnly?: boolean;
+  toolbarLoading?: boolean;
   toolbarActions?: ReactNode;
   onBlur: () => void;
   onChange: (markdown: string) => void;
@@ -30,13 +31,14 @@ interface SelectionCandidate extends EditorTextSelection {
 }
 
 export function RichMarkdownEditor({
-  documentId, markdown, comments = [], readOnly = false, toolbarActions, onBlur, onChange, onAddComment, onUpdateComment, onDeleteComment,
+  documentId, markdown, comments = [], readOnly = false, toolbarLoading = false, toolbarActions, onBlur, onChange, onAddComment, onUpdateComment, onDeleteComment,
 }: RichMarkdownEditorProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const onBlurRef = useRef(onBlur);
   const onChangeRef = useRef(onChange);
   const commentsRef = useRef(comments);
   const draftSelectionRef = useRef<EditorTextSelection | null>(null);
+  const editorReadonlyRef = useRef<{ setReadonly: (readonly: boolean) => void } | null>(null);
   const showCommentsRef = useRef<(comments: EditorFragmentComment[]) => void>(() => undefined);
   const initialMarkdownRef = useRef(markdown);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
@@ -58,6 +60,17 @@ export function RichMarkdownEditor({
     commentsRef.current = comments;
     showCommentsRef.current(comments);
   }, [comments]);
+
+  useEffect(() => {
+    toolbarTarget?.classList.toggle("rich-editor-toolbar-busy", toolbarLoading);
+    return () => {
+      toolbarTarget?.classList.remove("rich-editor-toolbar-busy");
+    };
+  }, [toolbarLoading, toolbarTarget]);
+
+  useEffect(() => {
+    editorReadonlyRef.current?.setReadonly(readOnly || toolbarLoading);
+  }, [readOnly, toolbarLoading]);
 
   const submitComment = (event: FormEvent) => {
     event.preventDefault();
@@ -89,7 +102,7 @@ export function RichMarkdownEditor({
   };
 
   const openNewComment = () => {
-    if (!selectionCandidate) return;
+    if (!selectionCandidate || toolbarLoading) return;
     draftSelectionRef.current = selectionCandidate;
     setCommentRequest(selectionCandidate);
     setSelectionCandidate(null);
@@ -99,6 +112,7 @@ export function RichMarkdownEditor({
   };
 
   const openExistingComment = (comment: EditorFragmentComment) => {
+    if (toolbarLoading) return;
     setCommentRequest({ ...comment.selection, top: 0, left: 0, selectionRect: { top: 0, left: 0, width: 0, height: 0 } });
     setEditingCommentId(comment.id);
     setCommentText(comment.text);
@@ -205,7 +219,7 @@ export function RichMarkdownEditor({
             },
           },
         });
-        editor.setReadonly(readOnly);
+        editor.setReadonly(readOnly || toolbarLoading);
         editor.editor.use(commentsPlugin);
 
         const handleHistoryShortcut = (event: KeyboardEvent) => {
@@ -403,6 +417,7 @@ export function RichMarkdownEditor({
           return;
         }
         destroy = () => {
+          editorReadonlyRef.current = null;
           removeSelectionListener?.();
           headingSelectorObserver?.disconnect();
           window.removeEventListener("resize", handleCommentSlotResize);
@@ -414,6 +429,7 @@ export function RichMarkdownEditor({
           setSelectionToolbarTarget((current) => current === nextSelectionToolbarTarget ? null : current);
           editor.destroy();
         };
+        editorReadonlyRef.current = editor;
         setStatus("ready");
       } catch {
         if (!disposed) setStatus("failed");
@@ -465,7 +481,14 @@ export function RichMarkdownEditor({
         aria-multiline="true"
         aria-readonly={readOnly}
       />
-      {status === "loading" && <div className="editor-loading">Подготавливаем визуальный редактор…</div>}
+      {status === "loading" && (
+        <div className="editor-loading">
+          <span className="editor-bird-loader" aria-hidden="true">
+            <svg viewBox="0 0 40 24"><path d="M3 13c8.4-6.4 15.3-7.1 20.8-2.1C27.4 6.4 32 4.2 37.6 4.4c-4 3.1-6.5 6.4-7.6 9.8 2.7.5 5.1 1.5 7.2 3-6.7.9-12.3-.1-16.8-3C15 17.9 9.2 17.5 3 13Z" /></svg>
+          </span>
+          <span>Подготавливаем визуальный редактор…</span>
+        </div>
+      )}
       {status === "failed" && (
         <div className="editor-error" role="alert">
           Редактор не загрузился. Обновите страницу — черновик не потерян.
@@ -473,6 +496,12 @@ export function RichMarkdownEditor({
       )}
       {toolbarTarget && toolbarActions && createPortal(
         <div className="rich-editor-context-actions">{toolbarActions}</div>,
+        toolbarTarget,
+      )}
+      {toolbarTarget && toolbarLoading && createPortal(
+        <div className="rich-editor-toolbar-loading" role="status" aria-label="Agent подготавливает действия редактора">
+          <FlyingOperationBird />
+        </div>,
         toolbarTarget,
       )}
       {!readOnly && selectionToolbarTarget && selectionCandidate && !commentRequest && onAddComment && createPortal(
@@ -515,5 +544,25 @@ export function RichMarkdownEditor({
       })}
       {!editingCommentId && commentRequest && renderCommentForm("draft-comment")}
     </div>
+  );
+}
+
+export function FlyingOperationBird() {
+  return (
+    <>
+      {[0, 1, 2].map((index) => (
+        <span key={index} className={`editor-loading-flight path-${index + 1}`} aria-hidden="true">
+          <svg className="project-loading-swallow" viewBox="0 0 40 24">
+            <path
+              d="M3 10.1 7.2 13.3 3 16.9l7.7-2.8c3.5 1.5 7.3 2.2 11.4 2.2 3.2-.1 6.1-.8 8.8-2.2-2-1.8-4.4-3-7-3.6-4.1-.9-8.5-.6-13 .9L3 10.1Z"
+            />
+            <path
+              d="M10.8 11.4C14.6 5.8 21.3 2.1 34.2.8c-3.7 5.6-8.6 9.3-15.3 11.3l-8.1-.7Z"
+            />
+            <path d="M11 14.1c4.7 4.5 10.6 6.8 18.4 7.2-2.6-3.8-6.2-6.2-11-7.5l-7.4.3Z" opacity=".78" />
+          </svg>
+        </span>
+      ))}
+    </>
   );
 }

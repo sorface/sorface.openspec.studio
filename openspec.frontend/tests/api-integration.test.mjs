@@ -351,7 +351,7 @@ test("projects client и controller покрывают CRUD, lifecycle и под
   assert.match(switcher, /lastContextImport\.imported/);
 });
 
-test("Git feature доступен из workspace и сохраняет безопасные операции Store", async () => {
+test("Git feature сохраняет безопасные операции Store без отдельной workspace-вкладки", async () => {
   const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, diffParser] = await Promise.all([
     readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
@@ -401,9 +401,10 @@ test("Git feature доступен из workspace и сохраняет безо
   assert.doesNotMatch(panel, /Только просмотр · commit/);
   assert.match(workspace, /useGitStatusController\(projects\.activeProject\?\.id, !!projects\.activeProject\)/);
   assert.match(workspace, /git=\{git\}/);
-  assert.match(workspace, /<GitPanel controller=\{git\}/);
-  assert.match(sidebar, /onWorkspaceModeChange\("git"\)/);
-  assert.match(sidebar, /> Git<\/button>/);
+  assert.doesNotMatch(workspace, /<GitPanel controller=\{git\}/);
+  assert.doesNotMatch(workspace, /from "@\/features\/git\/components\/GitPanel"/);
+  assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("git"\)/);
+  assert.doesNotMatch(sidebar, /> Git<\/button>/);
   assert.doesNotMatch(sidebar, /Git-панель пока недоступна/);
   assert.doesNotMatch(workspace, /WorkspaceFooter|Commit & Push/);
 
@@ -508,25 +509,53 @@ test("task context связывает workspace с задачей и публи�
   assert.match(workspace, /result\.updated\) retryDocuments\(\)/);
   assert.match(documents, /item\.kind === "file" && item\.path === requestedPath/);
   assert.match(workspace, /<PublicationDialog/);
+  assert.match(types, /WorkRole = "analyst" \| "developer"/);
+  assert.match(workspace, /WORK_ROLE_STORAGE_KEY = "openspec-studio-work-role"/);
+  assert.match(workspace, /type WorkspaceRouteView = "documents" \| "context" \| "create"/);
+  assert.match(workspace, /function readWorkspaceRoute\(\): WorkspaceRouteState/);
+  assert.match(workspace, /function writeWorkspaceRoute\(route: WorkspaceRouteState\)/);
+  assert.match(workspace, /url\.searchParams\.set\("view", route\.view\)/);
+  assert.match(workspace, /url\.searchParams\.set\("path", route\.path\)/);
+  assert.match(workspace, /function readStoredWorkRole\(\): WorkRole/);
+  assert.match(workspace, /const \[workRole, setWorkRole\] = useState<WorkRole>\(\(\) => readStoredWorkRole\(\)\)/);
+  assert.match(workspace, /window\.localStorage\.setItem\(WORK_ROLE_STORAGE_KEY, workRole\)/);
+  assert.match(workspace, /onWorkRoleChange=\{setWorkRole\}/);
+  assert.match(workspace, /workRole=\{workRole\}/);
+  assert.match(workspace, /В режиме разработчика архивирование недоступно/);
   assert.match(workspace, /hideDocumentTree=\{openSpecCreationPageOpen\}/);
+  assert.match(workspace, /const \[workspaceMode, setWorkspaceMode\] = useState<WorkspaceMode>\(initialRoute\.view === "context" \? "context" : "documents"\)/);
+  assert.match(workspace, /const \[openSpecCreationPageOpen, setOpenSpecCreationPageOpen\] = useState\(initialRoute\.view === "create"\)/);
+  assert.match(workspace, /const \[routeDocumentPath, setRouteDocumentPath\] = useState\(initialRoute\.path\)/);
+  assert.match(workspace, /window\.addEventListener\("popstate", onPopState\)/);
+  assert.match(workspace, /documents\.items\.find\(\(item\) => item\.kind === "file" && item\.path === routeDocumentPath\)/);
   assert.match(workspace, /const changeWorkspaceMode = useCallback\(\(mode: WorkspaceMode\) => \{[\s\S]*setOpenSpecCreationPageOpen\(false\);[\s\S]*setWorkspaceMode\(mode\)/);
   assert.match(workspace, /onWorkspaceModeChange=\{changeWorkspaceMode\}/);
   assert.match(sidebar, /!hideDocumentTree && activeScope && workspaceMode === "documents"/);
   assert.match(sidebar, /!hideDocumentTree && workspaceMode === "documents" && activeScope\?\.id === scope\.id \? "active"/);
   assert.match(sidebar, /const preferredPath = `\$\{scope\.rootPath\}\/proposal\.md`/);
   assert.match(sidebar, /if \(target\) documents\.select\(target\.path\)/);
-  assert.match(css, /\.change-creation-stepper \{[^}]*grid-template-columns:\s*repeat\(4, minmax\(150px, 220px\)\)[^}]*justify-content:\s*center/s);
+  assert.match(css, /\.change-creation-stepper \{[^}]*grid-template-columns:\s*repeat\(4, minmax\(120px, 190px\)\)[^}]*column-gap:\s*18px/s);
+  assert.match(css, /\.change-creation-stepper button:not\(:last-child\)::after \{[^}]*right:\s*-18px[^}]*left:\s*calc\(100% \+ 6px\)/s);
+  assert.match(css, /\.artifact-refresh-stages li \{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\)[^}]*align-items:\s*center/s);
+  assert.match(css, /\.artifact-refresh-stages li > i \{[^}]*align-self:\s*center[^}]*justify-self:\s*center/s);
+  assert.match(css, /\.artifact-refresh-stages li > span \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto/s);
+  assert.match(css, /\.change-creation-document > \.rich-editor-shell \.milkdown \{[^}]*box-sizing:\s*border-box[^}]*overflow-x:\s*hidden/s);
+  assert.match(css, /\.change-creation-document > \.rich-editor-shell \.milkdown \.milkdown-top-bar,[\s\S]*\.change-creation-document > \.rich-editor-shell \.milkdown \.ProseMirror \{[^}]*max-width:\s*760px/s);
   assert.match(header, /<TaskContextSelector[\s\S]*onPublish=\{onPublish\}[\s\S]*onReceive=\{onReceive\}/);
+  assert.match(header, /className="work-role-toggle"/);
+  assert.match(header, /Аналитик/);
+  assert.match(header, /Разработчик/);
   assert.match(header, /<div className="top-actions">[\s\S]*<TaskContextSelector[\s\S]*<div className="provider-settings">/);
   assert.doesNotMatch(header, /workspace-status|server-status|saved-state|useSystemStatus|draftSaved/);
   assert.doesNotMatch(header, /Локальный server|Файл сохранён/);
   assert.doesNotMatch(header, /Получить обновления|Публикация изменений|publish-icon-button|receive-icon-button|publication-icon-button/);
   assert.match(css, /\.top-actions \{[^}]*margin-left:\s*auto[^}]*flex:\s*0 0 auto[^}]*justify-content:\s*flex-end/s);
+  assert.match(css, /\.work-role-toggle \{[^}]*grid-template-columns:\s*1fr 1fr/s);
   assert.match(css, /\.task-context-publish-group \{[^}]*display:\s*flex[^}]*gap:\s*2px/s);
   assert.match(css, /\.task-context-actions \{[^}]*display:\s*grid[^}]*border-top:\s*1px solid var\(--soft-line\)/s);
   assert.match(css, /\.task-context-actions > button \{[^}]*min-height:\s*36px[^}]*display:\s*flex[^}]*background:\s*transparent/s);
   assert.match(documents, /loadedWorkspaceContext/);
-  assert.match(types, /"git"/);
+  assert.doesNotMatch(types, /"git"/);
   assert.doesNotMatch(workspace, /WorkspaceFooter|Локально · изменения разделены по задачам/);
   assert.doesNotMatch(markdownEditor, /Файл сохранён/);
 });
@@ -673,9 +702,15 @@ test("documents feature читает дерево, содержимое и Git-�
   assert.match(sidebar, /collapsedDirectories/);
   assert.match(sidebar, /documents\.retry/);
   assert.match(editor, /documents|documentStatus/);
-  assert.match(editor, /Записать в файл/);
-  assert.match(editor, /disabled=\{!canEdit\}/);
-  assert.match(editor, /history\.show/);
+  assert.doesNotMatch(editor, /Записать в файл/);
+  assert.doesNotMatch(editor, /history\.show/);
+  assert.match(editor, /Изменения сохранены автоматически/);
+  assert.match(editor, /document-operation-loading/);
+  assert.match(editor, /toolbarLoading && \(/);
+  assert.doesNotMatch(editor, /toolbarLoading && \(userReadOnly \|\| effectiveViewMode === "preview"\)/);
+  assert.match(editor, /previousToolbarLoading\.current && !toolbarLoading/);
+  assert.match(editor, /setEditorRevision\(\(current\) => current \+ 1\)/);
+  assert.match(editor, /key=\{`\$\{activeFile\}:\$\{editorRevision\}`\}/);
   assert.match(workspace, /useDocumentsController/);
   assert.match(workspace, /useDocumentHistoryController/);
   assert.match(workspace, /DOCUMENT_AUTOSAVE_DELAY_MS = 3_000/);
@@ -749,7 +784,7 @@ test("OpenSpec автоматически применяет только пус
 });
 
 test("OpenSpec workflow поддерживает read-only обзор, agent actions, stale refresh и полный review", async () => {
-  const [client, controller, operationPanel, documentActions, actionPresentation, actionPresentationState, workspace, sidebar, state] = await Promise.all([
+  const [client, controller, operationPanel, documentActions, actionPresentation, actionPresentationState, workspace, sidebar, css, state] = await Promise.all([
     readFile(new URL("../src/features/openspec-workflow/api/openspec-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
@@ -758,6 +793,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
     importTypeScript("../src/features/openspec-workflow/model/openspec-action-presentation.ts"),
     readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
     importTypeScript("../src/features/openspec-workflow/model/openspec-state.ts"),
   ]);
 
@@ -807,11 +843,16 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(workspace, /openSpecCreationPageOpen/);
   assert.doesNotMatch(workspace, /activeWorkspaceMode === "openspec"|<WorkspaceFooter/);
   assert.match(workspace, /onAddOpenSpecChange=\{addOpenSpecChange\}/);
+  assert.match(workspace, /const taskWorkspaceSelected = !!tasks\.overview\?\.active && workspaceContext !== "base"/);
+  assert.match(workspace, /if \(!taskWorkspaceSelected\) \{[\s\S]*Сначала выберите задачу в верхней панели/);
+  assert.match(workspace, /canAddOpenSpecChange=\{taskWorkspaceSelected\}/);
   assert.match(workspace, /changeDocumentContextFromPath/);
   assert.match(workspace, /\(proposal\|design\|tasks\)\\\.md/);
   assert.match(workspace, /documentArtifact=\{changeDocument\.artifact\}/);
   assert.match(workspace, /<OpenSpecDocumentAction/);
+  assert.match(workspace, /workRole=\{workRole\}/);
   assert.match(workspace, /<OpenSpecDocumentReview/);
+  assert.match(workspace, /onReviewFeedback=\{notify\}/);
   assert.doesNotMatch(workspace, /continueOpenSpecChange|setWorkspaceMode\("openspec"\).*runArtifactAction/s);
   assert.match(documentActions, /documentDirty && !await onSave\(\)/);
   assert.match(documentActions, /controller\.runArtifactAction\(change, action\.artifact/);
@@ -819,9 +860,13 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.doesNotMatch(documentActions, /refreshWarningAction|artifact-refresh-warning|Будут обновлены|Принять риск/);
   assert.match(documentActions, /const guidance = artifactCommentsGoal\(documentComments, documentArtifact\);[\s\S]*controller\.startArtifactRefresh\(change, action\.artifact, refreshSteps, guidance\)/);
   assert.match(documentActions, /openSpecDocumentActions\(controller\.details, hasSpecs, documentArtifact\)/);
+  assert.match(documentActions, /const analystAction = \["proposal", "spec", "specs"\]\.includes\(artifact\)/);
+  assert.match(documentActions, /const developerAction = \["design", "tasks"\]\.includes\(artifact\)/);
+  assert.match(documentActions, /workRole === "analyst" \? analystAction : developerAction/);
   assert.match(documentActions, /actions\.map\(\(\{ action, label, primary \}\)/);
   assert.match(documentActions, /Загружаем состояние change/);
   assert.match(documentActions, /<OpenSpecOperationPanel\s+controller=\{controller\}/);
+  assert.match(documentActions, /onReviewFeedback=\{onReviewFeedback\}/);
   assert.match(documentActions, /controller\.operationDialogOpen/);
   assert.doesNotMatch(documentActions, /Просмотреть результат|openspec-operation-summary|openspec-operation-view-button/);
   assert.match(documentActions, /Показать историю операций изменения/);
@@ -863,6 +908,15 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(controller, /\.\.\.normalized\.map\(\(comment, index\)/);
   assert.doesNotMatch(controller, /slice\(0, 8\)|slice\(0, 1000\)|let remaining = 6000/);
   assert.match(operationPanel, /Принять весь набор/);
+  assert.match(operationPanel, /const acceptResult = async \(\) => \{/);
+  assert.match(operationPanel, /controller\.setOperationsPanelOpen\(false\)/);
+  assert.match(operationPanel, /onClose\?\.\(\)/);
+  assert.match(operationPanel, /onReviewFeedback\?\.\("Изменения успешно приняты"\)/);
+  assert.match(operationPanel, /onReviewFeedback\?\.\(controller\.error\?\.message \?\? "Не удалось принять изменения"\)/);
+  assert.match(operationPanel, /controller\.pending && \(/);
+  assert.match(operationPanel, /className="openspec-operation-pending-overlay"/);
+  assert.match(operationPanel, /<FlyingOperationBird \/>/);
+  assert.match(css, /\.openspec-operation-pending-overlay \{[^}]*position:\s*absolute[^}]*pointer-events:\s*all/s);
   assert.doesNotMatch(operationPanel, /Planning-артефакты согласованы/);
   assert.doesNotMatch(operationPanel, /завершится только после выполнения всех актуальных пунктов tasks\.md/);
   assert.doesNotMatch(operationPanel, /Повторить текущий этап/);
@@ -871,11 +925,12 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.match(actionPresentation, /Обновить specs/);
   assert.match(actionPresentation, /Сформировать design/);
   assert.match(actionPresentation, /Создать design\.md/);
+  assert.match(actionPresentation, /Создать tasks\.md/);
   assert.doesNotMatch(actionPresentation, /Обновить design\.md/);
   assert.match(actionPresentation, /label: "Обновить"/);
-  assert.match(actionPresentation, /documentArtifact === "design" \|\| documentArtifact === "tasks"/);
+  assert.match(actionPresentation, /documentArtifact === "design"/);
+  assert.match(actionPresentation, /documentArtifact === "tasks"/);
   assert.match(actionPresentation, /if \(!specsDone\)/);
-  assert.doesNotMatch(actionPresentation, /next\.artifact === "tasks"/);
   const artifactAction = (artifact, available = true) => ({ kind: "prepare_artifact", artifact, available });
   const documentActionDetails = (statuses) => ({
     actions: [artifactAction("specs"), artifactAction("design"), artifactAction("tasks", statuses.design === "done")],
@@ -899,7 +954,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.deepEqual(
     actionPresentationState.openSpecDocumentActions(documentActionDetails({ proposal: "done", specs: "done", design: "done", tasks: "ready" }), true, "design")
       .map(({ label, primary }) => ({ label, primary })),
-    [{ label: "Обновить", primary: false }],
+    [{ label: "Создать tasks.md", primary: true }],
   );
   assert.deepEqual(
     actionPresentationState.openSpecDocumentActions(documentActionDetails({ proposal: "done", specs: "done", design: "done", tasks: "done" }), true, "design")
@@ -913,7 +968,9 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   );
   assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("openspec"\)|active-heading/);
   assert.match(sidebar, /className="files-heading-label">OpenSpec/);
-  assert.match(sidebar, /className="tree-section-add"[\s\S]*label="Добавить изменение"[\s\S]*onClick=\{onAddOpenSpecChange\}/);
+  assert.match(sidebar, /className="tree-section-add"[\s\S]*label="Добавить изменение"[\s\S]*disabled=\{!canAddOpenSpecChange\}[\s\S]*onClick=\{onAddOpenSpecChange\}/);
+  assert.match(sidebar, /Сначала выберите задачу в верхней панели, чтобы изменение создавалось в нужной ветке/);
+  assert.match(sidebar, /const archiveAvailable = workRole === "analyst" &&/);
   assert.doesNotMatch(sidebar, /files-heading-label">OpenSpec<[\s\S]{0,300}label="Добавить изменение"/);
   assert.doesNotMatch(sidebar, /files-heading-label">OpenSpec<[\s\S]{0,300}label="Обновить"/);
 
@@ -921,6 +978,8 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
   assert.equal(state.reduceOpenSpecOperationStatus("running", "validating"), "validating");
   assert.equal(state.reduceOpenSpecOperationStatus("validating", "awaiting_review"), "awaiting_review");
   assert.equal(state.isOpenSpecOperationTerminal("awaiting_review"), true);
+  assert.equal(state.isOpenSpecOperationBusy("awaiting_review"), true);
+  assert.equal(state.isOpenSpecOperationBusy("accepted"), false);
   assert.equal(state.openSpecViewStatus("OPENSPEC_STATUS_STALE"), "stale");
   assert.equal(state.openSpecViewStatus("OPENSPEC_CLI_UNAVAILABLE"), "unavailable");
 });
@@ -948,7 +1007,7 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.match(controller, /createChange = useCallback\(async \(change: string, proposal: string\)/);
   assert.match(controller, /kind:\s*"create_change",\s*change,\s*proposal/);
   assert.match(controller, /setSelectedChange\(acceptedOperation\.openspecChange\)/);
-  assert.match(controller, /acceptedOperation\?\.openspecAction === "create_change"[\s\S]*createOpenSpecArtifactRefreshCascade\([\s\S]*"specs",[\s\S]*openSpecArtifactRefreshSteps/);
+  assert.match(controller, /acceptedOperation\?\.openspecAction === "create_change"[\s\S]*createOpenSpecArtifactRefreshCascade\([\s\S]*"specs",[\s\S]*\["specs"\]/);
   assert.match(controller, /const artifactAliases = artifact === "spec" \|\| artifact === "specs" \? \["spec", "specs"\] : \[artifact\]/);
   assert.match(controller, /openSpecArtifactRefreshCascadeGoal\(initial\)/);
   assert.match(controller, /setValidationStatus\("checking"\)/);
@@ -972,23 +1031,31 @@ test("OpenSpec workflow проводит управляемые AI-итерац�
   assert.match(wizard, /aria-labelledby="change-creation-title"/);
   assert.match(wizard, /className="openspec-panel change-creation-page"/);
   assert.match(wizard, /Вернуться в рабочее пространство/);
+  assert.match(wizard, /const returnToStep = \(index: number\) =>/);
+  assert.match(wizard, /<button[\s\S]*onClick=\{\(\) => returnToStep\(index\)\}[\s\S]*aria-current=\{index === currentStep \? "step" : undefined\}/);
   assert.doesNotMatch(wizard, /role="dialog"|aria-modal="true"|change-creation-backdrop/);
   assert.match(wizard, /Опишите замысел/);
   assert.match(wizard, /label: "Описание изменения"/);
+  assert.match(wizard, /label: "Согласование намерения"/);
   assert.match(wizard, /READ-ONLY ИССЛЕДОВАНИЕ/);
   assert.match(wizard, /Ответьте на важные вопросы/);
   assert.match(wizard, /Продолжить с допущениями/);
   assert.match(wizard, /ИССЛЕДОВАНИЕ НЕ ЗАВЕРШЕНО/);
   assert.match(wizard, /Повторить анализ/);
-  assert.match(wizard, /Проверяем proposal/);
+  assert.match(wizard, /Согласуем намерение/);
+  assert.match(wizard, /СОГЛАСОВАНИЕ НАМЕРЕНИЯ/);
+  assert.match(wizard, /будет запущен процесс формирования структурированного proposal\.md/);
   assert.match(wizard, /Что нужно скорректировать\?/);
+  assert.match(wizard, /Согласовать намерение/);
   assert.match(wizard, /Назовите изменение/);
   assert.match(wizard, /suggestedNames\.map/);
   assert.match(wizard, /Подготовить change/);
   assert.match(wizard, /Записать change в Store/);
-  assert.match(wizard, /const creationArtifacts = \["proposal\.md", "diff specs", "design\.md", "tasks\.md"\]/);
+  assert.match(wizard, /const creationArtifacts = \["proposal\.md", "diff specs"\]/);
   assert.match(wizard, /className="creation-artifact-plan"/);
-  assert.match(wizard, /Принять и сформировать артефакты/);
+  assert.match(wizard, /автоматически будут подготовлены только diff specs/);
+  assert.match(wizard, /Принять и сформировать specs/);
+  assert.match(controller, /createOpenSpecArtifactRefreshCascade\([\s\S]*acceptedOperation\.openspecChange,[\s\S]*"specs",[\s\S]*\["specs"\]/);
   assert.match(wizard, /if \(!await workflow\.accept\(\)\) return;[\s\S]*creation\.complete\(\);[\s\S]*onCreated/);
   assert.match(wizard, /onCreated\(`openspec\/changes\/\$\{name\}\/proposal\.md`\)/);
   assert.match(creationController, /setTimeout\(\(\) => \{/);
@@ -1053,9 +1120,14 @@ test("proposal.md хранит видимые комментарии к фраг
 
   assert.match(richEditor, /selectionchange/);
   assert.match(richEditor, /readOnly\?: boolean/);
-  assert.match(richEditor, /editor\.setReadonly\(readOnly\)/);
+  assert.match(richEditor, /toolbarLoading\?: boolean/);
+  assert.match(richEditor, /editorReadonlyRef\.current\?\.setReadonly\(readOnly \|\| toolbarLoading\)/);
+  assert.match(richEditor, /editor\.setReadonly\(readOnly \|\| toolbarLoading\)/);
   assert.match(richEditor, /\[Crepe\.Feature\.TopBar\]: !readOnly/);
   assert.match(richEditor, /aria-readonly=\{readOnly\}/);
+  assert.match(richEditor, /className="editor-bird-loader"/);
+  assert.match(richEditor, /function FlyingOperationBird\(\)/);
+  assert.match(richEditor, /path-\$\{index \+ 1\}/);
   assert.match(richEditor, /container\.closest\("\.cm-content"\)/);
   assert.match(richEditor, /Добавить комментарий к выделенному фрагменту/);
   assert.match(richEditor, /editor-comment-highlight/);
@@ -1097,11 +1169,36 @@ test("proposal.md хранит видимые комментарии к фраг
   assert.match(workspace, /proposalCommentsStorageKey/);
   assert.match(workspace, /pendingCommentUpdatePath/);
   assert.match(workspace, /clearFragmentComments/);
+  assert.match(workspace, /isOpenSpecOperationBusy/);
+  assert.match(workspace, /const openSpecOperationActive = changeDocument[\s\S]*openSpec\.operations\.some/);
+  assert.match(workspace, /operation\.openspecChange === changeDocument\.change && isOpenSpecOperationBusy\(operation\.status\)/);
+  assert.match(workspace, /const openSpecArtifactRefreshActive = !!changeDocument &&[\s\S]*openSpec\.artifactRefresh\?\.change === changeDocument\.change[\s\S]*openSpec\.artifactRefresh\.status === "active"/);
+  assert.match(workspace, /const openSpecOperationStarting = !!changeDocument && pendingOperationChange === changeDocument\.change/);
+  assert.doesNotMatch(workspace, /const openSpecOperationActive = \["queued", "running", "validating"\]\.includes\(openSpec\.operation\?\.status \?\? ""\)/);
+  assert.match(workspace, /openSpecOperationActive \|\| openSpecArtifactRefreshActive \|\| openSpecOperationStarting/);
+  assert.match(workspace, /\|\| openSpecOperationActive[\s\S]*\|\| documents\.status !== "ready"/);
   assert.match(documentActions, /artifactCommentsGoal\(documentComments, documentArtifact\)/);
   assert.match(documentActions, /controller\.startArtifactRefresh/);
+  assert.match(documentActions, /isOpenSpecOperationBusy\(operation\.status\)/);
+  assert.match(documentActions, /onActionPendingChange\?: \(pending: boolean\) => void/);
+  assert.match(documentActions, /onActionPendingChange\?\.\(true\)/);
+  assert.match(documentActions, /onActionPendingChange\?\.\(false\)/);
+  assert.match(documentActions, /className="editor-action-loader"/);
+  assert.match(documentActions, /actionsLoading &&/);
   assert.doesNotMatch(controller, /editDocument|mode: "inline"|createAiOperation/);
   assert.doesNotMatch(richEditor, /agent-inline-prompt|Редактировать изменение через agent/);
   assert.match(css, /\.editor-comment-toolbar-action/);
+  assert.match(css, /\.editor-bird-loader \{/);
+  assert.match(css, /@keyframes editor-bird-flight/);
+  assert.match(css, /animation:\s*project-loading-bird-flight 5600ms/);
+  assert.match(css, /animation:\s*editor-bird-flight 3200ms/);
+  assert.match(css, /\.editor-loading-flight\.path-1 \{/);
+  assert.match(css, /\.editor-loading-flight\.path-2 \{[^}]*animation-delay:\s*1860ms/s);
+  assert.match(css, /\.editor-loading-flight\.path-3 \{[^}]*animation-delay:\s*3720ms/s);
+  assert.match(css, /\.document-operation-loading \.editor-loading-flight\.path-2 \{[^}]*offset-path:\s*path\("M -34 18 C 220 58 560 -30 1120 12"\)/s);
+  assert.match(css, /\.editor-action-loader \{/);
+  assert.match(css, /\.document-operation-loading \{/);
+  assert.match(css, /\.document-operation-loading \.editor-loading-flight/);
   assert.match(css, /\.editor-inline-comment-slot \{[^}]*position:\s*relative[^}]*width:\s*100%[^}]*margin:\s*11px 0 0/s);
   assert.match(css, /\.editor-inline-comment-slot:empty \{[^}]*margin:\s*0[^}]*line-height:\s*0/s);
   assert.match(css, /\.editor-inline-comment-slot \+ \.ProseMirror-separator \+ \.ProseMirror-trailingBreak \{ display:\s*none !important/);

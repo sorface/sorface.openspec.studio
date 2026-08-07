@@ -5,11 +5,11 @@ import { useDocumentsController } from "@/features/documents/hooks/useDocumentsC
 import { useDocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
 import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
 import { proposalCommentsStorageKey } from "@/features/editor/model/fragment-comment";
-import { GitPanel } from "@/features/git/components/GitPanel";
 import { useGitStatusController } from "@/features/git/hooks/useGitStatusController";
 import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
+import { isOpenSpecOperationBusy } from "@/features/openspec-workflow/model/openspec-state";
 import { OpenSpecChangeCreationPage } from "@/features/openspec-workflow/components/OpenSpecChangeCreationPage";
 import {
   OpenSpecDocumentAction,
@@ -19,7 +19,6 @@ import { PublicationDialog } from "@/features/task-context/components/Publicatio
 import { useTaskContextController } from "@/features/task-context/hooks/useTaskContextController";
 import {
   isSaveShortcut,
-  primaryShortcutLabel,
 } from "@/features/system/model/platform-shortcuts";
 import { RepositoriesPanel } from "@/features/repositories/components/RepositoriesPanel";
 import { AgentCliPanel } from "./AgentCliPanel";
@@ -27,7 +26,7 @@ import { MarkdownEditor } from "./MarkdownEditor";
 import { ProjectLoadingLanding } from "./ProjectLoadingLanding";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
-import type { ViewMode, WorkspaceMode } from "@/features/workspace/model/workspace-types";
+import type { ViewMode, WorkRole, WorkspaceMode } from "@/features/workspace/model/workspace-types";
 import {
   isDeltaSpecPath,
   isMasterSpecPath,
@@ -44,6 +43,40 @@ interface ChangeDocumentContext {
 }
 
 const DOCUMENT_AUTOSAVE_DELAY_MS = 3_000;
+const WORK_ROLE_STORAGE_KEY = "openspec-studio-work-role";
+
+type WorkspaceRouteView = "documents" | "context" | "create";
+
+interface WorkspaceRouteState {
+  view: WorkspaceRouteView;
+  path: string;
+}
+
+function readStoredWorkRole(): WorkRole {
+  if (typeof window === "undefined") return "analyst";
+  return window.localStorage.getItem(WORK_ROLE_STORAGE_KEY) === "developer" ? "developer" : "analyst";
+}
+
+function readWorkspaceRoute(): WorkspaceRouteState {
+  if (typeof window === "undefined") return { view: "documents", path: "" };
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get("view");
+  return {
+    view: view === "context" || view === "create" ? view : "documents",
+    path: params.get("path") ?? "",
+  };
+}
+
+function writeWorkspaceRoute(route: WorkspaceRouteState) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("view", route.view);
+  if (route.view === "documents" && route.path) {
+    url.searchParams.set("path", route.path);
+  } else {
+    url.searchParams.delete("path");
+  }
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 function changeDocumentContextFromPath(path: string | null): ChangeDocumentContext | null {
   const match = path?.match(/^openspec\/changes\/([^/]+)\/(proposal|design|tasks)\.md$/);
@@ -52,6 +85,7 @@ function changeDocumentContextFromPath(path: string | null): ChangeDocumentConte
 }
 
 export function OpenSpecWorkspace() {
+  const initialRoute = useMemo(() => readWorkspaceRoute(), []);
   const projects = useProjectsController();
   const repositories = useRepositoriesController(projects.activeProject?.id);
   const tasks = useTaskContextController(projects.activeProject?.id);
@@ -115,8 +149,10 @@ export function OpenSpecWorkspace() {
   const providerAvailable = !!configuredProvider && (projects.capabilities?.tools.some((tool) =>
     tool.name === configuredProvider.toLowerCase() && tool.available && tool.supported !== false && tool.nonInteractive !== false,
   ) ?? false);
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("documents");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(initialRoute.view === "context" ? "context" : "documents");
+  const [workRole, setWorkRole] = useState<WorkRole>(() => readStoredWorkRole());
   const activeWorkspaceMode = projects.activeProject ? workspaceMode : "documents";
+  const taskWorkspaceSelected = !!tasks.overview?.active && workspaceContext !== "base";
   const git = useGitStatusController(projects.activeProject?.id, !!projects.activeProject);
   const openSpec = useOpenSpecWorkflowController(
     projects.activeProject?.id,
@@ -141,10 +177,30 @@ export function OpenSpecWorkspace() {
   const [leftOpen, setLeftOpen] = useState(true);
   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
   const [toast, setToast] = useState("");
-  const [saveShortcutLabel, setSaveShortcutLabel] = useState("Ctrl+S");
-  const [openSpecCreationPageOpen, setOpenSpecCreationPageOpen] = useState(false);
+  const [openSpecCreationPageOpen, setOpenSpecCreationPageOpen] = useState(initialRoute.view === "create");
   const [pendingDocumentPath, setPendingDocumentPath] = useState("");
   const [pendingArchivedChange, setPendingArchivedChange] = useState("");
+  const [pendingOperationChange, setPendingOperationChange] = useState("");
+  const [routeDocumentPath, setRouteDocumentPath] = useState(initialRoute.path);
+
+  useEffect(() => {
+    window.localStorage.setItem(WORK_ROLE_STORAGE_KEY, workRole);
+  }, [workRole]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const route = readWorkspaceRoute();
+      setWorkspaceMode(route.view === "context" ? "context" : "documents");
+      setOpenSpecCreationPageOpen(route.view === "create");
+      setRouteDocumentPath(route.path);
+      if (route.view === "documents" && route.path) {
+        const target = documents.items.find((item) => item.kind === "file" && item.path === route.path);
+        if (target) documents.select(target.path);
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [documents]);
 
   const lines = useMemo(() => documents.markdown.split("\n"), [documents.markdown]);
   const changeDocument = useMemo(
@@ -170,6 +226,53 @@ export function OpenSpecWorkspace() {
       item.path.startsWith(`${changeRoot}/spec/`) || item.path.startsWith(`${changeRoot}/specs/`),
     );
   }, [changeDocument, documents.items]);
+  const openSpecOperationActive = changeDocument
+    ? openSpec.operations.some((operation) =>
+      operation.openspecChange === changeDocument.change && isOpenSpecOperationBusy(operation.status),
+    )
+    : false;
+  const openSpecArtifactRefreshActive = !!changeDocument &&
+    openSpec.artifactRefresh?.change === changeDocument.change &&
+    openSpec.artifactRefresh.status === "active";
+  const openSpecOperationStarting = !!changeDocument && pendingOperationChange === changeDocument.change;
+  const openSpecToolbarLoading = openSpec.detailsLoading || openSpec.operationsLoading || openSpec.pending ||
+    openSpecOperationActive || openSpecArtifactRefreshActive || openSpecOperationStarting;
+
+  useEffect(() => {
+    if (!pendingOperationChange) return;
+    const operationStillActive = openSpec.operations.some((operation) =>
+      operation.openspecChange === pendingOperationChange && isOpenSpecOperationBusy(operation.status),
+    );
+    const cascadeStillActive = openSpec.artifactRefresh?.change === pendingOperationChange &&
+      openSpec.artifactRefresh.status === "active";
+    if (!openSpec.pending && !operationStillActive && !cascadeStillActive) {
+      setPendingOperationChange("");
+    }
+  }, [openSpec.artifactRefresh, openSpec.operations, openSpec.pending, pendingOperationChange]);
+
+  useEffect(() => {
+    if (!routeDocumentPath || activeWorkspaceMode !== "documents" || openSpecCreationPageOpen || documents.status === "loading") return;
+    const target = documents.items.find((item) => item.kind === "file" && item.path === routeDocumentPath);
+    if (!target) {
+      setRouteDocumentPath("");
+      return;
+    }
+    if (documents.selectedPath !== target.path) {
+      documents.select(target.path);
+      return;
+    }
+    setRouteDocumentPath("");
+  }, [activeWorkspaceMode, documents, openSpecCreationPageOpen, routeDocumentPath]);
+
+  useEffect(() => {
+    if (routeDocumentPath && activeWorkspaceMode === "documents" && !openSpecCreationPageOpen) return;
+    const route: WorkspaceRouteState = openSpecCreationPageOpen
+      ? { view: "create", path: "" }
+      : activeWorkspaceMode === "context"
+        ? { view: "context", path: "" }
+        : { view: "documents", path: documents.selectedPath ?? "" };
+    writeWorkspaceRoute(route);
+  }, [activeWorkspaceMode, documents.selectedPath, openSpecCreationPageOpen, routeDocumentPath]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -177,6 +280,10 @@ export function OpenSpecWorkspace() {
   }, []);
 
   const archiveOpenSpecChange = useCallback((change: string) => {
+    if (workRole === "developer") {
+      notify("В режиме разработчика архивирование недоступно");
+      return;
+    }
     notify(`Архивация запущена: ${change}`);
     void openSpec.archiveChange(change).then(() => {
       setPendingArchivedChange(change);
@@ -186,7 +293,7 @@ export function OpenSpecWorkspace() {
     }).catch((error: unknown) => {
       notify(error instanceof Error ? error.message : "Не удалось архивировать изменение");
     });
-  }, [notify, openSpec, refreshTasks, retryDocuments]);
+  }, [notify, openSpec, refreshTasks, retryDocuments, workRole]);
 
   useEffect(() => {
     if (!pendingArchivedChange || documents.status === "loading") return;
@@ -226,6 +333,7 @@ export function OpenSpecWorkspace() {
   useEffect(() => {
     if (
       userReadOnlySpec
+      || openSpecOperationActive
       || documents.status !== "ready"
       || !documents.dirty
       || documents.saving
@@ -242,6 +350,7 @@ export function OpenSpecWorkspace() {
     documents.saving,
     documents.selectedPath,
     documents.status,
+    openSpecOperationActive,
     persistFile,
     userReadOnlySpec,
   ]);
@@ -262,7 +371,6 @@ export function OpenSpecWorkspace() {
   }, [notify, retryDocuments, tasks]);
 
   useEffect(() => {
-    void Promise.resolve().then(() => setSaveShortcutLabel(primaryShortcutLabel("S")));
     const handleSaveShortcut = (event: KeyboardEvent) => {
       if (!isSaveShortcut(event)) return;
       event.preventDefault();
@@ -301,9 +409,13 @@ export function OpenSpecWorkspace() {
   }, []);
 
   const addOpenSpecChange = useCallback(() => {
+    if (!taskWorkspaceSelected) {
+      notify("Сначала выберите задачу в верхней панели, чтобы изменение создавалось в нужной ветке");
+      return;
+    }
     setWorkspaceMode("documents");
     setOpenSpecCreationPageOpen(true);
-  }, []);
+  }, [notify, taskWorkspaceSelected]);
 
   const changeWorkspaceMode = useCallback((mode: WorkspaceMode) => {
     setOpenSpecCreationPageOpen(false);
@@ -332,9 +444,11 @@ export function OpenSpecWorkspace() {
         onAgentSettingsToggle={() => setAgentSettingsOpen((open) => !open)}
         onPublish={preparePublication}
         onReceive={receiveRemoteChanges}
+        onWorkRoleChange={setWorkRole}
         git={git}
         projects={projects}
         tasks={tasks}
+        workRole={workRole}
       />
 
       <section className={`workspace ${agentSettingsOpen ? "agent-settings-open" : ""} ${leftOpen ? "" : "left-collapsed"}`}>
@@ -349,14 +463,14 @@ export function OpenSpecWorkspace() {
           workspaceMode={activeWorkspaceMode}
           onWorkspaceModeChange={changeWorkspaceMode}
           onAddOpenSpecChange={addOpenSpecChange}
+          canAddOpenSpecChange={taskWorkspaceSelected}
           onArchiveOpenSpecChange={archiveOpenSpecChange}
+          workRole={workRole}
         />
         {!leftOpen && <button className="open-panel left" onClick={() => setLeftOpen(true)}>›</button>}
 
         {activeWorkspaceMode === "context" ? (
           <RepositoriesPanel controller={repositories} enabled={!!projects.activeProject} />
-        ) : activeWorkspaceMode === "git" ? (
-          <GitPanel controller={git} />
         ) : openSpecCreationPageOpen ? (
           <OpenSpecChangeCreationPage
             controller={openSpec}
@@ -376,12 +490,12 @@ export function OpenSpecWorkspace() {
             conflict={documents.conflict}
             error={documents.error}
             history={documentHistory}
-            saveShortcutLabel={saveShortcutLabel}
             viewMode={viewMode}
             userReadOnly={userReadOnlySpec}
             hideHeaderActions={masterSpecReadOnly}
             readOnlyLabel={masterSpecReadOnly ? "Master spec · только просмотр" : "Diff spec · только просмотр"}
             comments={changeDocument ? activeFragmentComments : undefined}
+            toolbarLoading={openSpecToolbarLoading}
             toolbarActions={changeDocument ? (
               <OpenSpecDocumentAction
                 controller={openSpec}
@@ -391,7 +505,9 @@ export function OpenSpecWorkspace() {
                 documentDirty={documents.dirty}
                 documentSaving={documents.saving}
                 documentComments={activeFragmentComments}
+                workRole={workRole}
                 onSave={writeFile}
+                onActionPendingChange={(pending) => setPendingOperationChange(pending ? changeDocument.change : "")}
                 onCommentsSubmitted={() => {
                   if (documents.selectedPath && activeFragmentComments.length) {
                     pendingCommentUpdatePath.current = documents.selectedPath;
@@ -410,7 +526,11 @@ export function OpenSpecWorkspace() {
               </span>
             ) : undefined}
             contextPanel={changeDocument ? (
-              <OpenSpecDocumentReview controller={openSpec} change={changeDocument.change} />
+              <OpenSpecDocumentReview
+                controller={openSpec}
+                change={changeDocument.change}
+                onReviewFeedback={notify}
+              />
             ) : undefined}
             onBlur={() => undefined}
             onAddComment={changeDocument ? addFragmentComment : undefined}
@@ -418,7 +538,6 @@ export function OpenSpecWorkspace() {
             onDeleteComment={changeDocument ? deleteFragmentComment : undefined}
             onChange={userReadOnlySpec ? () => undefined : documents.change}
             onViewModeChange={setViewMode}
-            onWrite={writeFile}
             onRetry={documents.retry}
           />
         )}

@@ -1,0 +1,1889 @@
+diff --git a/openspec.frontend/src/features/editor/components/MarkdownPreview.tsx b/openspec.frontend/src/features/editor/components/MarkdownPreview.tsx
+index 7ffec37..ca31c65 100644
+--- a/openspec.frontend/src/features/editor/components/MarkdownPreview.tsx
++++ b/openspec.frontend/src/features/editor/components/MarkdownPreview.tsx
+@@ -80,7 +80,14 @@ export function MarkdownPreview({ documentId, markdown }: MarkdownPreviewProps)
+   return (
+     <div className="markdown-preview" data-preview-status={status} role="document" aria-label="Предпросмотр Markdown">
+       <div ref={rootRef} className="markdown-preview-root" />
+-      {status === "loading" && <p className="preview-state">Подготавливаем предпросмотр…</p>}
++      {status === "loading" && (
++        <p className="preview-state">
++          <span className="editor-bird-loader" aria-hidden="true">
++            <svg viewBox="0 0 40 24"><path d="M3 13c8.4-6.4 15.3-7.1 20.8-2.1C27.4 6.4 32 4.2 37.6 4.4c-4 3.1-6.5 6.4-7.6 9.8 2.7.5 5.1 1.5 7.2 3-6.7.9-12.3-.1-16.8-3C15 17.9 9.2 17.5 3 13Z" /></svg>
++          </span>
++          <span>Подготавливаем предпросмотр…</span>
++        </p>
++      )}
+       {status === "failed" && <p className="preview-state error" role="alert">Не удалось отобразить Markdown.</p>}
+     </div>
+   );
+diff --git a/openspec.frontend/src/features/editor/components/RichMarkdownEditor.tsx b/openspec.frontend/src/features/editor/components/RichMarkdownEditor.tsx
+index eb6b038..b13a17d 100644
+--- a/openspec.frontend/src/features/editor/components/RichMarkdownEditor.tsx
++++ b/openspec.frontend/src/features/editor/components/RichMarkdownEditor.tsx
+@@ -15,6 +15,7 @@ interface RichMarkdownEditorProps {
+   markdown: string;
+   comments?: EditorFragmentComment[];
+   readOnly?: boolean;
++  toolbarLoading?: boolean;
+   toolbarActions?: ReactNode;
+   onBlur: () => void;
+   onChange: (markdown: string) => void;
+@@ -30,13 +31,14 @@ interface SelectionCandidate extends EditorTextSelection {
+ }
+ 
+ export function RichMarkdownEditor({
+-  documentId, markdown, comments = [], readOnly = false, toolbarActions, onBlur, onChange, onAddComment, onUpdateComment, onDeleteComment,
++  documentId, markdown, comments = [], readOnly = false, toolbarLoading = false, toolbarActions, onBlur, onChange, onAddComment, onUpdateComment, onDeleteComment,
+ }: RichMarkdownEditorProps) {
+   const rootRef = useRef<HTMLDivElement>(null);
+   const onBlurRef = useRef(onBlur);
+   const onChangeRef = useRef(onChange);
+   const commentsRef = useRef(comments);
+   const draftSelectionRef = useRef<EditorTextSelection | null>(null);
++  const editorReadonlyRef = useRef<{ setReadonly: (readonly: boolean) => void } | null>(null);
+   const showCommentsRef = useRef<(comments: EditorFragmentComment[]) => void>(() => undefined);
+   const initialMarkdownRef = useRef(markdown);
+   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
+@@ -59,6 +61,17 @@ export function RichMarkdownEditor({
+     showCommentsRef.current(comments);
+   }, [comments]);
+ 
++  useEffect(() => {
++    toolbarTarget?.classList.toggle("rich-editor-toolbar-busy", toolbarLoading);
++    return () => {
++      toolbarTarget?.classList.remove("rich-editor-toolbar-busy");
++    };
++  }, [toolbarLoading, toolbarTarget]);
++
++  useEffect(() => {
++    editorReadonlyRef.current?.setReadonly(readOnly || toolbarLoading);
++  }, [readOnly, toolbarLoading]);
++
+   const submitComment = (event: FormEvent) => {
+     event.preventDefault();
+     if (!commentRequest || !commentText.trim()) return;
+@@ -89,7 +102,7 @@ export function RichMarkdownEditor({
+   };
+ 
+   const openNewComment = () => {
+-    if (!selectionCandidate) return;
++    if (!selectionCandidate || toolbarLoading) return;
+     draftSelectionRef.current = selectionCandidate;
+     setCommentRequest(selectionCandidate);
+     setSelectionCandidate(null);
+@@ -99,6 +112,7 @@ export function RichMarkdownEditor({
+   };
+ 
+   const openExistingComment = (comment: EditorFragmentComment) => {
++    if (toolbarLoading) return;
+     setCommentRequest({ ...comment.selection, top: 0, left: 0, selectionRect: { top: 0, left: 0, width: 0, height: 0 } });
+     setEditingCommentId(comment.id);
+     setCommentText(comment.text);
+@@ -205,7 +219,7 @@ export function RichMarkdownEditor({
+             },
+           },
+         });
+-        editor.setReadonly(readOnly);
++        editor.setReadonly(readOnly || toolbarLoading);
+         editor.editor.use(commentsPlugin);
+ 
+         const handleHistoryShortcut = (event: KeyboardEvent) => {
+@@ -403,6 +417,7 @@ export function RichMarkdownEditor({
+           return;
+         }
+         destroy = () => {
++          editorReadonlyRef.current = null;
+           removeSelectionListener?.();
+           headingSelectorObserver?.disconnect();
+           window.removeEventListener("resize", handleCommentSlotResize);
+@@ -414,6 +429,7 @@ export function RichMarkdownEditor({
+           setSelectionToolbarTarget((current) => current === nextSelectionToolbarTarget ? null : current);
+           editor.destroy();
+         };
++        editorReadonlyRef.current = editor;
+         setStatus("ready");
+       } catch {
+         if (!disposed) setStatus("failed");
+@@ -465,7 +481,14 @@ export function RichMarkdownEditor({
+         aria-multiline="true"
+         aria-readonly={readOnly}
+       />
+-      {status === "loading" && <div className="editor-loading">Подготавливаем визуальный редактор…</div>}
++      {status === "loading" && (
++        <div className="editor-loading">
++          <span className="editor-bird-loader" aria-hidden="true">
++            <svg viewBox="0 0 40 24"><path d="M3 13c8.4-6.4 15.3-7.1 20.8-2.1C27.4 6.4 32 4.2 37.6 4.4c-4 3.1-6.5 6.4-7.6 9.8 2.7.5 5.1 1.5 7.2 3-6.7.9-12.3-.1-16.8-3C15 17.9 9.2 17.5 3 13Z" /></svg>
++          </span>
++          <span>Подготавливаем визуальный редактор…</span>
++        </div>
++      )}
+       {status === "failed" && (
+         <div className="editor-error" role="alert">
+           Редактор не загрузился. Обновите страницу — черновик не потерян.
+@@ -475,6 +498,12 @@ export function RichMarkdownEditor({
+         <div className="rich-editor-context-actions">{toolbarActions}</div>,
+         toolbarTarget,
+       )}
++      {toolbarTarget && toolbarLoading && createPortal(
++        <div className="rich-editor-toolbar-loading" role="status" aria-label="Agent подготавливает действия редактора">
++          <FlyingOperationBird />
++        </div>,
++        toolbarTarget,
++      )}
+       {!readOnly && selectionToolbarTarget && selectionCandidate && !commentRequest && onAddComment && createPortal(
+         <button type="button" className="toolbar-item editor-comment-toolbar-action" aria-label="Добавить комментарий к выделенному фрагменту" title="Добавить комментарий" data-testid="editor-comment-action" onMouseDown={(event) => event.preventDefault()} onClick={openNewComment}>
+           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12v8.2H9l-3.8 3v-3H4Z" /><path d="M7 8.5h6M10 5.8v5.4" /></svg>
+@@ -517,3 +546,23 @@ export function RichMarkdownEditor({
+     </div>
+   );
+ }
++
++export function FlyingOperationBird() {
++  return (
++    <>
++      {[0, 1, 2].map((index) => (
++        <span key={index} className={`editor-loading-flight path-${index + 1}`} aria-hidden="true">
++          <svg className="project-loading-swallow" viewBox="0 0 40 24">
++            <path
++              d="M3 10.1 7.2 13.3 3 16.9l7.7-2.8c3.5 1.5 7.3 2.2 11.4 2.2 3.2-.1 6.1-.8 8.8-2.2-2-1.8-4.4-3-7-3.6-4.1-.9-8.5-.6-13 .9L3 10.1Z"
++            />
++            <path
++              d="M10.8 11.4C14.6 5.8 21.3 2.1 34.2.8c-3.7 5.6-8.6 9.3-15.3 11.3l-8.1-.7Z"
++            />
++            <path d="M11 14.1c4.7 4.5 10.6 6.8 18.4 7.2-2.6-3.8-6.2-6.2-11-7.5l-7.4.3Z" opacity=".78" />
++          </svg>
++        </span>
++      ))}
++    </>
++  );
++}
+diff --git a/openspec.frontend/src/features/openspec-workflow/components/ChangeCreationWizard.tsx b/openspec.frontend/src/features/openspec-workflow/components/ChangeCreationWizard.tsx
+index 395feec..07e21da 100644
+--- a/openspec.frontend/src/features/openspec-workflow/components/ChangeCreationWizard.tsx
++++ b/openspec.frontend/src/features/openspec-workflow/components/ChangeCreationWizard.tsx
+@@ -18,11 +18,11 @@ interface ChangeCreationWizardProps {
+ const steps = [
+   { id: "intent", label: "Описание изменения" },
+   { id: "clarifying", label: "Уточнение" },
+-  { id: "proposal", label: "Proposal" },
++  { id: "proposal", label: "Согласование намерения" },
+   { id: "naming", label: "Название" },
+ ] as const;
+ 
+-const creationArtifacts = ["proposal.md", "diff specs", "design.md", "tasks.md"] as const;
++const creationArtifacts = ["proposal.md", "diff specs"] as const;
+ 
+ function stepIndex(stage: ChangeCreationController["draft"]["stage"]): number {
+   if (stage === "clarifying") return 1;
+@@ -151,12 +151,26 @@ export function ChangeCreationWizard({
+     onCreated(`openspec/changes/${name}/proposal.md`);
+   };
+ 
+-  const leftDocumentId = creation.draft.stage === "proposal" ? "change-creation-proposal" : "change-creation-intent";
++  const returnToStep = (index: number) => {
++    if (activeOperation || index >= currentStep) return;
++    if (index === 0) creation.markIntent();
++    if (index === 1) creation.markClarifying();
++    if (index === 2 && creation.draft.proposal?.trim()) creation.applyExploration({
++      state: "proposal_ready",
++      summary: creation.draft.summary ?? "",
++      questions: creation.draft.questions,
++      assumptions: creation.draft.assumptions,
++      proposal: creation.draft.proposal,
++      suggestedNames: creation.draft.suggestedNames,
++    });
++  };
++
++  const leftDocumentId = creation.draft.stage === "proposal" ? "change-creation-aligned-intent" : "change-creation-intent";
+   const leftMarkdown = creation.draft.stage === "proposal" ? creation.draft.proposal ?? "" : creation.draft.intent;
+   const leftChange = creation.draft.stage === "proposal" ? creation.setProposal : creation.setIntent;
+   const title = useMemo(() => {
+     if (creation.draft.stage === "clarifying") return "Уточняем намерение";
+-    if (creation.draft.stage === "proposal") return "Проверяем proposal";
++    if (creation.draft.stage === "proposal") return "Согласуем намерение";
+     if (creation.draft.stage === "naming" || creation.draft.stage === "creating") return "Создаём change";
+     return "Опишите замысел";
+   }, [creation.draft.stage]);
+@@ -192,9 +206,17 @@ export function ChangeCreationWizard({
+ 
+         <nav className="change-creation-stepper" aria-label="Этапы создания change">
+           {steps.map((step, index) => (
+-            <span key={step.id} className={index === currentStep ? "active" : index < currentStep ? "done" : ""}>
++            <button
++              key={step.id}
++              type="button"
++              className={index === currentStep ? "active" : index < currentStep ? "done" : ""}
++              disabled={activeOperation || index >= currentStep}
++              onClick={() => returnToStep(index)}
++              aria-current={index === currentStep ? "step" : undefined}
++              aria-label={index < currentStep ? `Вернуться к шагу ${index + 1}: ${step.label}` : undefined}
++            >
+               <i>{index < currentStep ? "✓" : index + 1}</i>{step.label}
+-            </span>
++            </button>
+           ))}
+         </nav>
+ 
+@@ -202,7 +224,7 @@ export function ChangeCreationWizard({
+           <div className="change-creation-grid">
+             <section className="change-creation-document">
+               <header>
+-                <div><small>{creation.draft.stage === "proposal" || currentStep >= 3 ? "OPENSPEC ARTIFACT" : "ВАШ ЗАМЫСЕЛ"}</small><b>{currentStep >= 3 ? "proposal.md" : `${leftDocumentId}.md`}</b></div>
++                <div><small>{creation.draft.stage === "proposal" ? "СОГЛАСОВАННОЕ НАМЕРЕНИЕ" : currentStep >= 3 ? "OPENSPEC ARTIFACT" : "ВАШ ЗАМЫСЕЛ"}</small><b>{currentStep >= 3 ? "proposal.md" : `${leftDocumentId}.md`}</b></div>
+                 <span>Markdown</span>
+               </header>
+               {currentStep >= 3 ? (
+@@ -287,8 +309,9 @@ export function ChangeCreationWizard({
+ 
+               {creation.draft.stage === "proposal" && (
+                 <div className="creation-proposal-meta">
+-                  <small>PROPOSAL ГОТОВ</small>
++                  <small>СОГЛАСОВАНИЕ НАМЕРЕНИЯ</small>
+                   <h3>Проверьте смысл изменения</h3>
++                  <p>После подтверждения по этому намерению будет запущен процесс формирования структурированного proposal.md.</p>
+                   <p className="creation-summary">{creation.draft.summary}</p>
+                   {!!creation.draft.assumptions.length && (
+                     <section><b>Допущения</b><ul>{creation.draft.assumptions.map((item) => <li key={item}>{item}</li>)}</ul></section>
+@@ -298,8 +321,8 @@ export function ChangeCreationWizard({
+                     <textarea value={creation.draft.feedback ?? ""} onChange={(event) => creation.setFeedback(event.target.value)} placeholder="Необязательное замечание для следующей AI-итерации…" />
+                   </label>
+                   <div className="creation-inline-actions">
+-                    <button type="button" disabled={!creation.draft.feedback?.trim()} onClick={() => void runExplore()}>✦ Уточнить proposal</button>
+-                    <button type="button" className="primary-submit" onClick={creation.acceptProposal}>Принять proposal</button>
++                    <button type="button" disabled={!creation.draft.feedback?.trim()} onClick={() => void runExplore()}>✦ Уточнить намерение</button>
++                    <button type="button" className="primary-submit" onClick={creation.acceptProposal}>Согласовать намерение</button>
+                   </div>
+                 </div>
+               )}
+@@ -336,9 +359,9 @@ export function ChangeCreationWizard({
+                   {creationReview && workflow.operation?.status === "awaiting_review" && (
+                     <section className="creation-final-review">
+                       <b>Готово к принятию</b>
+-                      <p>Сначала будет записан proposal.md, затем автоматически запустится полный planning-каскад.</p>
++                      <p>Сначала будет записан proposal.md, затем автоматически будут подготовлены только diff specs.</p>
+                       {creationReview.files.map((file) => <code key={file.path}>{file.type} · {file.path}</code>)}
+-                      <button type="button" className="primary-submit" onClick={() => void acceptCreatedChange()}>Принять и сформировать артефакты</button>
++                      <button type="button" className="primary-submit" onClick={() => void acceptCreatedChange()}>Принять и сформировать specs</button>
+                     </section>
+                   )}
+                   {workflow.draft?.status === "accepted" && (
+diff --git a/openspec.frontend/src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx b/openspec.frontend/src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx
+index 90f89d5..bc4f8cb 100644
+--- a/openspec.frontend/src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx
++++ b/openspec.frontend/src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx
+@@ -8,6 +8,7 @@ import {
+   defaultOpenSpecActionGoal,
+   openSpecDocumentActions,
+ } from "@/features/openspec-workflow/model/openspec-action-presentation";
++import { isOpenSpecOperationBusy } from "@/features/openspec-workflow/model/openspec-state";
+ import {
+   openSpecArtifactRefreshStepLabel,
+   openSpecArtifactRefreshStepNumber,
+@@ -16,6 +17,7 @@ import {
+ import type { OpenSpecAction, OpenSpecFileMutation, OpenSpecOperation } from "@/features/openspec-workflow/model/openspec-types";
+ import type { EditorFragmentComment } from "@/features/editor/model/fragment-comment";
+ import { artifactCommentsGoal } from "@/features/editor/model/fragment-comment";
++import type { WorkRole } from "@/features/workspace/model/workspace-types";
+ 
+ interface OpenSpecDocumentActionProps {
+   controller: OpenSpecWorkflowController;
+@@ -25,13 +27,16 @@ interface OpenSpecDocumentActionProps {
+   documentDirty: boolean;
+   documentSaving: boolean;
+   documentComments: EditorFragmentComment[];
++  workRole: WorkRole;
+   onSave: () => Promise<boolean>;
++  onActionPendingChange?: (pending: boolean) => void;
+   onCommentsSubmitted: () => void;
+ }
+ 
+ interface OpenSpecDocumentReviewProps {
+   controller: OpenSpecWorkflowController;
+   change: string;
++  onReviewFeedback?: (message: string) => void;
+ }
+ 
+ export function OpenSpecDocumentAction({
+@@ -42,7 +47,9 @@ export function OpenSpecDocumentAction({
+   documentDirty,
+   documentSaving,
+   documentComments,
++  workRole,
+   onSave,
++  onActionPendingChange,
+   onCommentsSubmitted,
+ }: OpenSpecDocumentActionProps) {
+   const [startingArtifact, setStartingArtifact] = useState("");
+@@ -54,10 +61,18 @@ export function OpenSpecDocumentAction({
+ 
+   const actions = useMemo(() => {
+     if (controller.details?.summary.name !== change) return [];
+-    return openSpecDocumentActions(controller.details, hasSpecs, documentArtifact);
+-  }, [change, controller.details, documentArtifact, hasSpecs]);
+-  const operationActive = controller.operation?.openspecChange === change &&
+-    ["queued", "running", "validating"].includes(controller.operation.status);
++    return openSpecDocumentActions(controller.details, hasSpecs, documentArtifact)
++      .filter(({ action }) => {
++        const artifact = action.artifact ?? "";
++        const analystAction = ["proposal", "spec", "specs"].includes(artifact);
++        const developerAction = ["design", "tasks"].includes(artifact);
++        return workRole === "analyst" ? analystAction : developerAction;
++      });
++  }, [change, controller.details, documentArtifact, hasSpecs, workRole]);
++  const activeOperation = controller.operations.find((operation) =>
++    operation.openspecChange === change && isOpenSpecOperationBusy(operation.status),
++  );
++  const operationActive = !!activeOperation;
+   const designCreated = controller.details?.summary.name === change && controller.details.artifacts.some((artifact) =>
+     artifact.id === "design" && artifact.status === "done",
+   );
+@@ -68,6 +83,7 @@ export function OpenSpecDocumentAction({
+     () => openSpecArtifactRefreshStepsForDocument(documentArtifact, designCreated, tasksCreated),
+     [designCreated, documentArtifact, tasksCreated],
+   );
++  const actionsLoading = controller.detailsLoading || controller.operationsLoading;
+ 
+   const disabledFor = (action: OpenSpecAction) => !!startingArtifact || documentSaving || controller.pending ||
+     operationActive || !controller.agentAvailable || !action.available;
+@@ -86,6 +102,7 @@ export function OpenSpecDocumentAction({
+   const run = async (action: OpenSpecAction) => {
+     if (!action.artifact || disabledFor(action)) return;
+     setStartingArtifact(action.artifact);
++    onActionPendingChange?.(true);
+     setStartError("");
+     try {
+       if (documentDirty && !await onSave()) return;
+@@ -105,13 +122,24 @@ export function OpenSpecDocumentAction({
+       setStartError(cause instanceof Error ? cause.message : "Не удалось запустить подготовку артефакта");
+     } finally {
+       setStartingArtifact("");
++      onActionPendingChange?.(false);
+     }
+   };
+ 
+   return (
+     <div className="openspec-document-action">
+       {startError && <span className="openspec-document-action-error" role="alert" title={startError}>!</span>}
++      {actionsLoading && (
++        <span className="editor-action-loader" role="status" aria-label="Загружаем действия редактора">
++          <span className="editor-bird-loader" aria-hidden="true">
++            <svg viewBox="0 0 40 24"><path d="M3 13c8.4-6.4 15.3-7.1 20.8-2.1C27.4 6.4 32 4.2 37.6 4.4c-4 3.1-6.5 6.4-7.6 9.8 2.7.5 5.1 1.5 7.2 3-6.7.9-12.3-.1-16.8-3C15 17.9 9.2 17.5 3 13Z" /></svg>
++          </span>
++        </span>
++      )}
+       {actions.map(({ action, label, primary }) => (
++        (() => {
++          const actionBusy = startingArtifact === action.artifact || activeOperation?.openspecArtifact === action.artifact;
++          return (
+         <button
+           key={`${action.kind}-${action.artifact}`}
+           type="button"
+@@ -125,7 +153,7 @@ export function OpenSpecDocumentAction({
+             <path d="m10 2 1.2 4.1L15 7.5l-3.8 1.4L10 13 8.8 8.9 5 7.5l3.8-1.4L10 2Z" />
+             <path d="m15.6 12 .6 2 1.8.6-1.8.7-.6 1.9-.6-1.9-1.9-.7 1.9-.6.6-2Z" />
+           </svg>
+-          <span>{startingArtifact === action.artifact || controller.operation?.openspecArtifact === action.artifact && operationActive
++          <span>{actionBusy
+             ? "Agent работает…"
+             : documentDirty
+               ? `Записать и ${label.toLowerCase()}`
+@@ -134,14 +162,16 @@ export function OpenSpecDocumentAction({
+             <b className="proposal-comments-count" aria-label={`Комментариев: ${documentComments.length}`}>{documentComments.length}</b>
+           )}
+         </button>
++          );
++        })()
+       ))}
+     </div>
+   );
+ }
+ 
+-export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentReviewProps) {
++export function OpenSpecDocumentReview({ controller, change, onReviewFeedback }: OpenSpecDocumentReviewProps) {
+   const activeOperation = controller.operations.find((operation) =>
+-    operation.openspecChange === change && ["queued", "running", "validating"].includes(operation.status),
++    operation.openspecChange === change && isOpenSpecOperationBusy(operation.status),
+   );
+   const panelOpen = controller.operationsPanelOpen || !!activeOperation;
+ 
+@@ -259,6 +289,7 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
+           <OpenSpecOperationPanel
+             controller={controller}
+             onClose={() => controller.setOperationDialogOpen(false)}
++            onReviewFeedback={onReviewFeedback}
+           />
+         </section>
+       </div>
+diff --git a/openspec.frontend/src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx b/openspec.frontend/src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx
+index 7d2b1fb..6e7d4da 100644
+--- a/openspec.frontend/src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx
++++ b/openspec.frontend/src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx
+@@ -2,7 +2,7 @@
+ 
+ import { useEffect, useId, useState } from "react";
+ import { createPortal } from "react-dom";
+-import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
++import { FlyingOperationBird, RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
+ import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
+ import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
+ import { openSpecActionLabels } from "@/features/openspec-workflow/model/openspec-action-presentation";
+@@ -25,6 +25,7 @@ import type {
+ interface OpenSpecOperationPanelProps {
+   controller: OpenSpecWorkflowController;
+   onClose?: () => void;
++  onReviewFeedback?: (message: string) => void;
+ }
+ 
+ const operationStatusLabels = {
+@@ -421,7 +422,7 @@ function ResultMarkdownDialog({
+   );
+ }
+ 
+-export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperationPanelProps) {
++export function OpenSpecOperationPanel({ controller, onClose, onReviewFeedback }: OpenSpecOperationPanelProps) {
+   const operation = controller.operation;
+   const [reviewState, setReviewState] = useState<{
+     operationId: string;
+@@ -458,7 +459,14 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
+   };
+   const acceptResult = async () => {
+     const accepted = await controller.accept();
+-    if (accepted) closeResultDialog();
++    if (accepted) {
++      closeResultDialog();
++      controller.setOperationsPanelOpen(false);
++      onClose?.();
++      onReviewFeedback?.("Изменения успешно приняты");
++    } else {
++      onReviewFeedback?.(controller.error?.message ?? "Не удалось принять изменения");
++    }
+     return accepted;
+   };
+ 
+@@ -593,7 +601,7 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
+             <button type="button" className="secondary-danger" onClick={() => void controller.reject()} disabled={controller.pending}>
+               Отклонить
+             </button>
+-            <button type="button" className="primary-submit" onClick={() => void controller.accept()} disabled={controller.pending}>
++            <button type="button" className="primary-submit" onClick={() => void acceptResult()} disabled={controller.pending}>
+               {controller.pending ? "Принимаем…" : "Принять весь набор"}
+             </button>
+           </div>
+@@ -622,6 +630,11 @@ export function OpenSpecOperationPanel({ controller, onClose }: OpenSpecOperatio
+           </div>
+         </div>
+       )}
++      {controller.pending && (
++        <div className="openspec-operation-pending-overlay" role="status" aria-label="Применяем изменения">
++          <FlyingOperationBird />
++        </div>
++      )}
+     </section>
+     {selectedMutation && (
+       <ResultMarkdownDialog
+diff --git a/openspec.frontend/src/features/openspec-workflow/hooks/useChangeCreationController.ts b/openspec.frontend/src/features/openspec-workflow/hooks/useChangeCreationController.ts
+index 911949e..19f7822 100644
+--- a/openspec.frontend/src/features/openspec-workflow/hooks/useChangeCreationController.ts
++++ b/openspec.frontend/src/features/openspec-workflow/hooks/useChangeCreationController.ts
+@@ -31,6 +31,7 @@ export interface ChangeCreationController {
+   setFeedback: (feedback: string) => void;
+   acceptProposal: () => void;
+   setChangeName: (name: string) => void;
++  markIntent: () => void;
+   markClarifying: () => void;
+   markCreating: () => void;
+   applyExploration: (result: OpenSpecExplorationResult) => void;
+@@ -120,6 +121,10 @@ export function useChangeCreationController(projectId?: string): ChangeCreationC
+     update((current) => ({ ...current, changeName: normalized }));
+   }, [update]);
+ 
++  const markIntent = useCallback(() => {
++    update((current) => ({ ...current, stage: "intent" }));
++  }, [update]);
++
+   const markClarifying = useCallback(() => {
+     update((current) => ({ ...current, stage: "clarifying" }));
+   }, [update]);
+@@ -162,6 +167,7 @@ export function useChangeCreationController(projectId?: string): ChangeCreationC
+     setFeedback,
+     acceptProposal,
+     setChangeName,
++    markIntent,
+     markClarifying,
+     markCreating,
+     applyExploration,
+@@ -170,7 +176,7 @@ export function useChangeCreationController(projectId?: string): ChangeCreationC
+     complete,
+   }), [
+     acceptProposal, applyExploration, complete, draft, error, handoff, loading,
+-    markClarifying, markCreating, reset, saving, setAnswer, setChangeName, setFeedback,
++    markClarifying, markCreating, markIntent, reset, saving, setAnswer, setChangeName, setFeedback,
+     setIntent, setProposal,
+   ]);
+ }
+diff --git a/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts b/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts
+index 46f3dd8..fc51bd0 100644
+--- a/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts
++++ b/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts
+@@ -30,7 +30,6 @@ import {
+   openSpecArtifactRefreshActionArtifact,
+   openSpecArtifactRefreshCascadeGoal,
+   openSpecArtifactRefreshMatchesOperation,
+-  openSpecArtifactRefreshSteps,
+   resumeOpenSpecArtifactRefreshCascade,
+   type OpenSpecArtifactRefreshCascade,
+   type OpenSpecArtifactRefreshStep,
+@@ -723,7 +722,7 @@ export function useOpenSpecWorkflowController(
+         const initial = createOpenSpecArtifactRefreshCascade(
+           acceptedOperation.openspecChange,
+           "specs",
+-          openSpecArtifactRefreshSteps,
++          ["specs"],
+         );
+         setArtifactRefresh(initial);
+         try {
+diff --git a/openspec.frontend/src/features/openspec-workflow/model/openspec-action-presentation.ts b/openspec.frontend/src/features/openspec-workflow/model/openspec-action-presentation.ts
+index b9c3de5..9677a48 100644
+--- a/openspec.frontend/src/features/openspec-workflow/model/openspec-action-presentation.ts
++++ b/openspec.frontend/src/features/openspec-workflow/model/openspec-action-presentation.ts
+@@ -51,11 +51,25 @@ export function openSpecDocumentActions(
+   const design = actionFor("design");
+   const tasks = actionFor("tasks");
+ 
+-  if (documentArtifact === "design" || documentArtifact === "tasks") {
+-    const action = documentArtifact === "design" ? design : tasks;
+-    if (!artifactDone(documentArtifact) || !action) return [];
++  if (documentArtifact === "design") {
++    if (!artifactDone("design")) return [];
++    if (!artifactDone("tasks") && tasks?.available) return [{
++      action: tasks,
++      label: "Создать tasks.md",
++      primary: true,
++    }];
++    if (!design) return [];
++    return [{
++      action: design,
++      label: "Обновить",
++      primary: false,
++    }];
++  }
++
++  if (documentArtifact === "tasks") {
++    if (!artifactDone("tasks") || !tasks) return [];
+     return [{
+-      action,
++      action: tasks,
+       label: "Обновить",
+       primary: false,
+     }];
+diff --git a/openspec.frontend/src/features/openspec-workflow/model/openspec-state.ts b/openspec.frontend/src/features/openspec-workflow/model/openspec-state.ts
+index 644d414..b389138 100644
+--- a/openspec.frontend/src/features/openspec-workflow/model/openspec-state.ts
++++ b/openspec.frontend/src/features/openspec-workflow/model/openspec-state.ts
+@@ -8,6 +8,10 @@ export function isOpenSpecOperationTerminal(status: OpenSpecOperationStatus): bo
+   return terminalStatuses.has(status);
+ }
+ 
++export function isOpenSpecOperationBusy(status: OpenSpecOperationStatus): boolean {
++  return !["accepted", "rejected", "cancelled", "failed"].includes(status);
++}
++
+ export function reduceOpenSpecOperationStatus(
+   current: OpenSpecOperationStatus,
+   event: string,
+diff --git a/openspec.frontend/src/features/workspace/components/MarkdownEditor.tsx b/openspec.frontend/src/features/workspace/components/MarkdownEditor.tsx
+index a373b90..b03d937 100644
+--- a/openspec.frontend/src/features/workspace/components/MarkdownEditor.tsx
++++ b/openspec.frontend/src/features/workspace/components/MarkdownEditor.tsx
+@@ -1,10 +1,9 @@
+-import type { ReactNode } from "react";
+-import { IconButton } from "@/components/ui/IconButton";
++import { useEffect, useRef, useState, type ReactNode } from "react";
+ import type { ApiError } from "@/features/api/api-client";
+ import { DocumentHistoryPanel } from "@/features/documents/components/DocumentHistoryPanel";
+ import type { DocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
+ import { MarkdownPreview } from "@/features/editor/components/MarkdownPreview";
+-import { RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
++import { FlyingOperationBird, RichMarkdownEditor } from "@/features/editor/components/RichMarkdownEditor";
+ import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
+ import type { DocumentViewStatus } from "@/features/documents/model/document-types";
+ import type { ViewMode } from "@/features/workspace/model/workspace-types";
+@@ -20,12 +19,12 @@ interface MarkdownEditorProps {
+   conflict: boolean;
+   error: ApiError | null;
+   history: DocumentHistoryController;
+-  saveShortcutLabel: string;
+   viewMode: ViewMode;
+   userReadOnly?: boolean;
+   hideHeaderActions?: boolean;
+   readOnlyLabel?: string;
+   comments?: EditorFragmentComment[];
++  toolbarLoading?: boolean;
+   toolbarActions?: ReactNode;
+   contextPanel?: ReactNode;
+   onBlur: () => void;
+@@ -34,7 +33,6 @@ interface MarkdownEditorProps {
+   onDeleteComment?: (path: string, commentId: string) => void;
+   onChange: (markdown: string) => void;
+   onViewModeChange: (mode: ViewMode) => void;
+-  onWrite: () => void;
+   onRetry: () => void;
+ }
+ 
+@@ -43,14 +41,29 @@ const viewModes: ViewMode[] = ["edit", "preview", "split"];
+ export function MarkdownEditor(props: MarkdownEditorProps) {
+   const {
+     activeFile, lines, markdown, documentStatus, loadingDocument, saving, dirty, conflict,
+-    error, history, saveShortcutLabel, viewMode, userReadOnly = false, hideHeaderActions = false,
+-    readOnlyLabel = "Только просмотр", comments,
+-    toolbarActions, contextPanel, onBlur, onAddComment, onUpdateComment, onDeleteComment, onChange, onViewModeChange, onWrite, onRetry,
++    error, history, viewMode, userReadOnly = false, hideHeaderActions = false,
++    readOnlyLabel = "Только просмотр", comments, toolbarLoading = false,
++    toolbarActions, contextPanel, onBlur, onAddComment, onUpdateComment, onDeleteComment, onChange, onViewModeChange, onRetry,
+   } = props;
+   const breadcrumbs = activeFile?.split("/") ?? [];
+   const canEdit = documentStatus === "ready" && !!activeFile && !loadingDocument;
+   const effectiveViewMode: ViewMode = userReadOnly ? "preview" : viewMode;
+   const wordCount = markdown.trim() ? markdown.trim().split(/\s+/).length : 0;
++  const previousToolbarLoading = useRef(toolbarLoading);
++  const [editorRevision, setEditorRevision] = useState(0);
++  useEffect(() => {
++    if (previousToolbarLoading.current && !toolbarLoading) {
++      setEditorRevision((current) => current + 1);
++    }
++    previousToolbarLoading.current = toolbarLoading;
++  }, [toolbarLoading]);
++  const autosaveTooltip = userReadOnly
++    ? readOnlyLabel
++    : saving
++      ? "Автосохранение выполняется…"
++      : dirty
++        ? "Есть несохранённые изменения. Автосохранение запустится автоматически."
++        : "Изменения сохранены автоматически.";
+ 
+   return (
+     <section className="editor-area">
+@@ -77,15 +90,6 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
+                   </button>
+                 ))}
+               </div>
+-              <IconButton
+-                label="Git-аннотации файла"
+-                disabled={!canEdit}
+-                onClick={history.show}
+-                title={canEdit ? "Показать Git-аннотации и историю файла" : "Сначала выберите Markdown-файл"}
+-              >◴</IconButton>
+-              <button className="save-button" onClick={onWrite} disabled={userReadOnly || !canEdit || !dirty || saving}>
+-                {userReadOnly ? "Только просмотр" : saving ? "Запись…" : "Записать в файл"} {!userReadOnly && <span>{saveShortcutLabel}</span>}
+-              </button>
+             </>
+           )}
+         </div>
+@@ -118,9 +122,11 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
+         )}
+         {canEdit && !userReadOnly && effectiveViewMode !== "preview" && (
+           <RichMarkdownEditor
++            key={`${activeFile}:${editorRevision}`}
+             documentId={activeFile!}
+             markdown={markdown}
+             comments={comments}
++            toolbarLoading={toolbarLoading}
+             toolbarActions={toolbarActions}
+             onAddComment={onAddComment ? (selection, comment) => onAddComment(activeFile!, selection, comment) : undefined}
+             onUpdateComment={onUpdateComment ? (commentId, comment) => onUpdateComment(activeFile!, commentId, comment) : undefined}
+@@ -135,13 +141,18 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
+             <MarkdownPreview documentId={activeFile!} markdown={markdown} />
+           </article>
+         )}
++        {toolbarLoading && (
++          <div className="document-operation-loading" role="status" aria-label="Agent выполняет операцию">
++            <FlyingOperationBird />
++          </div>
++        )}
+       </div>
+       {contextPanel}
+       </div>
+ 
+       {history.open && activeFile && <DocumentHistoryPanel controller={history} path={activeFile} />}
+ 
+-      <footer className="editor-statusbar">
++      <footer className="editor-statusbar" title={autosaveTooltip} aria-label={autosaveTooltip}>
+         {(userReadOnly || saving || dirty) && (
+           <span className="draft-label"><i /> {userReadOnly ? readOnlyLabel : saving ? "Запись…" : "Есть изменения"}</span>
+         )}
+diff --git a/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx b/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
+index b3d104c..d19f6e4 100644
+--- a/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
++++ b/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
+@@ -5,11 +5,11 @@ import { useDocumentsController } from "@/features/documents/hooks/useDocumentsC
+ import { useDocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
+ import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
+ import { proposalCommentsStorageKey } from "@/features/editor/model/fragment-comment";
+-import { GitPanel } from "@/features/git/components/GitPanel";
+ import { useGitStatusController } from "@/features/git/hooks/useGitStatusController";
+ import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
+ import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
+ import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
++import { isOpenSpecOperationBusy } from "@/features/openspec-workflow/model/openspec-state";
+ import { OpenSpecChangeCreationPage } from "@/features/openspec-workflow/components/OpenSpecChangeCreationPage";
+ import {
+   OpenSpecDocumentAction,
+@@ -19,7 +19,6 @@ import { PublicationDialog } from "@/features/task-context/components/Publicatio
+ import { useTaskContextController } from "@/features/task-context/hooks/useTaskContextController";
+ import {
+   isSaveShortcut,
+-  primaryShortcutLabel,
+ } from "@/features/system/model/platform-shortcuts";
+ import { RepositoriesPanel } from "@/features/repositories/components/RepositoriesPanel";
+ import { AgentCliPanel } from "./AgentCliPanel";
+@@ -27,7 +26,7 @@ import { MarkdownEditor } from "./MarkdownEditor";
+ import { ProjectLoadingLanding } from "./ProjectLoadingLanding";
+ import { WorkspaceHeader } from "./WorkspaceHeader";
+ import { WorkspaceSidebar } from "./WorkspaceSidebar";
+-import type { ViewMode, WorkspaceMode } from "@/features/workspace/model/workspace-types";
++import type { ViewMode, WorkRole, WorkspaceMode } from "@/features/workspace/model/workspace-types";
+ import {
+   isDeltaSpecPath,
+   isMasterSpecPath,
+@@ -44,6 +43,40 @@ interface ChangeDocumentContext {
+ }
+ 
+ const DOCUMENT_AUTOSAVE_DELAY_MS = 3_000;
++const WORK_ROLE_STORAGE_KEY = "openspec-studio-work-role";
++
++type WorkspaceRouteView = "documents" | "context" | "create";
++
++interface WorkspaceRouteState {
++  view: WorkspaceRouteView;
++  path: string;
++}
++
++function readStoredWorkRole(): WorkRole {
++  if (typeof window === "undefined") return "analyst";
++  return window.localStorage.getItem(WORK_ROLE_STORAGE_KEY) === "developer" ? "developer" : "analyst";
++}
++
++function readWorkspaceRoute(): WorkspaceRouteState {
++  if (typeof window === "undefined") return { view: "documents", path: "" };
++  const params = new URLSearchParams(window.location.search);
++  const view = params.get("view");
++  return {
++    view: view === "context" || view === "create" ? view : "documents",
++    path: params.get("path") ?? "",
++  };
++}
++
++function writeWorkspaceRoute(route: WorkspaceRouteState) {
++  const url = new URL(window.location.href);
++  url.searchParams.set("view", route.view);
++  if (route.view === "documents" && route.path) {
++    url.searchParams.set("path", route.path);
++  } else {
++    url.searchParams.delete("path");
++  }
++  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
++}
+ 
+ function changeDocumentContextFromPath(path: string | null): ChangeDocumentContext | null {
+   const match = path?.match(/^openspec\/changes\/([^/]+)\/(proposal|design|tasks)\.md$/);
+@@ -52,6 +85,7 @@ function changeDocumentContextFromPath(path: string | null): ChangeDocumentConte
+ }
+ 
+ export function OpenSpecWorkspace() {
++  const initialRoute = useMemo(() => readWorkspaceRoute(), []);
+   const projects = useProjectsController();
+   const repositories = useRepositoriesController(projects.activeProject?.id);
+   const tasks = useTaskContextController(projects.activeProject?.id);
+@@ -115,8 +149,10 @@ export function OpenSpecWorkspace() {
+   const providerAvailable = !!configuredProvider && (projects.capabilities?.tools.some((tool) =>
+     tool.name === configuredProvider.toLowerCase() && tool.available && tool.supported !== false && tool.nonInteractive !== false,
+   ) ?? false);
+-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("documents");
++  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(initialRoute.view === "context" ? "context" : "documents");
++  const [workRole, setWorkRole] = useState<WorkRole>(() => readStoredWorkRole());
+   const activeWorkspaceMode = projects.activeProject ? workspaceMode : "documents";
++  const taskWorkspaceSelected = !!tasks.overview?.active && workspaceContext !== "base";
+   const git = useGitStatusController(projects.activeProject?.id, !!projects.activeProject);
+   const openSpec = useOpenSpecWorkflowController(
+     projects.activeProject?.id,
+@@ -141,10 +177,30 @@ export function OpenSpecWorkspace() {
+   const [leftOpen, setLeftOpen] = useState(true);
+   const [agentSettingsOpen, setAgentSettingsOpen] = useState(false);
+   const [toast, setToast] = useState("");
+-  const [saveShortcutLabel, setSaveShortcutLabel] = useState("Ctrl+S");
+-  const [openSpecCreationPageOpen, setOpenSpecCreationPageOpen] = useState(false);
++  const [openSpecCreationPageOpen, setOpenSpecCreationPageOpen] = useState(initialRoute.view === "create");
+   const [pendingDocumentPath, setPendingDocumentPath] = useState("");
+   const [pendingArchivedChange, setPendingArchivedChange] = useState("");
++  const [pendingOperationChange, setPendingOperationChange] = useState("");
++  const [routeDocumentPath, setRouteDocumentPath] = useState(initialRoute.path);
++
++  useEffect(() => {
++    window.localStorage.setItem(WORK_ROLE_STORAGE_KEY, workRole);
++  }, [workRole]);
++
++  useEffect(() => {
++    const onPopState = () => {
++      const route = readWorkspaceRoute();
++      setWorkspaceMode(route.view === "context" ? "context" : "documents");
++      setOpenSpecCreationPageOpen(route.view === "create");
++      setRouteDocumentPath(route.path);
++      if (route.view === "documents" && route.path) {
++        const target = documents.items.find((item) => item.kind === "file" && item.path === route.path);
++        if (target) documents.select(target.path);
++      }
++    };
++    window.addEventListener("popstate", onPopState);
++    return () => window.removeEventListener("popstate", onPopState);
++  }, [documents]);
+ 
+   const lines = useMemo(() => documents.markdown.split("\n"), [documents.markdown]);
+   const changeDocument = useMemo(
+@@ -170,6 +226,53 @@ export function OpenSpecWorkspace() {
+       item.path.startsWith(`${changeRoot}/spec/`) || item.path.startsWith(`${changeRoot}/specs/`),
+     );
+   }, [changeDocument, documents.items]);
++  const openSpecOperationActive = changeDocument
++    ? openSpec.operations.some((operation) =>
++      operation.openspecChange === changeDocument.change && isOpenSpecOperationBusy(operation.status),
++    )
++    : false;
++  const openSpecArtifactRefreshActive = !!changeDocument &&
++    openSpec.artifactRefresh?.change === changeDocument.change &&
++    openSpec.artifactRefresh.status === "active";
++  const openSpecOperationStarting = !!changeDocument && pendingOperationChange === changeDocument.change;
++  const openSpecToolbarLoading = openSpec.detailsLoading || openSpec.operationsLoading || openSpec.pending ||
++    openSpecOperationActive || openSpecArtifactRefreshActive || openSpecOperationStarting;
++
++  useEffect(() => {
++    if (!pendingOperationChange) return;
++    const operationStillActive = openSpec.operations.some((operation) =>
++      operation.openspecChange === pendingOperationChange && isOpenSpecOperationBusy(operation.status),
++    );
++    const cascadeStillActive = openSpec.artifactRefresh?.change === pendingOperationChange &&
++      openSpec.artifactRefresh.status === "active";
++    if (!openSpec.pending && !operationStillActive && !cascadeStillActive) {
++      setPendingOperationChange("");
++    }
++  }, [openSpec.artifactRefresh, openSpec.operations, openSpec.pending, pendingOperationChange]);
++
++  useEffect(() => {
++    if (!routeDocumentPath || activeWorkspaceMode !== "documents" || openSpecCreationPageOpen || documents.status === "loading") return;
++    const target = documents.items.find((item) => item.kind === "file" && item.path === routeDocumentPath);
++    if (!target) {
++      setRouteDocumentPath("");
++      return;
++    }
++    if (documents.selectedPath !== target.path) {
++      documents.select(target.path);
++      return;
++    }
++    setRouteDocumentPath("");
++  }, [activeWorkspaceMode, documents, openSpecCreationPageOpen, routeDocumentPath]);
++
++  useEffect(() => {
++    if (routeDocumentPath && activeWorkspaceMode === "documents" && !openSpecCreationPageOpen) return;
++    const route: WorkspaceRouteState = openSpecCreationPageOpen
++      ? { view: "create", path: "" }
++      : activeWorkspaceMode === "context"
++        ? { view: "context", path: "" }
++        : { view: "documents", path: documents.selectedPath ?? "" };
++    writeWorkspaceRoute(route);
++  }, [activeWorkspaceMode, documents.selectedPath, openSpecCreationPageOpen, routeDocumentPath]);
+ 
+   const notify = useCallback((message: string) => {
+     setToast(message);
+@@ -177,6 +280,10 @@ export function OpenSpecWorkspace() {
+   }, []);
+ 
+   const archiveOpenSpecChange = useCallback((change: string) => {
++    if (workRole === "developer") {
++      notify("В режиме разработчика архивирование недоступно");
++      return;
++    }
+     notify(`Архивация запущена: ${change}`);
+     void openSpec.archiveChange(change).then(() => {
+       setPendingArchivedChange(change);
+@@ -186,7 +293,7 @@ export function OpenSpecWorkspace() {
+     }).catch((error: unknown) => {
+       notify(error instanceof Error ? error.message : "Не удалось архивировать изменение");
+     });
+-  }, [notify, openSpec, refreshTasks, retryDocuments]);
++  }, [notify, openSpec, refreshTasks, retryDocuments, workRole]);
+ 
+   useEffect(() => {
+     if (!pendingArchivedChange || documents.status === "loading") return;
+@@ -226,6 +333,7 @@ export function OpenSpecWorkspace() {
+   useEffect(() => {
+     if (
+       userReadOnlySpec
++      || openSpecOperationActive
+       || documents.status !== "ready"
+       || !documents.dirty
+       || documents.saving
+@@ -242,6 +350,7 @@ export function OpenSpecWorkspace() {
+     documents.saving,
+     documents.selectedPath,
+     documents.status,
++    openSpecOperationActive,
+     persistFile,
+     userReadOnlySpec,
+   ]);
+@@ -262,7 +371,6 @@ export function OpenSpecWorkspace() {
+   }, [notify, retryDocuments, tasks]);
+ 
+   useEffect(() => {
+-    void Promise.resolve().then(() => setSaveShortcutLabel(primaryShortcutLabel("S")));
+     const handleSaveShortcut = (event: KeyboardEvent) => {
+       if (!isSaveShortcut(event)) return;
+       event.preventDefault();
+@@ -301,9 +409,13 @@ export function OpenSpecWorkspace() {
+   }, []);
+ 
+   const addOpenSpecChange = useCallback(() => {
++    if (!taskWorkspaceSelected) {
++      notify("Сначала выберите задачу в верхней панели, чтобы изменение создавалось в нужной ветке");
++      return;
++    }
+     setWorkspaceMode("documents");
+     setOpenSpecCreationPageOpen(true);
+-  }, []);
++  }, [notify, taskWorkspaceSelected]);
+ 
+   const changeWorkspaceMode = useCallback((mode: WorkspaceMode) => {
+     setOpenSpecCreationPageOpen(false);
+@@ -332,9 +444,11 @@ export function OpenSpecWorkspace() {
+         onAgentSettingsToggle={() => setAgentSettingsOpen((open) => !open)}
+         onPublish={preparePublication}
+         onReceive={receiveRemoteChanges}
++        onWorkRoleChange={setWorkRole}
+         git={git}
+         projects={projects}
+         tasks={tasks}
++        workRole={workRole}
+       />
+ 
+       <section className={`workspace ${agentSettingsOpen ? "agent-settings-open" : ""} ${leftOpen ? "" : "left-collapsed"}`}>
+@@ -349,14 +463,14 @@ export function OpenSpecWorkspace() {
+           workspaceMode={activeWorkspaceMode}
+           onWorkspaceModeChange={changeWorkspaceMode}
+           onAddOpenSpecChange={addOpenSpecChange}
++          canAddOpenSpecChange={taskWorkspaceSelected}
+           onArchiveOpenSpecChange={archiveOpenSpecChange}
++          workRole={workRole}
+         />
+         {!leftOpen && <button className="open-panel left" onClick={() => setLeftOpen(true)}>›</button>}
+ 
+         {activeWorkspaceMode === "context" ? (
+           <RepositoriesPanel controller={repositories} enabled={!!projects.activeProject} />
+-        ) : activeWorkspaceMode === "git" ? (
+-          <GitPanel controller={git} />
+         ) : openSpecCreationPageOpen ? (
+           <OpenSpecChangeCreationPage
+             controller={openSpec}
+@@ -376,12 +490,12 @@ export function OpenSpecWorkspace() {
+             conflict={documents.conflict}
+             error={documents.error}
+             history={documentHistory}
+-            saveShortcutLabel={saveShortcutLabel}
+             viewMode={viewMode}
+             userReadOnly={userReadOnlySpec}
+             hideHeaderActions={masterSpecReadOnly}
+             readOnlyLabel={masterSpecReadOnly ? "Master spec · только просмотр" : "Diff spec · только просмотр"}
+             comments={changeDocument ? activeFragmentComments : undefined}
++            toolbarLoading={openSpecToolbarLoading}
+             toolbarActions={changeDocument ? (
+               <OpenSpecDocumentAction
+                 controller={openSpec}
+@@ -391,7 +505,9 @@ export function OpenSpecWorkspace() {
+                 documentDirty={documents.dirty}
+                 documentSaving={documents.saving}
+                 documentComments={activeFragmentComments}
++                workRole={workRole}
+                 onSave={writeFile}
++                onActionPendingChange={(pending) => setPendingOperationChange(pending ? changeDocument.change : "")}
+                 onCommentsSubmitted={() => {
+                   if (documents.selectedPath && activeFragmentComments.length) {
+                     pendingCommentUpdatePath.current = documents.selectedPath;
+@@ -410,7 +526,11 @@ export function OpenSpecWorkspace() {
+               </span>
+             ) : undefined}
+             contextPanel={changeDocument ? (
+-              <OpenSpecDocumentReview controller={openSpec} change={changeDocument.change} />
++              <OpenSpecDocumentReview
++                controller={openSpec}
++                change={changeDocument.change}
++                onReviewFeedback={notify}
++              />
+             ) : undefined}
+             onBlur={() => undefined}
+             onAddComment={changeDocument ? addFragmentComment : undefined}
+@@ -418,7 +538,6 @@ export function OpenSpecWorkspace() {
+             onDeleteComment={changeDocument ? deleteFragmentComment : undefined}
+             onChange={userReadOnlySpec ? () => undefined : documents.change}
+             onViewModeChange={setViewMode}
+-            onWrite={writeFile}
+             onRetry={documents.retry}
+           />
+         )}
+diff --git a/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx b/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx
+index 413029d..5098276 100644
+--- a/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx
++++ b/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx
+@@ -7,18 +7,21 @@ import type { GitStatusController } from "@/features/git/hooks/useGitStatusContr
+ import type { ProjectsController } from "@/features/projects/hooks/useProjectsController";
+ import { TaskContextSelector } from "@/features/task-context/components/TaskContextSelector";
+ import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
++import type { WorkRole } from "@/features/workspace/model/workspace-types";
+ 
+ interface WorkspaceHeaderProps {
+   agentSettingsOpen: boolean;
+   onAgentSettingsToggle: () => void;
+   onPublish: () => void;
+   onReceive: () => void;
++  onWorkRoleChange: (role: WorkRole) => void;
+   git: GitStatusController;
+   projects: ProjectsController;
+   tasks: TaskContextController;
++  workRole: WorkRole;
+ }
+ 
+-export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
++export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle, onPublish, onReceive, onWorkRoleChange, projects, tasks, workRole }: WorkspaceHeaderProps) {
+   const activeProject = projects.activeProject;
+   const provider = activeProject?.defaultAiProvider;
+   const model = activeProject?.defaultModel;
+@@ -49,6 +52,22 @@ export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle,
+             projectSelected={!!activeProject}
+           />
+         </div>
++        <div className="work-role-toggle" role="group" aria-label="Режим работы">
++          <button
++            type="button"
++            className={workRole === "analyst" ? "active" : ""}
++            onClick={() => onWorkRoleChange("analyst")}
++            aria-pressed={workRole === "analyst"}
++            title="Аналитик работает с proposal.md и diff specs"
++          >Аналитик</button>
++          <button
++            type="button"
++            className={workRole === "developer" ? "active" : ""}
++            onClick={() => onWorkRoleChange("developer")}
++            aria-pressed={workRole === "developer"}
++            title="Разработчик работает с design.md и tasks.md"
++          >Разработчик</button>
++        </div>
+         <div className="provider-settings">
+           <button
+             className="provider-button"
+diff --git a/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx b/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
+index 4a56f9a..dd1d8a6 100644
+--- a/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
++++ b/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
+@@ -5,7 +5,7 @@ import { IconButton } from "@/components/ui/IconButton";
+ import type { DocumentsController } from "@/features/documents/hooks/useDocumentsController";
+ import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
+ import type { RepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
+-import type { WorkspaceMode } from "@/features/workspace/model/workspace-types";
++import type { WorkRole, WorkspaceMode } from "@/features/workspace/model/workspace-types";
+ import { isDeltaSpecPath, isMasterSpecPath } from "@/features/workspace/model/openspec-document";
+ import {
+   isOpenSpecTasksPath,
+@@ -22,7 +22,9 @@ interface WorkspaceSidebarProps {
+   workspaceMode: WorkspaceMode;
+   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
+   onAddOpenSpecChange: () => void;
++  canAddOpenSpecChange?: boolean;
+   onArchiveOpenSpecChange?: (change: string) => void;
++  workRole: WorkRole;
+ }
+ 
+ type ArtifactRole = "analyst" | "developer";
+@@ -124,7 +126,9 @@ export function WorkspaceSidebar({
+   workspaceMode,
+   onWorkspaceModeChange,
+   onAddOpenSpecChange,
++  canAddOpenSpecChange = true,
+   onArchiveOpenSpecChange,
++  workRole,
+ }: WorkspaceSidebarProps) {
+   const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(() => new Set());
+   const [collapsedSections, setCollapsedSections] = useState<Set<NavigationSectionId>>(
+@@ -213,13 +217,6 @@ export function WorkspaceSidebar({
+         title={projectSelected ? "Подключённые Git-репозитории и контекст проекта" : "Сначала выберите проект"}
+         onClick={() => onWorkspaceModeChange("context")}
+       ><span>▱</span> Контекст <small>{repositories.repositories.length}</small></button>
+-      <button
+-        className={`nav-item ${projectSelected && workspaceMode === "git" ? "active" : ""}`}
+-        type="button"
+-        disabled={!projectSelected}
+-        title={projectSelected ? "Git active Store и получение обновлений" : "Сначала выберите проект"}
+-        onClick={() => onWorkspaceModeChange("git")}
+-      ><span>⑂</span> Git</button>
+       {projectSelected && (
+         <>
+           <div className="sidebar-heading files-heading">
+@@ -262,8 +259,11 @@ export function WorkspaceSidebar({
+                       <IconButton
+                         className="tree-section-add"
+                         label="Добавить изменение"
++                        disabled={!canAddOpenSpecChange}
+                         onClick={onAddOpenSpecChange}
+-                        title="Исследовать задачу и создать изменение"
++                        title={canAddOpenSpecChange
++                          ? "Исследовать задачу и создать изменение"
++                          : "Сначала выберите задачу в верхней панели, чтобы изменение создавалось в нужной ветке"}
+                       >＋</IconButton>
+                     )}
+                   </div>
+@@ -276,7 +276,7 @@ export function WorkspaceSidebar({
+                       const selectedTasksIncomplete = selectedTasksChange === scope.label &&
+                         !!selectedTasksProgress &&
+                         selectedTasksProgress.completed < selectedTasksProgress.total;
+-                      const archiveAvailable = !!change?.archiveAvailable && !selectedTasksIncomplete && !openSpec?.pending;
++                      const archiveAvailable = workRole === "analyst" && !!change?.archiveAvailable && !selectedTasksIncomplete && !openSpec?.pending;
+                       return (
+                         <div className="tree-scope-entry" key={scope.id}>
+                           <div
+diff --git a/openspec.frontend/src/features/workspace/model/workspace-types.ts b/openspec.frontend/src/features/workspace/model/workspace-types.ts
+index 99beb96..52d5bd2 100644
+--- a/openspec.frontend/src/features/workspace/model/workspace-types.ts
++++ b/openspec.frontend/src/features/workspace/model/workspace-types.ts
+@@ -1,7 +1,8 @@
+ export type ViewMode = "edit" | "preview" | "split";
+ 
+ 
+-export type WorkspaceMode = "documents" | "context" | "git";
++export type WorkspaceMode = "documents" | "context";
++export type WorkRole = "analyst" | "developer";
+ 
+ export interface WorkspaceFile {
+   id: string;
+diff --git a/openspec.frontend/src/features/workspace/styles/workspace.css b/openspec.frontend/src/features/workspace/styles/workspace.css
+index 762f8ea..541e7fe 100644
+--- a/openspec.frontend/src/features/workspace/styles/workspace.css
++++ b/openspec.frontend/src/features/workspace/styles/workspace.css
+@@ -56,7 +56,7 @@ button { color: inherit; }
+   offset-path: path("M -55 27 C 32 -53 158 -73 270 -30");
+   offset-distance: 0%;
+   offset-rotate: auto 5deg;
+-  animation: project-loading-bird-flight 1600ms cubic-bezier(.45, 0, .55, 1) infinite;
++  animation: project-loading-bird-flight 5600ms cubic-bezier(.45, 0, .55, 1) infinite;
+   will-change: offset-distance, opacity;
+ }
+ .project-loading-swallow { display: block; width: 100%; height: 100%; overflow: visible; fill: currentColor; }
+@@ -153,6 +153,33 @@ button { color: inherit; }
+ .sync-status { font-size: 15px; color: #87918e; }
+ 
+ .top-actions { min-width: 150px; margin-left: auto; flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
++.work-role-toggle {
++  height: 34px;
++  padding: 3px;
++  display: grid;
++  grid-template-columns: 1fr 1fr;
++  gap: 2px;
++  border: 1px solid var(--line);
++  border-radius: 8px;
++  background: #eef3f0;
++}
++.work-role-toggle button {
++  min-width: 94px;
++  height: 26px;
++  padding: 0 9px;
++  border: 0;
++  border-radius: 6px;
++  background: transparent;
++  color: #607068;
++  font-size: 11px;
++  font-weight: 650;
++  cursor: pointer;
++}
++.work-role-toggle button.active {
++  background: #fff;
++  color: #174f3c;
++  box-shadow: 0 1px 3px rgba(30,50,42,.12);
++}
+ .provider-button { display: flex; align-items: center; gap: 6px; height: 34px; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 0 8px 0 9px; font-size: 11px; cursor: pointer; box-shadow: 0 1px 2px rgba(20,40,32,.03); }
+ .provider-button small { max-width: 132px; padding-left: 7px; overflow: hidden; border-left: 1px solid var(--line); color: #7e8885; text-overflow: ellipsis; white-space: nowrap; }
+ .provider-button:disabled { color: #8f9895; background: #f5f7f6; cursor: default; }
+@@ -725,10 +752,6 @@ button { color: inherit; }
+ .segmented button { border: 0; padding: 0 9px; border-radius: 5px; background: transparent; color: #77817e; font-size: 9.5px; cursor: pointer; }
+ .segmented button.active { background: #fff; color: #27332f; box-shadow: 0 1px 3px rgba(30,50,42,.12); }
+ .segmented button:disabled { cursor: not-allowed; opacity: .42; }
+-.save-button { height: 30px; margin-left: 4px; padding: 0 10px; border: 0; border-radius: 6px; background: var(--green); color: white; font-size: 10px; font-weight: 620; cursor: pointer; }
+-.save-button:hover { background: var(--green-2); }
+-.save-button:disabled { background: #a8b6b0; }
+-.save-button span { margin-left: 7px; opacity: .65; font-size: 9px; }
+ .document-view { min-width: 0; min-height: 0; position: relative; display: grid; background: #fff; }
+ .document-view.split { grid-template-columns: 1fr 1fr; }
+ .document-state { grid-column: 1 / -1; display: grid; place-items: center; align-content: center; gap: 12px; padding: 28px; color: #75817c; text-align: center; }
+@@ -1079,7 +1102,123 @@ button { color: inherit; }
+ .rich-editor-shell .milkdown .milkdown-top-bar .openspec-document-action-button:disabled { border-color: #c2d0ca; background: #edf3f0; color: #44584f; box-shadow: none; opacity: 1; cursor: not-allowed; }
+ .rich-editor-shell .milkdown .milkdown-top-bar .openspec-document-action-button.secondary:disabled { border-color: transparent; background: transparent; color: #111; opacity: .38; }
+ .openspec-document-action-error { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: #fff0ed; color: #9a4339; font-size: 11px; font-weight: 800; }
++.rich-editor-shell .milkdown .milkdown-top-bar .top-bar-inner.rich-editor-toolbar-busy > :not(.rich-editor-toolbar-loading) {
++  visibility: hidden;
++}
++.rich-editor-toolbar-loading {
++  position: absolute;
++  z-index: 5;
++  inset: 0;
++  overflow: hidden;
++  border-radius: inherit;
++  color: #176b4d;
++  pointer-events: none;
++}
++.document-operation-loading {
++  position: absolute;
++  z-index: 6;
++  top: 36px;
++  left: 28px;
++  right: 28px;
++  height: 36px;
++  overflow: hidden;
++  color: #176b4d;
++  pointer-events: none;
++}
++.document-operation-loading .editor-loading-flight {
++  top: 12px;
++}
++.document-operation-loading .editor-loading-flight.path-1 {
++  offset-path: path("M -34 8 C 180 -38 520 54 1120 8");
++}
++.document-operation-loading .editor-loading-flight.path-2 {
++  offset-path: path("M -34 18 C 220 58 560 -30 1120 12");
++  animation-delay: 1860ms;
++}
++.document-operation-loading .editor-loading-flight.path-3 {
++  offset-path: path("M -34 13 C 240 -14 600 -6 1120 18");
++  animation-delay: 3720ms;
++}
++.editor-loading-flight {
++  position: absolute;
++  top: 14px;
++  left: 0;
++  width: 16px;
++  height: 10px;
++  opacity: 0;
++  filter: drop-shadow(0 2px 2px rgba(15, 112, 80, .16));
++  offset-path: path("M -34 8 C 148 -28 426 48 902 8");
++  offset-distance: 0%;
++  offset-rotate: auto 5deg;
++  animation: project-loading-bird-flight 5600ms cubic-bezier(.45, 0, .55, 1) infinite;
++  will-change: offset-distance, opacity;
++}
++.editor-loading-flight.path-1 {
++  offset-path: path("M -34 8 C 148 -28 426 48 902 8");
++}
++.editor-loading-flight.path-2 {
++  offset-path: path("M -34 15 C 172 42 452 -24 902 13");
++  animation-delay: 1860ms;
++}
++.editor-loading-flight.path-3 {
++  offset-path: path("M -34 10 C 190 -10 470 14 902 18");
++  animation-delay: 3720ms;
++}
++.editor-loading-flight .project-loading-swallow {
++  display: block;
++  width: 100%;
++  height: 100%;
++  overflow: visible;
++  fill: currentColor;
++}
+ .editor-loading, .editor-error { position: absolute; inset: 0; display: grid; place-items: center; background: #fff; color: #7d8884; font-size: 11px; }
++.editor-loading {
++  gap: 10px;
++  align-content: center;
++}
++.editor-bird-loader {
++  position: relative;
++  width: 34px;
++  height: 22px;
++  display: inline-grid;
++  place-items: center;
++  color: var(--green);
++}
++.editor-bird-loader svg {
++  width: 28px;
++  height: 18px;
++  fill: currentColor;
++  filter: drop-shadow(0 2px 2px rgba(15, 112, 80, .14));
++  animation: editor-bird-flight 3200ms cubic-bezier(.45, 0, .55, 1) infinite;
++}
++.editor-action-loader {
++  min-width: 32px;
++  height: 30px;
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  color: var(--green);
++}
++.editor-action-loader.inline {
++  min-width: 0;
++  height: auto;
++  gap: 6px;
++  color: inherit;
++}
++.editor-action-loader.inline .editor-bird-loader {
++  width: 22px;
++  height: 16px;
++  color: var(--green);
++}
++.editor-action-loader.inline .editor-bird-loader svg {
++  width: 20px;
++  height: 12px;
++}
++@keyframes editor-bird-flight {
++  0% { opacity: .38; transform: translateX(-7px) translateY(2px) rotate(-5deg); }
++  45% { opacity: 1; transform: translateX(1px) translateY(-2px) rotate(4deg); }
++  100% { opacity: .38; transform: translateX(8px) translateY(1px) rotate(-3deg); }
++}
+ .editor-error { color: #9d3f36; }
+ .preview-pane { padding: 42px clamp(28px,5vw,78px) 70px; overflow: auto; border-left: 1px solid var(--line); color: #34413d; }
+ .preview-pane .eyebrow, .eyebrow { color: var(--green); font-size: 9px; letter-spacing: 1.2px; font-weight: 750; }
+@@ -1094,7 +1233,7 @@ button { color: inherit; }
+ .markdown-preview .ProseMirror[contenteditable="false"] { cursor: default; }
+ .markdown-preview .milkdown-list-item-block { margin: 5px 0; }
+ .markdown-preview .milkdown-list-item-block > .list-item > .children > .content-dom > p { margin: 0; padding: 4px 0; }
+-.markdown-preview .preview-state { margin: 20px 0; color: #7d8884; }
++.markdown-preview .preview-state { margin: 20px 0; display: inline-flex; align-items: center; gap: 8px; color: #7d8884; }
+ .markdown-preview .preview-state.error { color: #963f36; }
+ .editor-statusbar { display: flex; align-items: center; gap: 14px; padding: 0 13px; border-top: 1px solid var(--soft-line); background: #fbfcfb; color: #8b9591; font-size: 9px; }
+ .editor-statusbar button { border: 0; background: transparent; color: inherit; font-size: inherit; cursor: pointer; }
+@@ -1307,7 +1446,6 @@ button:disabled {
+ .breadcrumbs { font-size: 12px; }
+ .segmented { height: 34px; }
+ .segmented button { padding: 0 12px; font-size: 12px; }
+-.save-button { height: 36px; font-size: 12px; }
+ .icon-button { min-width: 36px; height: 36px; font-size: 17px; }
+ .rich-editor-shell .milkdown .ProseMirror { font-size: 16px; line-height: 1.75; }
+ .rich-editor-shell .milkdown .ProseMirror code { font-size: 14px; }
+@@ -1509,7 +1647,7 @@ button:disabled {
+ .openspec-validation > div { padding: 6px 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 8px; font-size: 11px; }
+ .openspec-validation code { color: #68756f; font: 10px var(--font-code); }
+ .openspec-validation span { grid-column: 1 / -1; }
+-.openspec-operation { overflow: hidden; border: 1px solid var(--line); border-radius: 9px; }
++.openspec-operation { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; }
+ .openspec-operation > header {
+   min-height: 58px;
+   padding: 10px 12px;
+@@ -1690,6 +1828,17 @@ button:disabled {
+ .openspec-draft-write-button { min-height: 38px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--green); border-radius: 8px; background: var(--green); color: #fff; font-family: inherit; font-size: 11px; font-weight: 650; line-height: 1; cursor: pointer; box-shadow: 0 1px 2px rgba(18, 58, 43, .16); transition: border-color .15s ease, background-color .15s ease, box-shadow .15s ease; }
+ .openspec-draft-write-button:hover:not(:disabled) { border-color: #0c5e43; background: #0c6246; }
+ .openspec-draft-write-button:active:not(:disabled) { border-color: #09533a; background: #09533a; }
++.openspec-operation-pending-overlay { position: absolute; z-index: 8; inset: 0; overflow: hidden; background: rgba(255, 255, 255, .68); backdrop-filter: blur(1px); pointer-events: all; }
++.openspec-operation-pending-overlay .editor-loading-flight { top: 58%; width: 32px; height: 20px; color: #147755; }
++.openspec-operation-pending-overlay .editor-loading-flight.path-1 {
++  offset-path: path("M -34 8 C 210 -52 560 62 1120 8");
++}
++.openspec-operation-pending-overlay .editor-loading-flight.path-2 {
++  offset-path: path("M -34 20 C 260 70 620 -38 1120 16");
++}
++.openspec-operation-pending-overlay .editor-loading-flight.path-3 {
++  offset-path: path("M -34 12 C 270 -18 660 24 1120 18");
++}
+ .openspec-draft-write-button:focus-visible { outline: 0; box-shadow: 0 0 0 3px rgba(15, 112, 80, .18), 0 1px 2px rgba(18, 58, 43, .16); }
+ .openspec-draft-write-button:disabled { opacity: .55; cursor: default; }
+ .editor-content-shell { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
+@@ -1719,9 +1868,9 @@ button:disabled {
+ .artifact-refresh-inline-status b { color: #23664e; font-size: 10px; }
+ .artifact-refresh-inline-status span, .artifact-refresh-inline-status small { color: #607269; font-size: 9px; line-height: 1.4; }
+ .artifact-refresh-stages { margin: 7px 0 0; padding: 0; display: grid; gap: 4px; list-style: none; }
+-.artifact-refresh-stages li { min-width: 0; padding: 5px 6px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 6px; border-radius: 6px; }
+-.artifact-refresh-stages li > i { width: 16px; height: 16px; display: grid; place-items: center; border: 1px solid #c7d6cf; border-radius: 50%; color: #7c8a84; font: 700 9px/1 var(--font-ui); }
+-.artifact-refresh-stages li > span { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
++.artifact-refresh-stages li { min-width: 0; min-height: 26px; padding: 5px 6px; display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: 6px; border-radius: 6px; }
++.artifact-refresh-stages li > i { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; align-self: center; justify-self: center; overflow: hidden; border: 1px solid #c7d6cf; border-radius: 50%; color: #7c8a84; font: 700 9px/16px var(--font-ui); text-align: center; }
++.artifact-refresh-stages li > span { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+ .artifact-refresh-stages li strong { overflow: hidden; color: #384b43; font: 650 9px/1.2 var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
+ .artifact-refresh-stages li small { flex: 0 0 auto; color: #7d8984; font-size: 8px; }
+ .artifact-refresh-stages li.completed { background: rgba(255, 255, 255, .62); }
+@@ -1989,30 +2138,39 @@ button:disabled {
+   min-height: 56px;
+   padding: 10px 22px;
+   display: grid;
+-  grid-template-columns: repeat(4, minmax(150px, 220px));
++  grid-template-columns: repeat(4, minmax(120px, 190px));
+   align-items: center;
+   justify-content: center;
++  column-gap: 18px;
+   border-bottom: 1px solid #dbe4e0;
+   background: #f9fbfa;
+ }
+-.change-creation-stepper span {
++.change-creation-stepper button {
+   position: relative;
+   min-width: 0;
++  min-height: 30px;
++  padding: 0;
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   gap: 8px;
++  border: 0;
++  background: transparent;
+   color: #909b96;
+   font-size: 11px;
+   font-weight: 650;
++  white-space: nowrap;
++  overflow: hidden;
++  text-overflow: ellipsis;
+ }
+-.change-creation-stepper span:not(:last-child)::after {
++.change-creation-stepper button:not(:last-child)::after {
+   content: "";
+   position: absolute;
+-  right: calc(-50% + 50px);
+-  left: calc(50% + 50px);
++  right: -18px;
++  left: calc(100% + 6px);
+   height: 1px;
+   background: #d7e0dc;
++  z-index: 0;
+ }
+ .change-creation-stepper i {
+   width: 24px;
+@@ -2026,12 +2184,17 @@ button:disabled {
+   color: #7f8b85;
+   font-style: normal;
+   font-size: 10px;
++  position: relative;
++  z-index: 1;
+ }
+-.change-creation-stepper span.active { color: #214d3b; }
+-.change-creation-stepper span.active i { border-color: var(--green); background: var(--green); color: #fff; box-shadow: 0 0 0 4px rgba(15, 112, 80, .09); }
+-.change-creation-stepper span.done { color: #4f7b68; }
+-.change-creation-stepper span.done i { border-color: #8cb3a2; background: #e9f3ef; color: #26634b; }
+-.change-creation-stepper span.done::after { background: #a8c7ba; }
++.change-creation-stepper button.active { color: #214d3b; }
++.change-creation-stepper button.active i { border-color: var(--green); background: var(--green); color: #fff; box-shadow: 0 0 0 4px rgba(15, 112, 80, .09); }
++.change-creation-stepper button.done { color: #4f7b68; cursor: pointer; }
++.change-creation-stepper button.done:hover { color: #214d3b; }
++.change-creation-stepper button.done i { border-color: #8cb3a2; background: #e9f3ef; color: #26634b; }
++.change-creation-stepper button.done:hover i { border-color: var(--green); background: #dceee7; }
++.change-creation-stepper button.done::after { background: #a8c7ba; }
++.change-creation-stepper button:disabled { cursor: default; }
+ .change-creation-grid {
+   min-height: 0;
+   display: grid;
+@@ -2060,6 +2223,25 @@ button:disabled {
+ .change-creation-document > header b { color: #34433d; font: 600 11px/1.2 var(--font-code); }
+ .change-creation-document > header > span { padding: 4px 7px; border: 1px solid #d9e2de; border-radius: 5px; color: #79857f; font-size: 9px; }
+ .change-creation-document > .rich-editor-shell { min-height: 0; flex: 1; border: 0; border-radius: 0; }
++.change-creation-document > .rich-editor-shell .milkdown {
++  box-sizing: border-box;
++  width: 100%;
++  overflow-x: hidden;
++  padding: 26px clamp(26px, 4vw, 58px) 80px;
++}
++.change-creation-document > .rich-editor-shell .milkdown .milkdown-top-bar,
++.change-creation-document > .rich-editor-shell .milkdown .ProseMirror {
++  max-width: 760px;
++}
++.change-creation-document > .rich-editor-shell .milkdown .milkdown-top-bar {
++  padding-right: 0;
++  padding-left: 0;
++}
++.change-creation-document > .rich-editor-shell .milkdown .milkdown-top-bar .top-bar-inner {
++  overflow-x: auto;
++  scrollbar-width: none;
++}
++.change-creation-document > .rich-editor-shell .milkdown .milkdown-top-bar .top-bar-inner::-webkit-scrollbar { display: none; }
+ .change-creation-document > footer {
+   min-height: 32px;
+   padding: 0 16px;
+@@ -2176,7 +2358,9 @@ button:disabled {
+   .change-creation-grid { grid-template-columns: 1fr; grid-template-rows: minmax(320px, 1fr) auto; overflow: auto; }
+   .change-creation-document { min-height: 420px; border-right: 0; border-bottom: 1px solid #dbe4e0; }
+   .change-creation-assistant { min-height: 340px; overflow: visible; }
+-  .change-creation-stepper span:not(:last-child)::after { display: none; }
++  .change-creation-stepper { grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 8px; padding-inline: 12px; }
++  .change-creation-stepper button { font-size: 10px; gap: 5px; }
++  .change-creation-stepper button:not(:last-child)::after { display: none; }
+   .creation-save-status { display: none; }
+ }
+ .editor-comment-prompt {
+diff --git a/openspec.frontend/tests/api-integration.test.mjs b/openspec.frontend/tests/api-integration.test.mjs
+index 09fc44f..d35da6e 100644
+--- a/openspec.frontend/tests/api-integration.test.mjs
++++ b/openspec.frontend/tests/api-integration.test.mjs
+@@ -351,7 +351,7 @@ test("projects client и controller покрывают CRUD, lifecycle и под
+   assert.match(switcher, /lastContextImport\.imported/);
+ });
+ 
+-test("Git feature доступен из workspace и сохраняет безопасные операции Store", async () => {
++test("Git feature сохраняет безопасные операции Store без отдельной workspace-вкладки", async () => {
+   const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, diffParser] = await Promise.all([
+     readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
+@@ -401,9 +401,10 @@ test("Git feature доступен из workspace и сохраняет безо
+   assert.doesNotMatch(panel, /Только просмотр · commit/);
+   assert.match(workspace, /useGitStatusController\(projects\.activeProject\?\.id, !!projects\.activeProject\)/);
+   assert.match(workspace, /git=\{git\}/);
+-  assert.match(workspace, /<GitPanel controller=\{git\}/);
+-  assert.match(sidebar, /onWorkspaceModeChange\("git"\)/);
+-  assert.match(sidebar, /> Git<\/button>/);
++  assert.doesNotMatch(workspace, /<GitPanel controller=\{git\}/);
++  assert.doesNotMatch(workspace, /from "@\/features\/git\/components\/GitPanel"/);
++  assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("git"\)/);
++  assert.doesNotMatch(sidebar, /> Git<\/button>/);
+   assert.doesNotMatch(sidebar, /Git-панель пока недоступна/);
+   assert.doesNotMatch(workspace, /WorkspaceFooter|Commit & Push/);
+ 
+@@ -508,25 +509,53 @@ test("task context связывает workspace с задачей и публи
+   assert.match(workspace, /result\.updated\) retryDocuments\(\)/);
+   assert.match(documents, /item\.kind === "file" && item\.path === requestedPath/);
+   assert.match(workspace, /<PublicationDialog/);
++  assert.match(types, /WorkRole = "analyst" \| "developer"/);
++  assert.match(workspace, /WORK_ROLE_STORAGE_KEY = "openspec-studio-work-role"/);
++  assert.match(workspace, /type WorkspaceRouteView = "documents" \| "context" \| "create"/);
++  assert.match(workspace, /function readWorkspaceRoute\(\): WorkspaceRouteState/);
++  assert.match(workspace, /function writeWorkspaceRoute\(route: WorkspaceRouteState\)/);
++  assert.match(workspace, /url\.searchParams\.set\("view", route\.view\)/);
++  assert.match(workspace, /url\.searchParams\.set\("path", route\.path\)/);
++  assert.match(workspace, /function readStoredWorkRole\(\): WorkRole/);
++  assert.match(workspace, /const \[workRole, setWorkRole\] = useState<WorkRole>\(\(\) => readStoredWorkRole\(\)\)/);
++  assert.match(workspace, /window\.localStorage\.setItem\(WORK_ROLE_STORAGE_KEY, workRole\)/);
++  assert.match(workspace, /onWorkRoleChange=\{setWorkRole\}/);
++  assert.match(workspace, /workRole=\{workRole\}/);
++  assert.match(workspace, /В режиме разработчика архивирование недоступно/);
+   assert.match(workspace, /hideDocumentTree=\{openSpecCreationPageOpen\}/);
++  assert.match(workspace, /const \[workspaceMode, setWorkspaceMode\] = useState<WorkspaceMode>\(initialRoute\.view === "context" \? "context" : "documents"\)/);
++  assert.match(workspace, /const \[openSpecCreationPageOpen, setOpenSpecCreationPageOpen\] = useState\(initialRoute\.view === "create"\)/);
++  assert.match(workspace, /const \[routeDocumentPath, setRouteDocumentPath\] = useState\(initialRoute\.path\)/);
++  assert.match(workspace, /window\.addEventListener\("popstate", onPopState\)/);
++  assert.match(workspace, /documents\.items\.find\(\(item\) => item\.kind === "file" && item\.path === routeDocumentPath\)/);
+   assert.match(workspace, /const changeWorkspaceMode = useCallback\(\(mode: WorkspaceMode\) => \{[\s\S]*setOpenSpecCreationPageOpen\(false\);[\s\S]*setWorkspaceMode\(mode\)/);
+   assert.match(workspace, /onWorkspaceModeChange=\{changeWorkspaceMode\}/);
+   assert.match(sidebar, /!hideDocumentTree && activeScope && workspaceMode === "documents"/);
+   assert.match(sidebar, /!hideDocumentTree && workspaceMode === "documents" && activeScope\?\.id === scope\.id \? "active"/);
+   assert.match(sidebar, /const preferredPath = `\$\{scope\.rootPath\}\/proposal\.md`/);
+   assert.match(sidebar, /if \(target\) documents\.select\(target\.path\)/);
+-  assert.match(css, /\.change-creation-stepper \{[^}]*grid-template-columns:\s*repeat\(4, minmax\(150px, 220px\)\)[^}]*justify-content:\s*center/s);
++  assert.match(css, /\.change-creation-stepper \{[^}]*grid-template-columns:\s*repeat\(4, minmax\(120px, 190px\)\)[^}]*column-gap:\s*18px/s);
++  assert.match(css, /\.change-creation-stepper button:not\(:last-child\)::after \{[^}]*right:\s*-18px[^}]*left:\s*calc\(100% \+ 6px\)/s);
++  assert.match(css, /\.artifact-refresh-stages li \{[^}]*grid-template-columns:\s*16px minmax\(0, 1fr\)[^}]*align-items:\s*center/s);
++  assert.match(css, /\.artifact-refresh-stages li > i \{[^}]*align-self:\s*center[^}]*justify-self:\s*center/s);
++  assert.match(css, /\.artifact-refresh-stages li > span \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto/s);
++  assert.match(css, /\.change-creation-document > \.rich-editor-shell \.milkdown \{[^}]*box-sizing:\s*border-box[^}]*overflow-x:\s*hidden/s);
++  assert.match(css, /\.change-creation-document > \.rich-editor-shell \.milkdown \.milkdown-top-bar,[\s\S]*\.change-creation-document > \.rich-editor-shell \.milkdown \.ProseMirror \{[^}]*max-width:\s*760px/s);
+   assert.match(header, /<TaskContextSelector[\s\S]*onPublish=\{onPublish\}[\s\S]*onReceive=\{onReceive\}/);
++  assert.match(header, /className="work-role-toggle"/);
++  assert.match(header, /Аналитик/);
++  assert.match(header, /Разработчик/);
+   assert.match(header, /<div className="top-actions">[\s\S]*<TaskContextSelector[\s\S]*<div className="provider-settings">/);
+   assert.doesNotMatch(header, /workspace-status|server-status|saved-state|useSystemStatus|draftSaved/);
+   assert.doesNotMatch(header, /Локальный server|Файл сохранён/);
+   assert.doesNotMatch(header, /Получить обновления|Публикация изменений|publish-icon-button|receive-icon-button|publication-icon-button/);
+   assert.match(css, /\.top-actions \{[^}]*margin-left:\s*auto[^}]*flex:\s*0 0 auto[^}]*justify-content:\s*flex-end/s);
++  assert.match(css, /\.work-role-toggle \{[^}]*grid-template-columns:\s*1fr 1fr/s);
+   assert.match(css, /\.task-context-publish-group \{[^}]*display:\s*flex[^}]*gap:\s*2px/s);
+   assert.match(css, /\.task-context-actions \{[^}]*display:\s*grid[^}]*border-top:\s*1px solid var\(--soft-line\)/s);
+   assert.match(css, /\.task-context-actions > button \{[^}]*min-height:\s*36px[^}]*display:\s*flex[^}]*background:\s*transparent/s);
+   assert.match(documents, /loadedWorkspaceContext/);
+-  assert.match(types, /"git"/);
++  assert.doesNotMatch(types, /"git"/);
+   assert.doesNotMatch(workspace, /WorkspaceFooter|Локально · изменения разделены по задачам/);
+   assert.doesNotMatch(markdownEditor, /Файл сохранён/);
+ });
+@@ -673,9 +702,15 @@ test("documents feature читает дерево, содержимое и Git-
+   assert.match(sidebar, /collapsedDirectories/);
+   assert.match(sidebar, /documents\.retry/);
+   assert.match(editor, /documents|documentStatus/);
+-  assert.match(editor, /Записать в файл/);
+-  assert.match(editor, /disabled=\{!canEdit\}/);
+-  assert.match(editor, /history\.show/);
++  assert.doesNotMatch(editor, /Записать в файл/);
++  assert.doesNotMatch(editor, /history\.show/);
++  assert.match(editor, /Изменения сохранены автоматически/);
++  assert.match(editor, /document-operation-loading/);
++  assert.match(editor, /toolbarLoading && \(/);
++  assert.doesNotMatch(editor, /toolbarLoading && \(userReadOnly \|\| effectiveViewMode === "preview"\)/);
++  assert.match(editor, /previousToolbarLoading\.current && !toolbarLoading/);
++  assert.match(editor, /setEditorRevision\(\(current\) => current \+ 1\)/);
++  assert.match(editor, /key=\{`\$\{activeFile\}:\$\{editorRevision\}`\}/);
+   assert.match(workspace, /useDocumentsController/);
+   assert.match(workspace, /useDocumentHistoryController/);
+   assert.match(workspace, /DOCUMENT_AUTOSAVE_DELAY_MS = 3_000/);
+@@ -749,7 +784,7 @@ test("OpenSpec автоматически применяет только пус
+ });
+ 
+ test("OpenSpec workflow поддерживает read-only обзор, agent actions, stale refresh и полный review", async () => {
+-  const [client, controller, operationPanel, documentActions, actionPresentation, actionPresentationState, workspace, sidebar, state] = await Promise.all([
++  const [client, controller, operationPanel, documentActions, actionPresentation, actionPresentationState, workspace, sidebar, css, state] = await Promise.all([
+     readFile(new URL("../src/features/openspec-workflow/api/openspec-client.ts", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
+@@ -758,6 +793,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+     importTypeScript("../src/features/openspec-workflow/model/openspec-action-presentation.ts"),
+     readFile(new URL("../src/features/workspace/components/OpenSpecWorkspace.tsx", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+     importTypeScript("../src/features/openspec-workflow/model/openspec-state.ts"),
+   ]);
+ 
+@@ -807,11 +843,16 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+   assert.match(workspace, /openSpecCreationPageOpen/);
+   assert.doesNotMatch(workspace, /activeWorkspaceMode === "openspec"|<WorkspaceFooter/);
+   assert.match(workspace, /onAddOpenSpecChange=\{addOpenSpecChange\}/);
++  assert.match(workspace, /const taskWorkspaceSelected = !!tasks\.overview\?\.active && workspaceContext !== "base"/);
++  assert.match(workspace, /if \(!taskWorkspaceSelected\) \{[\s\S]*Сначала выберите задачу в верхней панели/);
++  assert.match(workspace, /canAddOpenSpecChange=\{taskWorkspaceSelected\}/);
+   assert.match(workspace, /changeDocumentContextFromPath/);
+   assert.match(workspace, /\(proposal\|design\|tasks\)\\\.md/);
+   assert.match(workspace, /documentArtifact=\{changeDocument\.artifact\}/);
+   assert.match(workspace, /<OpenSpecDocumentAction/);
++  assert.match(workspace, /workRole=\{workRole\}/);
+   assert.match(workspace, /<OpenSpecDocumentReview/);
++  assert.match(workspace, /onReviewFeedback=\{notify\}/);
+   assert.doesNotMatch(workspace, /continueOpenSpecChange|setWorkspaceMode\("openspec"\).*runArtifactAction/s);
+   assert.match(documentActions, /documentDirty && !await onSave\(\)/);
+   assert.match(documentActions, /controller\.runArtifactAction\(change, action\.artifact/);
+@@ -819,9 +860,13 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+   assert.doesNotMatch(documentActions, /refreshWarningAction|artifact-refresh-warning|Будут обновлены|Принять риск/);
+   assert.match(documentActions, /const guidance = artifactCommentsGoal\(documentComments, documentArtifact\);[\s\S]*controller\.startArtifactRefresh\(change, action\.artifact, refreshSteps, guidance\)/);
+   assert.match(documentActions, /openSpecDocumentActions\(controller\.details, hasSpecs, documentArtifact\)/);
++  assert.match(documentActions, /const analystAction = \["proposal", "spec", "specs"\]\.includes\(artifact\)/);
++  assert.match(documentActions, /const developerAction = \["design", "tasks"\]\.includes\(artifact\)/);
++  assert.match(documentActions, /workRole === "analyst" \? analystAction : developerAction/);
+   assert.match(documentActions, /actions\.map\(\(\{ action, label, primary \}\)/);
+   assert.match(documentActions, /Загружаем состояние change/);
+   assert.match(documentActions, /<OpenSpecOperationPanel\s+controller=\{controller\}/);
++  assert.match(documentActions, /onReviewFeedback=\{onReviewFeedback\}/);
+   assert.match(documentActions, /controller\.operationDialogOpen/);
+   assert.doesNotMatch(documentActions, /Просмотреть результат|openspec-operation-summary|openspec-operation-view-button/);
+   assert.match(documentActions, /Показать историю операций изменения/);
+@@ -863,6 +908,15 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+   assert.match(controller, /\.\.\.normalized\.map\(\(comment, index\)/);
+   assert.doesNotMatch(controller, /slice\(0, 8\)|slice\(0, 1000\)|let remaining = 6000/);
+   assert.match(operationPanel, /Принять весь набор/);
++  assert.match(operationPanel, /const acceptResult = async \(\) => \{/);
++  assert.match(operationPanel, /controller\.setOperationsPanelOpen\(false\)/);
++  assert.match(operationPanel, /onClose\?\.\(\)/);
++  assert.match(operationPanel, /onReviewFeedback\?\.\("Изменения успешно приняты"\)/);
++  assert.match(operationPanel, /onReviewFeedback\?\.\(controller\.error\?\.message \?\? "Не удалось принять изменения"\)/);
++  assert.match(operationPanel, /controller\.pending && \(/);
++  assert.match(operationPanel, /className="openspec-operation-pending-overlay"/);
++  assert.match(operationPanel, /<FlyingOperationBird \/>/);
++  assert.match(css, /\.openspec-operation-pending-overlay \{[^}]*position:\s*absolute[^}]*pointer-events:\s*all/s);
+   assert.doesNotMatch(operationPanel, /Planning-артефакты согласованы/);
+   assert.doesNotMatch(operationPanel, /завершится только после выполнения всех актуальных пунктов tasks\.md/);
+   assert.doesNotMatch(operationPanel, /Повторить текущий этап/);
+@@ -871,11 +925,12 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+   assert.match(actionPresentation, /Обновить specs/);
+   assert.match(actionPresentation, /Сформировать design/);
+   assert.match(actionPresentation, /Создать design\.md/);
++  assert.match(actionPresentation, /Создать tasks\.md/);
+   assert.doesNotMatch(actionPresentation, /Обновить design\.md/);
+   assert.match(actionPresentation, /label: "Обновить"/);
+-  assert.match(actionPresentation, /documentArtifact === "design" \|\| documentArtifact === "tasks"/);
++  assert.match(actionPresentation, /documentArtifact === "design"/);
++  assert.match(actionPresentation, /documentArtifact === "tasks"/);
+   assert.match(actionPresentation, /if \(!specsDone\)/);
+-  assert.doesNotMatch(actionPresentation, /next\.artifact === "tasks"/);
+   const artifactAction = (artifact, available = true) => ({ kind: "prepare_artifact", artifact, available });
+   const documentActionDetails = (statuses) => ({
+     actions: [artifactAction("specs"), artifactAction("design"), artifactAction("tasks", statuses.design === "done")],
+@@ -899,7 +954,7 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+   assert.deepEqual(
+     actionPresentationState.openSpecDocumentActions(documentActionDetails({ proposal: "done", specs: "done", design: "done", tasks: "ready" }), true, "design")
+       .map(({ label, primary }) => ({ label, primary })),
+-    [{ label: "Обновить", primary: false }],
++    [{ label: "Создать tasks.md", primary: true }],
+   );
+   assert.deepEqual(
+     actionPresentationState.openSpecDocumentActions(documentActionDetails({ proposal: "done", specs: "done", design: "done", tasks: "done" }), true, "design")
+@@ -913,7 +968,9 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+   );
+   assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("openspec"\)|active-heading/);
+   assert.match(sidebar, /className="files-heading-label">OpenSpec/);
+-  assert.match(sidebar, /className="tree-section-add"[\s\S]*label="Добавить изменение"[\s\S]*onClick=\{onAddOpenSpecChange\}/);
++  assert.match(sidebar, /className="tree-section-add"[\s\S]*label="Добавить изменение"[\s\S]*disabled=\{!canAddOpenSpecChange\}[\s\S]*onClick=\{onAddOpenSpecChange\}/);
++  assert.match(sidebar, /Сначала выберите задачу в верхней панели, чтобы изменение создавалось в нужной ветке/);
++  assert.match(sidebar, /const archiveAvailable = workRole === "analyst" &&/);
+   assert.doesNotMatch(sidebar, /files-heading-label">OpenSpec<[\s\S]{0,300}label="Добавить изменение"/);
+   assert.doesNotMatch(sidebar, /files-heading-label">OpenSpec<[\s\S]{0,300}label="Обновить"/);
+ 
+@@ -921,6 +978,8 @@ test("OpenSpec workflow поддерживает read-only обзор, agent act
+   assert.equal(state.reduceOpenSpecOperationStatus("running", "validating"), "validating");
+   assert.equal(state.reduceOpenSpecOperationStatus("validating", "awaiting_review"), "awaiting_review");
+   assert.equal(state.isOpenSpecOperationTerminal("awaiting_review"), true);
++  assert.equal(state.isOpenSpecOperationBusy("awaiting_review"), true);
++  assert.equal(state.isOpenSpecOperationBusy("accepted"), false);
+   assert.equal(state.openSpecViewStatus("OPENSPEC_STATUS_STALE"), "stale");
+   assert.equal(state.openSpecViewStatus("OPENSPEC_CLI_UNAVAILABLE"), "unavailable");
+ });
+@@ -948,7 +1007,7 @@ test("OpenSpec workflow проводит управляемые AI-итерац
+   assert.match(controller, /createChange = useCallback\(async \(change: string, proposal: string\)/);
+   assert.match(controller, /kind:\s*"create_change",\s*change,\s*proposal/);
+   assert.match(controller, /setSelectedChange\(acceptedOperation\.openspecChange\)/);
+-  assert.match(controller, /acceptedOperation\?\.openspecAction === "create_change"[\s\S]*createOpenSpecArtifactRefreshCascade\([\s\S]*"specs",[\s\S]*openSpecArtifactRefreshSteps/);
++  assert.match(controller, /acceptedOperation\?\.openspecAction === "create_change"[\s\S]*createOpenSpecArtifactRefreshCascade\([\s\S]*"specs",[\s\S]*\["specs"\]/);
+   assert.match(controller, /const artifactAliases = artifact === "spec" \|\| artifact === "specs" \? \["spec", "specs"\] : \[artifact\]/);
+   assert.match(controller, /openSpecArtifactRefreshCascadeGoal\(initial\)/);
+   assert.match(controller, /setValidationStatus\("checking"\)/);
+@@ -972,23 +1031,31 @@ test("OpenSpec workflow проводит управляемые AI-итерац
+   assert.match(wizard, /aria-labelledby="change-creation-title"/);
+   assert.match(wizard, /className="openspec-panel change-creation-page"/);
+   assert.match(wizard, /Вернуться в рабочее пространство/);
++  assert.match(wizard, /const returnToStep = \(index: number\) =>/);
++  assert.match(wizard, /<button[\s\S]*onClick=\{\(\) => returnToStep\(index\)\}[\s\S]*aria-current=\{index === currentStep \? "step" : undefined\}/);
+   assert.doesNotMatch(wizard, /role="dialog"|aria-modal="true"|change-creation-backdrop/);
+   assert.match(wizard, /Опишите замысел/);
+   assert.match(wizard, /label: "Описание изменения"/);
++  assert.match(wizard, /label: "Согласование намерения"/);
+   assert.match(wizard, /READ-ONLY ИССЛЕДОВАНИЕ/);
+   assert.match(wizard, /Ответьте на важные вопросы/);
+   assert.match(wizard, /Продолжить с допущениями/);
+   assert.match(wizard, /ИССЛЕДОВАНИЕ НЕ ЗАВЕРШЕНО/);
+   assert.match(wizard, /Повторить анализ/);
+-  assert.match(wizard, /Проверяем proposal/);
++  assert.match(wizard, /Согласуем намерение/);
++  assert.match(wizard, /СОГЛАСОВАНИЕ НАМЕРЕНИЯ/);
++  assert.match(wizard, /будет запущен процесс формирования структурированного proposal\.md/);
+   assert.match(wizard, /Что нужно скорректировать\?/);
++  assert.match(wizard, /Согласовать намерение/);
+   assert.match(wizard, /Назовите изменение/);
+   assert.match(wizard, /suggestedNames\.map/);
+   assert.match(wizard, /Подготовить change/);
+   assert.match(wizard, /Записать change в Store/);
+-  assert.match(wizard, /const creationArtifacts = \["proposal\.md", "diff specs", "design\.md", "tasks\.md"\]/);
++  assert.match(wizard, /const creationArtifacts = \["proposal\.md", "diff specs"\]/);
+   assert.match(wizard, /className="creation-artifact-plan"/);
+-  assert.match(wizard, /Принять и сформировать артефакты/);
++  assert.match(wizard, /автоматически будут подготовлены только diff specs/);
++  assert.match(wizard, /Принять и сформировать specs/);
++  assert.match(controller, /createOpenSpecArtifactRefreshCascade\([\s\S]*acceptedOperation\.openspecChange,[\s\S]*"specs",[\s\S]*\["specs"\]/);
+   assert.match(wizard, /if \(!await workflow\.accept\(\)\) return;[\s\S]*creation\.complete\(\);[\s\S]*onCreated/);
+   assert.match(wizard, /onCreated\(`openspec\/changes\/\$\{name\}\/proposal\.md`\)/);
+   assert.match(creationController, /setTimeout\(\(\) => \{/);
+@@ -1053,9 +1120,14 @@ test("proposal.md хранит видимые комментарии к фраг
+ 
+   assert.match(richEditor, /selectionchange/);
+   assert.match(richEditor, /readOnly\?: boolean/);
+-  assert.match(richEditor, /editor\.setReadonly\(readOnly\)/);
++  assert.match(richEditor, /toolbarLoading\?: boolean/);
++  assert.match(richEditor, /editorReadonlyRef\.current\?\.setReadonly\(readOnly \|\| toolbarLoading\)/);
++  assert.match(richEditor, /editor\.setReadonly\(readOnly \|\| toolbarLoading\)/);
+   assert.match(richEditor, /\[Crepe\.Feature\.TopBar\]: !readOnly/);
+   assert.match(richEditor, /aria-readonly=\{readOnly\}/);
++  assert.match(richEditor, /className="editor-bird-loader"/);
++  assert.match(richEditor, /function FlyingOperationBird\(\)/);
++  assert.match(richEditor, /path-\$\{index \+ 1\}/);
+   assert.match(richEditor, /container\.closest\("\.cm-content"\)/);
+   assert.match(richEditor, /Добавить комментарий к выделенному фрагменту/);
+   assert.match(richEditor, /editor-comment-highlight/);
+@@ -1097,11 +1169,36 @@ test("proposal.md хранит видимые комментарии к фраг
+   assert.match(workspace, /proposalCommentsStorageKey/);
+   assert.match(workspace, /pendingCommentUpdatePath/);
+   assert.match(workspace, /clearFragmentComments/);
++  assert.match(workspace, /isOpenSpecOperationBusy/);
++  assert.match(workspace, /const openSpecOperationActive = changeDocument[\s\S]*openSpec\.operations\.some/);
++  assert.match(workspace, /operation\.openspecChange === changeDocument\.change && isOpenSpecOperationBusy\(operation\.status\)/);
++  assert.match(workspace, /const openSpecArtifactRefreshActive = !!changeDocument &&[\s\S]*openSpec\.artifactRefresh\?\.change === changeDocument\.change[\s\S]*openSpec\.artifactRefresh\.status === "active"/);
++  assert.match(workspace, /const openSpecOperationStarting = !!changeDocument && pendingOperationChange === changeDocument\.change/);
++  assert.doesNotMatch(workspace, /const openSpecOperationActive = \["queued", "running", "validating"\]\.includes\(openSpec\.operation\?\.status \?\? ""\)/);
++  assert.match(workspace, /openSpecOperationActive \|\| openSpecArtifactRefreshActive \|\| openSpecOperationStarting/);
++  assert.match(workspace, /\|\| openSpecOperationActive[\s\S]*\|\| documents\.status !== "ready"/);
+   assert.match(documentActions, /artifactCommentsGoal\(documentComments, documentArtifact\)/);
+   assert.match(documentActions, /controller\.startArtifactRefresh/);
++  assert.match(documentActions, /isOpenSpecOperationBusy\(operation\.status\)/);
++  assert.match(documentActions, /onActionPendingChange\?: \(pending: boolean\) => void/);
++  assert.match(documentActions, /onActionPendingChange\?\.\(true\)/);
++  assert.match(documentActions, /onActionPendingChange\?\.\(false\)/);
++  assert.match(documentActions, /className="editor-action-loader"/);
++  assert.match(documentActions, /actionsLoading &&/);
+   assert.doesNotMatch(controller, /editDocument|mode: "inline"|createAiOperation/);
+   assert.doesNotMatch(richEditor, /agent-inline-prompt|Редактировать изменение через agent/);
+   assert.match(css, /\.editor-comment-toolbar-action/);
++  assert.match(css, /\.editor-bird-loader \{/);
++  assert.match(css, /@keyframes editor-bird-flight/);
++  assert.match(css, /animation:\s*project-loading-bird-flight 5600ms/);
++  assert.match(css, /animation:\s*editor-bird-flight 3200ms/);
++  assert.match(css, /\.editor-loading-flight\.path-1 \{/);
++  assert.match(css, /\.editor-loading-flight\.path-2 \{[^}]*animation-delay:\s*1860ms/s);
++  assert.match(css, /\.editor-loading-flight\.path-3 \{[^}]*animation-delay:\s*3720ms/s);
++  assert.match(css, /\.document-operation-loading \.editor-loading-flight\.path-2 \{[^}]*offset-path:\s*path\("M -34 18 C 220 58 560 -30 1120 12"\)/s);
++  assert.match(css, /\.editor-action-loader \{/);
++  assert.match(css, /\.document-operation-loading \{/);
++  assert.match(css, /\.document-operation-loading \.editor-loading-flight/);
+   assert.match(css, /\.editor-inline-comment-slot \{[^}]*position:\s*relative[^}]*width:\s*100%[^}]*margin:\s*11px 0 0/s);
+   assert.match(css, /\.editor-inline-comment-slot:empty \{[^}]*margin:\s*0[^}]*line-height:\s*0/s);
+   assert.match(css, /\.editor-inline-comment-slot \+ \.ProseMirror-separator \+ \.ProseMirror-trailingBreak \{ display:\s*none !important/);
+diff --git a/openspec.frontend/tests/rendered-html.test.mjs b/openspec.frontend/tests/rendered-html.test.mjs
+index 1a25897..3b23406 100644
+--- a/openspec.frontend/tests/rendered-html.test.mjs
++++ b/openspec.frontend/tests/rendered-html.test.mjs
+@@ -143,7 +143,7 @@ test("покрывает визуальное Markdown-редактирован
+   assert.match(html, />Preview</);
+   assert.match(html, />Split</);
+   assert.doesNotMatch(html, /Файл сохранён/);
+-  assert.match(html, /Записать в файл/);
++  assert.doesNotMatch(html, /Записать в файл/);
+   assert.match(html, /Scope: Store only/);
+ });
+ 
+@@ -154,8 +154,8 @@ test("Git-аннотации и история выбранного файла 
+     readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+   ]);
+ 
+-  assert.match(editor, /label="Git-аннотации файла"/);
+-  assert.match(editor, /onClick=\{history\.show\}/);
++  assert.doesNotMatch(editor, /label="Git-аннотации файла"/);
++  assert.doesNotMatch(editor, /onClick=\{history\.show\}/);
+   assert.match(editor, /<DocumentHistoryPanel controller=\{history\}/);
+   assert.doesNotMatch(editor, /История файла пока недоступна/);
+   assert.match(panel, /Git-аннотации/);
+@@ -253,8 +253,9 @@ test("визуальный редактор сохраняет Markdown, undo/re
+   assert.match(workspace, /isSaveShortcut\(event\)/);
+   assert.match(workspace, /window\.addEventListener\("keydown", handleSaveShortcut, true\)/);
+   assert.match(workspace, /window\.removeEventListener\("keydown", handleSaveShortcut, true\)/);
+-  assert.match(workspace, /primaryShortcutLabel\("S"\)/);
+-  assert.match(markdownEditor, /\{saveShortcutLabel\}/);
++  assert.doesNotMatch(workspace, /primaryShortcutLabel\("S"\)/);
++  assert.doesNotMatch(markdownEditor, /saveShortcutLabel/);
++  assert.match(markdownEditor, /Изменения сохранены автоматически/);
+   assert.doesNotMatch(markdownEditor, /<span>⌘S<\/span>/);
+   assert.doesNotMatch(markdownEditor, /label="Ещё"|Дополнительные действия пока недоступны|•••/);
+ });
+@@ -318,7 +319,6 @@ test("сохраняет доступные имена у интерактивн
+   ]);
+   for (const label of [
+     "Свернуть панель",
+-    "Git-аннотации файла",
+   ]) {
+     assert.match(html, new RegExp(`aria-label="${label}"`));
+   }
+@@ -330,10 +330,11 @@ test("сохраняет доступные имена у интерактивн
+ });
+ 
+ test("дерево OpenSpec прокручивается, каталоги сворачиваются, а AI selector использует chevron", async () => {
+-  const [sidebar, header, richEditor, documentActions, workflowController, operationPanel, css] = await Promise.all([
++  const [sidebar, header, richEditor, markdownPreview, documentActions, workflowController, operationPanel, css] = await Promise.all([
+     readFile(new URL("../src/features/workspace/components/WorkspaceSidebar.tsx", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/workspace/components/WorkspaceHeader.tsx", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/editor/components/RichMarkdownEditor.tsx", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/editor/components/MarkdownPreview.tsx", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecDocumentActions.tsx", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/openspec-workflow/components/OpenSpecOperationPanel.tsx", import.meta.url), "utf8"),
+@@ -341,6 +342,7 @@ test("дерево OpenSpec прокручивается, каталоги св
+   ]);
+ 
+   assert.match(sidebar, /collapsedDirectories/);
++  assert.match(markdownPreview, /className="editor-bird-loader"/);
+   assert.match(sidebar, /collapsedSections/);
+   assert.match(sidebar, /new Set<NavigationSectionId>\(\["documentation", "archive"\]\)/);
+   for (const label of ["Master Spec", "Изменения", "Архив"]) {
+@@ -506,6 +508,9 @@ test("дерево OpenSpec прокручивается, каталоги св
+   assert.match(css, /\.openspec-markdown-line\.kind-heading\.level-2 \{[^}]*font-size:\s*15px/s);
+   assert.match(css, /\.markdown-task-box \{[^}]*border-radius:\s*3px/s);
+   assert.match(operationPanel, /className="primary-submit"[\s\S]*Принять весь набор/);
++  assert.match(operationPanel, /onClick=\{\(\) => void acceptResult\(\)\}/);
++  assert.match(operationPanel, /controller\.setOperationsPanelOpen\(false\)/);
++  assert.match(operationPanel, /onReviewFeedback\?\.\("Изменения успешно приняты"\)/);
+   assert.match(operationPanel, /className="openspec-review-action-error" role="alert"/);
+   assert.match(operationPanel, /controller\.pending \? "Принимаем…" : "Принять весь набор"/);
+   assert.match(documentActions, /controller\.operationDialogOpen && selectedOperation && createPortal\(/);

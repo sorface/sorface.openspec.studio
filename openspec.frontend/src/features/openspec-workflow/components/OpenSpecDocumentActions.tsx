@@ -8,6 +8,7 @@ import {
   defaultOpenSpecActionGoal,
   openSpecDocumentActions,
 } from "@/features/openspec-workflow/model/openspec-action-presentation";
+import { isOpenSpecOperationBusy } from "@/features/openspec-workflow/model/openspec-state";
 import {
   openSpecArtifactRefreshStepLabel,
   openSpecArtifactRefreshStepNumber,
@@ -16,6 +17,7 @@ import {
 import type { OpenSpecAction, OpenSpecFileMutation, OpenSpecOperation } from "@/features/openspec-workflow/model/openspec-types";
 import type { EditorFragmentComment } from "@/features/editor/model/fragment-comment";
 import { artifactCommentsGoal } from "@/features/editor/model/fragment-comment";
+import type { WorkRole } from "@/features/workspace/model/workspace-types";
 
 interface OpenSpecDocumentActionProps {
   controller: OpenSpecWorkflowController;
@@ -25,13 +27,16 @@ interface OpenSpecDocumentActionProps {
   documentDirty: boolean;
   documentSaving: boolean;
   documentComments: EditorFragmentComment[];
+  workRole: WorkRole;
   onSave: () => Promise<boolean>;
+  onActionPendingChange?: (pending: boolean) => void;
   onCommentsSubmitted: () => void;
 }
 
 interface OpenSpecDocumentReviewProps {
   controller: OpenSpecWorkflowController;
   change: string;
+  onReviewFeedback?: (message: string) => void;
 }
 
 export function OpenSpecDocumentAction({
@@ -42,7 +47,9 @@ export function OpenSpecDocumentAction({
   documentDirty,
   documentSaving,
   documentComments,
+  workRole,
   onSave,
+  onActionPendingChange,
   onCommentsSubmitted,
 }: OpenSpecDocumentActionProps) {
   const [startingArtifact, setStartingArtifact] = useState("");
@@ -54,10 +61,18 @@ export function OpenSpecDocumentAction({
 
   const actions = useMemo(() => {
     if (controller.details?.summary.name !== change) return [];
-    return openSpecDocumentActions(controller.details, hasSpecs, documentArtifact);
-  }, [change, controller.details, documentArtifact, hasSpecs]);
-  const operationActive = controller.operation?.openspecChange === change &&
-    ["queued", "running", "validating"].includes(controller.operation.status);
+    return openSpecDocumentActions(controller.details, hasSpecs, documentArtifact)
+      .filter(({ action }) => {
+        const artifact = action.artifact ?? "";
+        const analystAction = ["proposal", "spec", "specs"].includes(artifact);
+        const developerAction = ["design", "tasks"].includes(artifact);
+        return workRole === "analyst" ? analystAction : developerAction;
+      });
+  }, [change, controller.details, documentArtifact, hasSpecs, workRole]);
+  const activeOperation = controller.operations.find((operation) =>
+    operation.openspecChange === change && isOpenSpecOperationBusy(operation.status),
+  );
+  const operationActive = !!activeOperation;
   const designCreated = controller.details?.summary.name === change && controller.details.artifacts.some((artifact) =>
     artifact.id === "design" && artifact.status === "done",
   );
@@ -68,6 +83,7 @@ export function OpenSpecDocumentAction({
     () => openSpecArtifactRefreshStepsForDocument(documentArtifact, designCreated, tasksCreated),
     [designCreated, documentArtifact, tasksCreated],
   );
+  const actionsLoading = controller.detailsLoading || controller.operationsLoading;
 
   const disabledFor = (action: OpenSpecAction) => !!startingArtifact || documentSaving || controller.pending ||
     operationActive || !controller.agentAvailable || !action.available;
@@ -86,6 +102,7 @@ export function OpenSpecDocumentAction({
   const run = async (action: OpenSpecAction) => {
     if (!action.artifact || disabledFor(action)) return;
     setStartingArtifact(action.artifact);
+    onActionPendingChange?.(true);
     setStartError("");
     try {
       if (documentDirty && !await onSave()) return;
@@ -105,13 +122,24 @@ export function OpenSpecDocumentAction({
       setStartError(cause instanceof Error ? cause.message : "Не удалось запустить подготовку артефакта");
     } finally {
       setStartingArtifact("");
+      onActionPendingChange?.(false);
     }
   };
 
   return (
     <div className="openspec-document-action">
       {startError && <span className="openspec-document-action-error" role="alert" title={startError}>!</span>}
+      {actionsLoading && (
+        <span className="editor-action-loader" role="status" aria-label="Загружаем действия редактора">
+          <span className="editor-bird-loader" aria-hidden="true">
+            <svg viewBox="0 0 40 24"><path d="M3 13c8.4-6.4 15.3-7.1 20.8-2.1C27.4 6.4 32 4.2 37.6 4.4c-4 3.1-6.5 6.4-7.6 9.8 2.7.5 5.1 1.5 7.2 3-6.7.9-12.3-.1-16.8-3C15 17.9 9.2 17.5 3 13Z" /></svg>
+          </span>
+        </span>
+      )}
       {actions.map(({ action, label, primary }) => (
+        (() => {
+          const actionBusy = startingArtifact === action.artifact || activeOperation?.openspecArtifact === action.artifact;
+          return (
         <button
           key={`${action.kind}-${action.artifact}`}
           type="button"
@@ -125,7 +153,7 @@ export function OpenSpecDocumentAction({
             <path d="m10 2 1.2 4.1L15 7.5l-3.8 1.4L10 13 8.8 8.9 5 7.5l3.8-1.4L10 2Z" />
             <path d="m15.6 12 .6 2 1.8.6-1.8.7-.6 1.9-.6-1.9-1.9-.7 1.9-.6.6-2Z" />
           </svg>
-          <span>{startingArtifact === action.artifact || controller.operation?.openspecArtifact === action.artifact && operationActive
+          <span>{actionBusy
             ? "Agent работает…"
             : documentDirty
               ? `Записать и ${label.toLowerCase()}`
@@ -134,14 +162,16 @@ export function OpenSpecDocumentAction({
             <b className="proposal-comments-count" aria-label={`Комментариев: ${documentComments.length}`}>{documentComments.length}</b>
           )}
         </button>
+          );
+        })()
       ))}
     </div>
   );
 }
 
-export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentReviewProps) {
+export function OpenSpecDocumentReview({ controller, change, onReviewFeedback }: OpenSpecDocumentReviewProps) {
   const activeOperation = controller.operations.find((operation) =>
-    operation.openspecChange === change && ["queued", "running", "validating"].includes(operation.status),
+    operation.openspecChange === change && isOpenSpecOperationBusy(operation.status),
   );
   const panelOpen = controller.operationsPanelOpen || !!activeOperation;
 
@@ -259,6 +289,7 @@ export function OpenSpecDocumentReview({ controller, change }: OpenSpecDocumentR
           <OpenSpecOperationPanel
             controller={controller}
             onClose={() => controller.setOperationDialogOpen(false)}
+            onReviewFeedback={onReviewFeedback}
           />
         </section>
       </div>
