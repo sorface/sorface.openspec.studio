@@ -3,19 +3,26 @@
 import { useMemo, useState } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import type { DocumentsController } from "@/features/documents/hooks/useDocumentsController";
+import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
 import type { RepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 import type { WorkspaceMode } from "@/features/workspace/model/workspace-types";
 import { isDeltaSpecPath, isMasterSpecPath } from "@/features/workspace/model/openspec-document";
+import {
+  isOpenSpecTasksPath,
+  taskProgressFromMarkdown,
+} from "@/features/workspace/model/task-progress";
 
 interface WorkspaceSidebarProps {
   documents: DocumentsController;
   hideDocumentTree?: boolean;
   onClose: () => void;
   repositories: RepositoriesController;
+  openSpec?: OpenSpecWorkflowController;
   projectSelected: boolean;
   workspaceMode: WorkspaceMode;
   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
   onAddOpenSpecChange: () => void;
+  onArchiveOpenSpecChange?: (change: string) => void;
 }
 
 type ArtifactRole = "analyst" | "developer";
@@ -91,15 +98,33 @@ function relativeSegments(path: string, scope: DocumentScope): string[] {
   return path.slice(scope.rootPath.length + 1).split("/");
 }
 
+function changeFromTasksPath(path: string | null): string {
+  if (!isOpenSpecTasksPath(path)) return "";
+  return path?.split("/")[2] ?? "";
+}
+
+function ArchiveIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M4 6.5h12" />
+      <path d="M5.2 6.5v8.1c0 .8.6 1.4 1.4 1.4h6.8c.8 0 1.4-.6 1.4-1.4V6.5" />
+      <path d="M6 3.8h8l1.1 2.7H4.9L6 3.8Z" />
+      <path d="M8 10h4" />
+    </svg>
+  );
+}
+
 export function WorkspaceSidebar({
   documents,
   hideDocumentTree = false,
   onClose,
   repositories,
+  openSpec,
   projectSelected,
   workspaceMode,
   onWorkspaceModeChange,
   onAddOpenSpecChange,
+  onArchiveOpenSpecChange,
 }: WorkspaceSidebarProps) {
   const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(() => new Set());
   const [collapsedSections, setCollapsedSections] = useState<Set<NavigationSectionId>>(
@@ -117,6 +142,14 @@ export function WorkspaceSidebar({
   }, [documentScopes, documents.selectedPath]);
   const activeScope = documentScopes.find((scope) => scope.id === selectedScopeId) ??
     documentScopes.find((scope) => scope.id === selectedChangeScopeId) ?? null;
+  const changesByName = useMemo(() => new Map(
+    (openSpec?.overview?.changes ?? []).map((change) => [change.name, change]),
+  ), [openSpec?.overview?.changes]);
+  const selectedTasksChange = changeFromTasksPath(documents.selectedPath);
+  const selectedTasksProgress = useMemo(
+    () => selectedTasksChange ? taskProgressFromMarkdown(documents.markdown) : null,
+    [documents.markdown, selectedTasksChange],
+  );
 
   const toggleDirectory = (path: string) => {
     setCollapsedDirectories((current) => {
@@ -144,6 +177,12 @@ export function WorkspaceSidebar({
     const target = documents.items.find((item) => item.kind === "file" && item.path === preferredPath)
       ?? documents.items.find((item) => item.kind === "file" && item.path.startsWith(`${scope.rootPath}/`));
     if (target) documents.select(target.path);
+  };
+
+  const archiveScope = (scope: DocumentScope) => {
+    if (scope.sectionId !== "changes" || !openSpec) return;
+    if (onArchiveOpenSpecChange) onArchiveOpenSpecChange(scope.label);
+    else void openSpec.archiveChange(scope.label);
   };
 
   const closeSidebar = () => {
@@ -232,19 +271,43 @@ export function WorkspaceSidebar({
                     {sectionScopes.length === 0 && (
                       <div className="tree-section-state">Нет документов</div>
                     )}
-                    {sectionScopes.map((scope) => (
-                      <button
-                        key={scope.id}
-                        type="button"
-                        className={`tree-scope-row ${!hideDocumentTree && workspaceMode === "documents" && activeScope?.id === scope.id ? "active" : ""}`}
-                        onClick={() => selectScope(scope)}
-                        title={scope.rootPath}
-                        aria-haspopup="tree"
-                      >
-                        <span>{scope.label}</span>
-                        <i aria-hidden="true">›</i>
-                      </button>
-                    ))}
+                    {sectionScopes.map((scope) => {
+                      const change = scope.sectionId === "changes" ? changesByName.get(scope.label) : undefined;
+                      const selectedTasksIncomplete = selectedTasksChange === scope.label &&
+                        !!selectedTasksProgress &&
+                        selectedTasksProgress.completed < selectedTasksProgress.total;
+                      const archiveAvailable = !!change?.archiveAvailable && !selectedTasksIncomplete && !openSpec?.pending;
+                      return (
+                        <div className="tree-scope-entry" key={scope.id}>
+                          <div
+                            className={`tree-scope-row ${!hideDocumentTree && workspaceMode === "documents" && activeScope?.id === scope.id ? "active" : ""}`}
+                            title={scope.rootPath}
+                          >
+                            <button
+                              type="button"
+                              className="tree-scope-select"
+                              onClick={() => selectScope(scope)}
+                              aria-haspopup="tree"
+                            >
+                              <span>{scope.label}</span>
+                            </button>
+                            <i aria-hidden="true">›</i>
+                          </div>
+                          {archiveAvailable && (
+                            <div className="tree-scope-entry-actions">
+                              <IconButton
+                                className="tree-scope-archive"
+                                label={`Архивировать ${scope.label}`}
+                                title="Архивировать валидное завершённое изменение"
+                                onClick={() => {
+                                  archiveScope(scope);
+                                }}
+                              ><ArchiveIcon /></IconButton>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
               );

@@ -79,6 +79,7 @@ export interface OpenSpecWorkflowController {
   explore: (goal: string) => Promise<void>;
   createChange: (change: string, proposal: string) => Promise<void>;
   deleteChange: (confirmation: string) => Promise<void>;
+  archiveChange: (change: string) => Promise<void>;
   runAction: (action: OpenSpecAction, goal: string) => Promise<void>;
   runArtifactAction: (change: string, artifact: string, goal: string) => Promise<OpenSpecOperation | undefined>;
   startArtifactRefresh: (change: string, artifact: string, steps: OpenSpecArtifactRefreshStep[], guidance?: string) => Promise<void>;
@@ -168,6 +169,7 @@ export function useOpenSpecWorkflowController(
   const [reloadVersion, setReloadVersion] = useState(0);
   const operationStartInFlight = useRef(false);
   const automaticallyAppliedOperationIds = useRef(new Set<string>());
+  const completedArchiveOperationIds = useRef(new Set<string>());
 
   useEffect(() => {
     if (!projectId) {
@@ -354,6 +356,51 @@ export function useOpenSpecWorkflowController(
       statusFingerprint: details.fingerprint,
     });
   }, [details, execute, model, provider]);
+
+  const archiveChange = useCallback(async (change: string) => {
+    if (!projectId) return;
+    setPending(true);
+    setError(null);
+    try {
+      const latest = await getOpenSpecChange(projectId, change);
+      const action = latest.actions.find((candidate) => candidate.kind === "archive");
+      if (!action?.available) {
+        const nextError = new ApiError(409, {
+          code: "OPENSPEC_ACTION_BLOCKED",
+          message: action?.reason || "Изменение не готово к архивированию",
+        });
+        setError(nextError);
+        throw nextError;
+      }
+      setSelectedChange(change);
+      setDetails(latest);
+      const started = await execute({
+        kind: "archive",
+        change,
+        statusFingerprint: latest.fingerprint,
+      });
+      if (!started) return;
+      let current = started;
+      for (let attempt = 0; attempt < 150 && !isOpenSpecOperationTerminal(current.status); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 800));
+        current = await getOpenSpecOperation(projectId, started.id);
+        setOperation(current);
+        setOperations((items) => upsertOperation(items, current));
+      }
+      if (current.status !== "completed") {
+        throw new ApiError(409, {
+          code: current.errorCode || "OPENSPEC_ARCHIVE_FAILED",
+          message: current.errorMessage || "Архивирование не завершилось",
+        });
+      }
+    } catch (cause) {
+      const nextError = toApiError(cause, "Изменение не архивировано");
+      setError(nextError);
+      throw nextError;
+    } finally {
+      setPending(false);
+    }
+  }, [execute, projectId]);
 
   const runArtifactAction = useCallback(async (change: string, artifact: string, goal: string) => {
     if (!projectId) return;
@@ -802,6 +849,18 @@ export function useOpenSpecWorkflowController(
     ) : current);
   }, [operation]);
 
+  useEffect(() => {
+    if (!operation || operation.openspecAction !== "archive" || operation.status !== "completed") return;
+    if (completedArchiveOperationIds.current.has(operation.id)) return;
+    completedArchiveOperationIds.current.add(operation.id);
+    onStoreChanged?.(operation);
+    setSelectedChange("");
+    setDetails(null);
+    setValidation(null);
+    setValidationStatus("idle");
+    setReloadVersion((current) => current + 1);
+  }, [onStoreChanged, operation]);
+
   const selectChange = useCallback((change: string) => {
     setSelectedChange(change);
     setOperationDialogOpen(false);
@@ -863,6 +922,7 @@ export function useOpenSpecWorkflowController(
     explore,
     createChange,
     deleteChange,
+    archiveChange,
     runAction,
     runArtifactAction,
     startArtifactRefresh,

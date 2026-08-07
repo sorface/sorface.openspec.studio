@@ -22,12 +22,13 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
         val root=root(projectId); val capability=capability(root)
         if(!capability.available) fail("OPENSPEC_UNAVAILABLE","OpenSpec CLI недоступен")
         if(!capability.supported) fail("OPENSPEC_VERSION_UNSUPPORTED","Версия OpenSpec CLI не поддерживается")
-        return OpenSpecOverview(capability,list(root).changes)
+        return OpenSpecOverview(capability,list(root).changes.map { enrichSummary(root, it) })
     }
     fun details(projectId:String,change:String):ChangeDetails{
         requireValidChange(change); val root=root(projectId); ensure(root)
-        val summary=list(root).changes.firstOrNull{it.name==change}?:fail("OPENSPEC_CHANGE_INVALID","Изменение не найдено")
+        val summary=list(root).changes.firstOrNull{it.name==change}?.let{enrichSummary(root,it)}?:fail("OPENSPEC_CHANGE_INVALID","Изменение не найдено")
         val status=readStatus(root,change)
+        val archiveAvailable=status.isComplete&&summary.valid
         val actions=status.artifacts.map{artifact->
             if(artifact.status=="blocked") Action("prepare_artifact",artifact.id,false,"MISSING_DEPENDENCIES")
             else runCatching{readInstructions(root, change, artifact.id)}
@@ -36,7 +37,7 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
                         if (error is OpenSpecException && error.code == "OPENSPEC_READ_ONLY_VIOLATION") throw error
                         Action("prepare_artifact",artifact.id,false,"INSTRUCTIONS_UNAVAILABLE")
                     })
-        }+Action("archive",available=status.isComplete,reason=if(status.isComplete)"" else "CHANGE_INCOMPLETE")
+        }+Action("archive",available=archiveAvailable,reason=when{archiveAvailable->"";!status.isComplete->"CHANGE_INCOMPLETE";else->"OPENSPEC_INVALID"})
         val snapshot=snapshot(root,change)
         val fingerprint=sha256(mapper.writeValueAsBytes(mapOf("status" to status,"actions" to actions,"files" to snapshot.second)))
         return ChangeDetails(summary,status.schemaName,status.isComplete,status.artifacts,actions,fingerprint,DeletionPreview(snapshot.first))
@@ -48,7 +49,10 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
         return DeleteChangeResult(true,change,details.deletion.files)
     }
     fun validate(projectId:String,change:String):Validation{
-        val root=root(projectId);ensure(root);if(change.isNotBlank())requireValidChange(change)
+        val root=root(projectId);ensure(root);return validate(root,change)
+    }
+    private fun validate(root:Path,change:String):Validation{
+        if(change.isNotBlank())requireValidChange(change)
         val args=buildList{add("validate");if(change.isBlank())add("--all")else add(change);addAll(listOf("--strict","--no-interactive","--json"))}
         val result=runReadOnly(root,args,allowFailure=true)
         val json=runCatching{mapper.readTree(result.stdout)}.getOrElse{fail("OPENSPEC_COMMAND_FAILED","OpenSpec validate вернул некорректный JSON")}
@@ -62,6 +66,19 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
     internal fun archive(root:Path,change:String){requireValidChange(change);run(root,listOf("archive",change,"--yes","--json"),Duration.ofMinutes(2)).requireSuccess()}
     internal fun root(projectId:String):Path=projects.get(projectId)?.let{Path.of(it.storePath).toRealPath()}?:throw ProjectException("PROJECT_NOT_FOUND","Проект не найден")
     private fun list(root:Path)=read(root,listOf("list","--json"),ChangeList::class.java)
+    private fun enrichSummary(root:Path,summary:ChangeSummary):ChangeSummary{
+        val progress=taskProgress(root,summary.name)?:return summary.copy(valid=false,archiveAvailable=false)
+        val complete=progress.total>0&&progress.completed>=progress.total
+        val valid=complete&&runCatching{validate(root,summary.name).valid}.getOrDefault(false)
+        return summary.copy(completedTasks=progress.completed,totalTasks=progress.total,valid=valid,archiveAvailable=complete&&valid)
+    }
+    private fun taskProgress(root:Path,change:String):TaskProgress?{
+        val path=root.resolve("openspec/changes/$change/tasks.md").normalize()
+        if(!path.startsWith(root.resolve("openspec/changes"))||!Files.isRegularFile(path)||Files.isSymbolicLink(path))return null
+        var completed=0;var total=0
+        TASK_CHECKBOX.findAll(Files.readString(path)).forEach{match->total+=1;if(match.groupValues[1].lowercase()=="x")completed+=1}
+        return TaskProgress(completed,total)
+    }
     private fun readInstructions(root:Path,change:String,artifact:String):Instructions{
         val json=mapper.readTree(runReadOnly(root,listOf("instructions",artifact,"--change",change,"--json")).stdout)
         val dependencyNodes=json.path("dependencies")
@@ -105,4 +122,6 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
     private fun sha256(bytes:ByteArray)=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)}
     private fun findExecutable(name:String):Path?=System.getenv("PATH").orEmpty().split(System.getProperty("path.separator")).asSequence().filter(String::isNotBlank).map{Path.of(it,name)}.firstOrNull{Files.isRegularFile(it)&&Files.isExecutable(it)}
     private fun fail(code:String,message:String):Nothing=throw OpenSpecException(code,message)
+    private data class TaskProgress(val completed:Int,val total:Int)
+    private companion object{val TASK_CHECKBOX=Regex("""(?m)^\s*[-*+]\s+\[([ xX])](?:\s|$)""")}
 }

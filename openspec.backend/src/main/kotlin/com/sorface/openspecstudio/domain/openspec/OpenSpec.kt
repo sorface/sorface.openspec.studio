@@ -4,7 +4,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore
 import java.time.Instant
 
 data class OpenSpecCapability(val available:Boolean=false,val supported:Boolean=false,val version:String="")
-data class ChangeSummary(val name:String,val completedTasks:Int=0,val totalTasks:Int=0,val lastModified:Instant=Instant.EPOCH,val status:String="")
+data class ChangeSummary(val name:String,val completedTasks:Int=0,val totalTasks:Int=0,val lastModified:Instant=Instant.EPOCH,val status:String="",
+    val valid:Boolean=false,val archiveAvailable:Boolean=false)
 data class ChangeList(val changes:List<ChangeSummary> = emptyList())
 data class Artifact(val id:String,val outputPath:String="",val status:String="",val requires:List<String> = emptyList(),val missingDeps:List<String> = emptyList())
 data class InstructionDependency(val id:String,val done:Boolean=false,val path:String="",val description:String="")

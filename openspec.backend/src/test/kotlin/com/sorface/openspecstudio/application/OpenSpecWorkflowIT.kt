@@ -89,6 +89,23 @@ class OpenSpecWorkflowIT {
         assertThat(root.resolve("openspec/changes/incomplete-change")).exists()
     }
 
+    @Test
+    @DisplayName("считает готовность архивирования по checkbox-ам tasks.md")
+    fun readsArchiveReadinessFromTasksMarkdown() {
+        command("openspec", "new", "change", "tasks-progress-change", "--json", directory = root)
+        Files.writeString(root.resolve("openspec/changes/tasks-progress-change/tasks.md"), """
+            ## Tasks
+            - [x] Закрытая задача
+            - [ ] Открытая задача
+        """.trimIndent())
+
+        val summary = workflow.overview(PROJECT).changes.single { it.name == "tasks-progress-change" }
+
+        assertThat(summary.completedTasks).isEqualTo(1)
+        assertThat(summary.totalTasks).isEqualTo(2)
+        assertThat(summary.archiveAvailable).isFalse()
+    }
+
     @Test fun `обнаруживает draft conflict и поддерживает reject`(){
         val first=actions.start(PROJECT,CreateOpenSpecActionCommand("create_change",change="conflict-change",proposal="draft"),"")
         val ready=await(first.id);val set=actions.accept(PROJECT,ready.id)

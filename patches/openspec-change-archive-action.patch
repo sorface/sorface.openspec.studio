@@ -1,0 +1,531 @@
+diff --git a/openspec.backend/src/main/frontend-dist/index.html b/openspec.backend/src/main/frontend-dist/index.html
+index b4ad133..652962d 100644
+--- a/openspec.backend/src/main/frontend-dist/index.html
++++ b/openspec.backend/src/main/frontend-dist/index.html
+@@ -5,8 +5,8 @@
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     <meta name="description" content="Локальное рабочее пространство для OpenSpec, Git и AI." />
+     <title>OpenSpec Studio</title>
+-    <script type="module" crossorigin src="/assets/index-5SZNQZVr.js"></script>
+-    <link rel="stylesheet" crossorigin href="/assets/index-Dxt13sSb.css">
++    <script type="module" crossorigin src="/assets/index-B2YTltgP.js"></script>
++    <link rel="stylesheet" crossorigin href="/assets/index-DDPXkxqq.css">
+   </head>
+   <body>
+     <div id="root"></div>
+diff --git a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecActionService.kt b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecActionService.kt
+index 00c4e74..9448de6 100644
+--- a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecActionService.kt
++++ b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecActionService.kt
+@@ -30,7 +30,9 @@ internal class OpenSpecActionService(private val workflow:OpenSpecService,privat
+             val action=details.actions.firstOrNull{it.kind=="prepare_artifact"&&it.artifact==input.artifact}
+             if(action?.available!=true||action.instruction==null)fail("OPENSPEC_ACTION_BLOCKED","Артефакт недоступен для подготовки")}
+         if(kind=="archive"){
+-            val action=workflow.details(projectId,change).actions.firstOrNull{it.kind=="archive"}
++            val details = workflow.details(projectId, change)
++            if (input.statusFingerprint != details.fingerprint) fail("OPENSPEC_STATUS_STALE", "Статус устарел")
++            val action = details.actions.firstOrNull { it.kind == "archive" }
+             if(action?.available!=true)fail("OPENSPEC_ACTION_BLOCKED","Изменение не готово к архивированию")
+         }
+         val created=operations.createOperation(CloneOperation("",projectId,"openspec","queued",correlationId=correlationId,provider=input.provider,model=input.model,prompt=input.goal,
+diff --git a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecService.kt b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecService.kt
+index 30d289a..9a4580c 100644
+--- a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecService.kt
++++ b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/OpenSpecService.kt
+@@ -22,12 +22,13 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
+         val root=root(projectId); val capability=capability(root)
+         if(!capability.available) fail("OPENSPEC_UNAVAILABLE","OpenSpec CLI недоступен")
+         if(!capability.supported) fail("OPENSPEC_VERSION_UNSUPPORTED","Версия OpenSpec CLI не поддерживается")
+-        return OpenSpecOverview(capability,list(root).changes)
++        return OpenSpecOverview(capability,list(root).changes.map { enrichSummary(root, it) })
+     }
+     fun details(projectId:String,change:String):ChangeDetails{
+         requireValidChange(change); val root=root(projectId); ensure(root)
+-        val summary=list(root).changes.firstOrNull{it.name==change}?:fail("OPENSPEC_CHANGE_INVALID","Изменение не найдено")
++        val summary=list(root).changes.firstOrNull{it.name==change}?.let{enrichSummary(root,it)}?:fail("OPENSPEC_CHANGE_INVALID","Изменение не найдено")
+         val status=readStatus(root,change)
++        val archiveAvailable=status.isComplete&&summary.valid
+         val actions=status.artifacts.map{artifact->
+             if(artifact.status=="blocked") Action("prepare_artifact",artifact.id,false,"MISSING_DEPENDENCIES")
+             else runCatching{readInstructions(root, change, artifact.id)}
+@@ -36,7 +37,7 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
+                         if (error is OpenSpecException && error.code == "OPENSPEC_READ_ONLY_VIOLATION") throw error
+                         Action("prepare_artifact",artifact.id,false,"INSTRUCTIONS_UNAVAILABLE")
+                     })
+-        }+Action("archive",available=status.isComplete,reason=if(status.isComplete)"" else "CHANGE_INCOMPLETE")
++        }+Action("archive",available=archiveAvailable,reason=when{archiveAvailable->"";!status.isComplete->"CHANGE_INCOMPLETE";else->"OPENSPEC_INVALID"})
+         val snapshot=snapshot(root,change)
+         val fingerprint=sha256(mapper.writeValueAsBytes(mapOf("status" to status,"actions" to actions,"files" to snapshot.second)))
+         return ChangeDetails(summary,status.schemaName,status.isComplete,status.artifacts,actions,fingerprint,DeletionPreview(snapshot.first))
+@@ -48,7 +49,10 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
+         return DeleteChangeResult(true,change,details.deletion.files)
+     }
+     fun validate(projectId:String,change:String):Validation{
+-        val root=root(projectId);ensure(root);if(change.isNotBlank())requireValidChange(change)
++        val root=root(projectId);ensure(root);return validate(root,change)
++    }
++    private fun validate(root:Path,change:String):Validation{
++        if(change.isNotBlank())requireValidChange(change)
+         val args=buildList{add("validate");if(change.isBlank())add("--all")else add(change);addAll(listOf("--strict","--no-interactive","--json"))}
+         val result=runReadOnly(root,args,allowFailure=true)
+         val json=runCatching{mapper.readTree(result.stdout)}.getOrElse{fail("OPENSPEC_COMMAND_FAILED","OpenSpec validate вернул некорректный JSON")}
+@@ -62,6 +66,19 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
+     internal fun archive(root:Path,change:String){requireValidChange(change);run(root,listOf("archive",change,"--yes","--json"),Duration.ofMinutes(2)).requireSuccess()}
+     internal fun root(projectId:String):Path=projects.get(projectId)?.let{Path.of(it.storePath).toRealPath()}?:throw ProjectException("PROJECT_NOT_FOUND","Проект не найден")
+     private fun list(root:Path)=read(root,listOf("list","--json"),ChangeList::class.java)
++    private fun enrichSummary(root:Path,summary:ChangeSummary):ChangeSummary{
++        val progress=taskProgress(root,summary.name)?:return summary.copy(valid=false,archiveAvailable=false)
++        val complete=progress.total>0&&progress.completed>=progress.total
++        val valid=complete&&runCatching{validate(root,summary.name).valid}.getOrDefault(false)
++        return summary.copy(completedTasks=progress.completed,totalTasks=progress.total,valid=valid,archiveAvailable=complete&&valid)
++    }
++    private fun taskProgress(root:Path,change:String):TaskProgress?{
++        val path=root.resolve("openspec/changes/$change/tasks.md").normalize()
++        if(!path.startsWith(root.resolve("openspec/changes"))||!Files.isRegularFile(path)||Files.isSymbolicLink(path))return null
++        var completed=0;var total=0
++        TASK_CHECKBOX.findAll(Files.readString(path)).forEach{match->total+=1;if(match.groupValues[1].lowercase()=="x")completed+=1}
++        return TaskProgress(completed,total)
++    }
+     private fun readInstructions(root:Path,change:String,artifact:String):Instructions{
+         val json=mapper.readTree(runReadOnly(root,listOf("instructions",artifact,"--change",change,"--json")).stdout)
+         val dependencyNodes=json.path("dependencies")
+@@ -105,4 +122,6 @@ internal class OpenSpecService(private val projects:ProjectRepository,private va
+     private fun sha256(bytes:ByteArray)=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)}
+     private fun findExecutable(name:String):Path?=System.getenv("PATH").orEmpty().split(System.getProperty("path.separator")).asSequence().filter(String::isNotBlank).map{Path.of(it,name)}.firstOrNull{Files.isRegularFile(it)&&Files.isExecutable(it)}
+     private fun fail(code:String,message:String):Nothing=throw OpenSpecException(code,message)
++    private data class TaskProgress(val completed:Int,val total:Int)
++    private companion object{val TASK_CHECKBOX=Regex("""(?m)^\s*[-*+]\s+\[([ xX])](?:\s|$)""")}
+ }
+diff --git a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/openspec/OpenSpec.kt b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/openspec/OpenSpec.kt
+index b99f3f7..323af8c 100644
+--- a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/openspec/OpenSpec.kt
++++ b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/openspec/OpenSpec.kt
+@@ -4,7 +4,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore
+ import java.time.Instant
+ 
+ data class OpenSpecCapability(val available:Boolean=false,val supported:Boolean=false,val version:String="")
+-data class ChangeSummary(val name:String,val completedTasks:Int=0,val totalTasks:Int=0,val lastModified:Instant=Instant.EPOCH,val status:String="")
++data class ChangeSummary(val name:String,val completedTasks:Int=0,val totalTasks:Int=0,val lastModified:Instant=Instant.EPOCH,val status:String="",
++    val valid:Boolean=false,val archiveAvailable:Boolean=false)
+ data class ChangeList(val changes:List<ChangeSummary> = emptyList())
+ data class Artifact(val id:String,val outputPath:String="",val status:String="",val requires:List<String> = emptyList(),val missingDeps:List<String> = emptyList())
+ data class InstructionDependency(val id:String,val done:Boolean=false,val path:String="",val description:String="")
+diff --git a/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/OpenSpecWorkflowIT.kt b/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/OpenSpecWorkflowIT.kt
+index cea0b96..4ea9400 100644
+--- a/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/OpenSpecWorkflowIT.kt
++++ b/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/OpenSpecWorkflowIT.kt
+@@ -89,6 +89,23 @@ class OpenSpecWorkflowIT {
+         assertThat(root.resolve("openspec/changes/incomplete-change")).exists()
+     }
+ 
++    @Test
++    @DisplayName("считает готовность архивирования по checkbox-ам tasks.md")
++    fun readsArchiveReadinessFromTasksMarkdown() {
++        command("openspec", "new", "change", "tasks-progress-change", "--json", directory = root)
++        Files.writeString(root.resolve("openspec/changes/tasks-progress-change/tasks.md"), """
++            ## Tasks
++            - [x] Закрытая задача
++            - [ ] Открытая задача
++        """.trimIndent())
++
++        val summary = workflow.overview(PROJECT).changes.single { it.name == "tasks-progress-change" }
++
++        assertThat(summary.completedTasks).isEqualTo(1)
++        assertThat(summary.totalTasks).isEqualTo(2)
++        assertThat(summary.archiveAvailable).isFalse()
++    }
++
+     @Test fun `обнаруживает draft conflict и поддерживает reject`(){
+         val first=actions.start(PROJECT,CreateOpenSpecActionCommand("create_change",change="conflict-change",proposal="draft"),"")
+         val ready=await(first.id);val set=actions.accept(PROJECT,ready.id)
+diff --git a/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts b/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts
+index c71d3a0..46f3dd8 100644
+--- a/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts
++++ b/openspec.frontend/src/features/openspec-workflow/hooks/useOpenSpecWorkflowController.ts
+@@ -79,6 +79,7 @@ export interface OpenSpecWorkflowController {
+   explore: (goal: string) => Promise<void>;
+   createChange: (change: string, proposal: string) => Promise<void>;
+   deleteChange: (confirmation: string) => Promise<void>;
++  archiveChange: (change: string) => Promise<void>;
+   runAction: (action: OpenSpecAction, goal: string) => Promise<void>;
+   runArtifactAction: (change: string, artifact: string, goal: string) => Promise<OpenSpecOperation | undefined>;
+   startArtifactRefresh: (change: string, artifact: string, steps: OpenSpecArtifactRefreshStep[], guidance?: string) => Promise<void>;
+@@ -168,6 +169,7 @@ export function useOpenSpecWorkflowController(
+   const [reloadVersion, setReloadVersion] = useState(0);
+   const operationStartInFlight = useRef(false);
+   const automaticallyAppliedOperationIds = useRef(new Set<string>());
++  const completedArchiveOperationIds = useRef(new Set<string>());
+ 
+   useEffect(() => {
+     if (!projectId) {
+@@ -355,6 +357,51 @@ export function useOpenSpecWorkflowController(
+     });
+   }, [details, execute, model, provider]);
+ 
++  const archiveChange = useCallback(async (change: string) => {
++    if (!projectId) return;
++    setPending(true);
++    setError(null);
++    try {
++      const latest = await getOpenSpecChange(projectId, change);
++      const action = latest.actions.find((candidate) => candidate.kind === "archive");
++      if (!action?.available) {
++        const nextError = new ApiError(409, {
++          code: "OPENSPEC_ACTION_BLOCKED",
++          message: action?.reason || "Изменение не готово к архивированию",
++        });
++        setError(nextError);
++        throw nextError;
++      }
++      setSelectedChange(change);
++      setDetails(latest);
++      const started = await execute({
++        kind: "archive",
++        change,
++        statusFingerprint: latest.fingerprint,
++      });
++      if (!started) return;
++      let current = started;
++      for (let attempt = 0; attempt < 150 && !isOpenSpecOperationTerminal(current.status); attempt += 1) {
++        await new Promise((resolve) => window.setTimeout(resolve, 800));
++        current = await getOpenSpecOperation(projectId, started.id);
++        setOperation(current);
++        setOperations((items) => upsertOperation(items, current));
++      }
++      if (current.status !== "completed") {
++        throw new ApiError(409, {
++          code: current.errorCode || "OPENSPEC_ARCHIVE_FAILED",
++          message: current.errorMessage || "Архивирование не завершилось",
++        });
++      }
++    } catch (cause) {
++      const nextError = toApiError(cause, "Изменение не архивировано");
++      setError(nextError);
++      throw nextError;
++    } finally {
++      setPending(false);
++    }
++  }, [execute, projectId]);
++
+   const runArtifactAction = useCallback(async (change: string, artifact: string, goal: string) => {
+     if (!projectId) return;
+     setPending(true);
+@@ -802,6 +849,18 @@ export function useOpenSpecWorkflowController(
+     ) : current);
+   }, [operation]);
+ 
++  useEffect(() => {
++    if (!operation || operation.openspecAction !== "archive" || operation.status !== "completed") return;
++    if (completedArchiveOperationIds.current.has(operation.id)) return;
++    completedArchiveOperationIds.current.add(operation.id);
++    onStoreChanged?.(operation);
++    setSelectedChange("");
++    setDetails(null);
++    setValidation(null);
++    setValidationStatus("idle");
++    setReloadVersion((current) => current + 1);
++  }, [onStoreChanged, operation]);
++
+   const selectChange = useCallback((change: string) => {
+     setSelectedChange(change);
+     setOperationDialogOpen(false);
+@@ -863,6 +922,7 @@ export function useOpenSpecWorkflowController(
+     explore,
+     createChange,
+     deleteChange,
++    archiveChange,
+     runAction,
+     runArtifactAction,
+     startArtifactRefresh,
+diff --git a/openspec.frontend/src/features/openspec-workflow/model/openspec-types.ts b/openspec.frontend/src/features/openspec-workflow/model/openspec-types.ts
+index 6fca71e..bb821b3 100644
+--- a/openspec.frontend/src/features/openspec-workflow/model/openspec-types.ts
++++ b/openspec.frontend/src/features/openspec-workflow/model/openspec-types.ts
+@@ -13,6 +13,8 @@ export interface OpenSpecChangeSummary {
+   totalTasks: number;
+   lastModified: string;
+   status: string;
++  valid: boolean;
++  archiveAvailable: boolean;
+ }
+ 
+ export interface OpenSpecOverview {
+diff --git a/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx b/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
+index 5523113..b3d104c 100644
+--- a/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
++++ b/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
+@@ -144,6 +144,7 @@ export function OpenSpecWorkspace() {
+   const [saveShortcutLabel, setSaveShortcutLabel] = useState("Ctrl+S");
+   const [openSpecCreationPageOpen, setOpenSpecCreationPageOpen] = useState(false);
+   const [pendingDocumentPath, setPendingDocumentPath] = useState("");
++  const [pendingArchivedChange, setPendingArchivedChange] = useState("");
+ 
+   const lines = useMemo(() => documents.markdown.split("\n"), [documents.markdown]);
+   const changeDocument = useMemo(
+@@ -175,6 +176,36 @@ export function OpenSpecWorkspace() {
+     window.setTimeout(() => setToast(""), 2200);
+   }, []);
+ 
++  const archiveOpenSpecChange = useCallback((change: string) => {
++    notify(`Архивация запущена: ${change}`);
++    void openSpec.archiveChange(change).then(() => {
++      setPendingArchivedChange(change);
++      retryDocuments();
++      refreshTasks();
++      notify(`Изменение архивировано: ${change}`);
++    }).catch((error: unknown) => {
++      notify(error instanceof Error ? error.message : "Не удалось архивировать изменение");
++    });
++  }, [notify, openSpec, refreshTasks, retryDocuments]);
++
++  useEffect(() => {
++    if (!pendingArchivedChange || documents.status === "loading") return;
++    const archiveRootFragment = `-${pendingArchivedChange}/`;
++    const archivedFile = documents.items.find((item) =>
++      item.kind === "file" &&
++      item.path.startsWith("openspec/changes/archive/") &&
++      item.path.includes(archiveRootFragment) &&
++      item.path.endsWith("/proposal.md"),
++    ) ?? documents.items.find((item) =>
++      item.kind === "file" &&
++      item.path.startsWith("openspec/changes/archive/") &&
++      item.path.includes(archiveRootFragment),
++    );
++    if (!archivedFile) return;
++    documents.select(archivedFile.path);
++    void Promise.resolve().then(() => setPendingArchivedChange(""));
++  }, [documents, pendingArchivedChange]);
++
+   const persistFile = useCallback(async (announce: boolean): Promise<boolean> => {
+     if (isUserReadOnlySpecPath(selectedDocumentPath)) return false;
+     try {
+@@ -313,10 +344,12 @@ export function OpenSpecWorkspace() {
+           hideDocumentTree={openSpecCreationPageOpen}
+           onClose={() => setLeftOpen(false)}
+           repositories={repositories}
++          openSpec={openSpec}
+           projectSelected={!!projects.activeProject}
+           workspaceMode={activeWorkspaceMode}
+           onWorkspaceModeChange={changeWorkspaceMode}
+           onAddOpenSpecChange={addOpenSpecChange}
++          onArchiveOpenSpecChange={archiveOpenSpecChange}
+         />
+         {!leftOpen && <button className="open-panel left" onClick={() => setLeftOpen(true)}>›</button>}
+ 
+diff --git a/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx b/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
+index f2c7b2e..4a56f9a 100644
+--- a/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
++++ b/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
+@@ -3,19 +3,26 @@
+ import { useMemo, useState } from "react";
+ import { IconButton } from "@/components/ui/IconButton";
+ import type { DocumentsController } from "@/features/documents/hooks/useDocumentsController";
++import type { OpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
+ import type { RepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
+ import type { WorkspaceMode } from "@/features/workspace/model/workspace-types";
+ import { isDeltaSpecPath, isMasterSpecPath } from "@/features/workspace/model/openspec-document";
++import {
++  isOpenSpecTasksPath,
++  taskProgressFromMarkdown,
++} from "@/features/workspace/model/task-progress";
+ 
+ interface WorkspaceSidebarProps {
+   documents: DocumentsController;
+   hideDocumentTree?: boolean;
+   onClose: () => void;
+   repositories: RepositoriesController;
++  openSpec?: OpenSpecWorkflowController;
+   projectSelected: boolean;
+   workspaceMode: WorkspaceMode;
+   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
+   onAddOpenSpecChange: () => void;
++  onArchiveOpenSpecChange?: (change: string) => void;
+ }
+ 
+ type ArtifactRole = "analyst" | "developer";
+@@ -91,15 +98,33 @@ function relativeSegments(path: string, scope: DocumentScope): string[] {
+   return path.slice(scope.rootPath.length + 1).split("/");
+ }
+ 
++function changeFromTasksPath(path: string | null): string {
++  if (!isOpenSpecTasksPath(path)) return "";
++  return path?.split("/")[2] ?? "";
++}
++
++function ArchiveIcon() {
++  return (
++    <svg viewBox="0 0 20 20" aria-hidden="true">
++      <path d="M4 6.5h12" />
++      <path d="M5.2 6.5v8.1c0 .8.6 1.4 1.4 1.4h6.8c.8 0 1.4-.6 1.4-1.4V6.5" />
++      <path d="M6 3.8h8l1.1 2.7H4.9L6 3.8Z" />
++      <path d="M8 10h4" />
++    </svg>
++  );
++}
++
+ export function WorkspaceSidebar({
+   documents,
+   hideDocumentTree = false,
+   onClose,
+   repositories,
++  openSpec,
+   projectSelected,
+   workspaceMode,
+   onWorkspaceModeChange,
+   onAddOpenSpecChange,
++  onArchiveOpenSpecChange,
+ }: WorkspaceSidebarProps) {
+   const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(() => new Set());
+   const [collapsedSections, setCollapsedSections] = useState<Set<NavigationSectionId>>(
+@@ -117,6 +142,14 @@ export function WorkspaceSidebar({
+   }, [documentScopes, documents.selectedPath]);
+   const activeScope = documentScopes.find((scope) => scope.id === selectedScopeId) ??
+     documentScopes.find((scope) => scope.id === selectedChangeScopeId) ?? null;
++  const changesByName = useMemo(() => new Map(
++    (openSpec?.overview?.changes ?? []).map((change) => [change.name, change]),
++  ), [openSpec?.overview?.changes]);
++  const selectedTasksChange = changeFromTasksPath(documents.selectedPath);
++  const selectedTasksProgress = useMemo(
++    () => selectedTasksChange ? taskProgressFromMarkdown(documents.markdown) : null,
++    [documents.markdown, selectedTasksChange],
++  );
+ 
+   const toggleDirectory = (path: string) => {
+     setCollapsedDirectories((current) => {
+@@ -146,6 +179,12 @@ export function WorkspaceSidebar({
+     if (target) documents.select(target.path);
+   };
+ 
++  const archiveScope = (scope: DocumentScope) => {
++    if (scope.sectionId !== "changes" || !openSpec) return;
++    if (onArchiveOpenSpecChange) onArchiveOpenSpecChange(scope.label);
++    else void openSpec.archiveChange(scope.label);
++  };
++
+   const closeSidebar = () => {
+     if (activeScope?.sectionId !== "changes") setSelectedScopeId("");
+     onClose();
+@@ -232,19 +271,43 @@ export function WorkspaceSidebar({
+                     {sectionScopes.length === 0 && (
+                       <div className="tree-section-state">Нет документов</div>
+                     )}
+-                    {sectionScopes.map((scope) => (
+-                      <button
+-                        key={scope.id}
+-                        type="button"
+-                        className={`tree-scope-row ${!hideDocumentTree && workspaceMode === "documents" && activeScope?.id === scope.id ? "active" : ""}`}
+-                        onClick={() => selectScope(scope)}
+-                        title={scope.rootPath}
+-                        aria-haspopup="tree"
+-                      >
+-                        <span>{scope.label}</span>
+-                        <i aria-hidden="true">›</i>
+-                      </button>
+-                    ))}
++                    {sectionScopes.map((scope) => {
++                      const change = scope.sectionId === "changes" ? changesByName.get(scope.label) : undefined;
++                      const selectedTasksIncomplete = selectedTasksChange === scope.label &&
++                        !!selectedTasksProgress &&
++                        selectedTasksProgress.completed < selectedTasksProgress.total;
++                      const archiveAvailable = !!change?.archiveAvailable && !selectedTasksIncomplete && !openSpec?.pending;
++                      return (
++                        <div className="tree-scope-entry" key={scope.id}>
++                          <div
++                            className={`tree-scope-row ${!hideDocumentTree && workspaceMode === "documents" && activeScope?.id === scope.id ? "active" : ""}`}
++                            title={scope.rootPath}
++                          >
++                            <button
++                              type="button"
++                              className="tree-scope-select"
++                              onClick={() => selectScope(scope)}
++                              aria-haspopup="tree"
++                            >
++                              <span>{scope.label}</span>
++                            </button>
++                            <i aria-hidden="true">›</i>
++                          </div>
++                          {archiveAvailable && (
++                            <div className="tree-scope-entry-actions">
++                              <IconButton
++                                className="tree-scope-archive"
++                                label={`Архивировать ${scope.label}`}
++                                title="Архивировать валидное завершённое изменение"
++                                onClick={() => {
++                                  archiveScope(scope);
++                                }}
++                              ><ArchiveIcon /></IconButton>
++                            </div>
++                          )}
++                        </div>
++                      );
++                    })}
+                   </div>
+                 </section>
+               );
+diff --git a/openspec.frontend/src/features/workspace/styles/workspace.css b/openspec.frontend/src/features/workspace/styles/workspace.css
+index af7f056..762f8ea 100644
+--- a/openspec.frontend/src/features/workspace/styles/workspace.css
++++ b/openspec.frontend/src/features/workspace/styles/workspace.css
+@@ -269,8 +269,15 @@ button { color: inherit; }
+ }
+ .tree-section-items { padding: 3px 0 2px; }
+ .tree-section-state { padding: 7px 10px; color: #929b98; font-size: 9.5px; }
+-.tree-scope-row {
++.tree-scope-entry {
+   width: 100%;
++  display: flex;
++  align-items: center;
++  gap: 4px;
++}
++.tree-scope-row {
++  min-width: 0;
++  flex: 1;
+   height: 34px;
+   padding: 0 9px 0 12px;
+   display: flex;
+@@ -286,7 +293,44 @@ button { color: inherit; }
+ }
+ .tree-scope-row:hover { background: #eef2f0; }
+ .tree-scope-row.active { background: #e4eee9; color: #164f3c; font-weight: 650; }
+-.tree-scope-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.tree-scope-select {
++  min-width: 0;
++  flex: 1;
++  height: 100%;
++  padding: 0;
++  display: flex;
++  align-items: center;
++  border: 0;
++  background: transparent;
++  color: inherit;
++  font: inherit;
++  font-weight: inherit;
++  cursor: pointer;
++  text-align: left;
++}
++.tree-scope-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.tree-scope-entry-actions {
++  width: 32px;
++  height: 34px;
++  flex: 0 0 32px;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++}
++.tree-scope-archive.icon-button {
++  min-width: 32px;
++  width: 32px;
++  height: 32px;
++  flex: 0 0 32px;
++  border: 1px solid #cfe0d8;
++  background: #edf5f1;
++  color: var(--green);
++}
++.tree-scope-archive.icon-button:hover {
++  border-color: #aecbbd;
++  background: #e2efe9;
++}
++.tree-scope-archive svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+ .tree-scope-row > i { color: #8b9591; font-size: 16px; font-style: normal; }
+ .document-tree-panel {
+   position: relative;

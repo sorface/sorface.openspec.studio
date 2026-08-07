@@ -30,7 +30,9 @@ internal class OpenSpecActionService(private val workflow:OpenSpecService,privat
             val action=details.actions.firstOrNull{it.kind=="prepare_artifact"&&it.artifact==input.artifact}
             if(action?.available!=true||action.instruction==null)fail("OPENSPEC_ACTION_BLOCKED","Артефакт недоступен для подготовки")}
         if(kind=="archive"){
-            val action=workflow.details(projectId,change).actions.firstOrNull{it.kind=="archive"}
+            val details = workflow.details(projectId, change)
+            if (input.statusFingerprint != details.fingerprint) fail("OPENSPEC_STATUS_STALE", "Статус устарел")
+            val action = details.actions.firstOrNull { it.kind == "archive" }
             if(action?.available!=true)fail("OPENSPEC_ACTION_BLOCKED","Изменение не готово к архивированию")
         }
         val created=operations.createOperation(CloneOperation("",projectId,"openspec","queued",correlationId=correlationId,provider=input.provider,model=input.model,prompt=input.goal,

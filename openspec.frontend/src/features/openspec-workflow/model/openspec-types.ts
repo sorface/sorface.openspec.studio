@@ -13,6 +13,8 @@ export interface OpenSpecChangeSummary {
   totalTasks: number;
   lastModified: string;
   status: string;
+  valid: boolean;
+  archiveAvailable: boolean;
 }
 
 export interface OpenSpecOverview {

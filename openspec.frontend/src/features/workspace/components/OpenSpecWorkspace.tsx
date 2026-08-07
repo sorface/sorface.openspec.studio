@@ -144,6 +144,7 @@ export function OpenSpecWorkspace() {
   const [saveShortcutLabel, setSaveShortcutLabel] = useState("Ctrl+S");
   const [openSpecCreationPageOpen, setOpenSpecCreationPageOpen] = useState(false);
   const [pendingDocumentPath, setPendingDocumentPath] = useState("");
+  const [pendingArchivedChange, setPendingArchivedChange] = useState("");
 
   const lines = useMemo(() => documents.markdown.split("\n"), [documents.markdown]);
   const changeDocument = useMemo(
@@ -174,6 +175,36 @@ export function OpenSpecWorkspace() {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
   }, []);
+
+  const archiveOpenSpecChange = useCallback((change: string) => {
+    notify(`Архивация запущена: ${change}`);
+    void openSpec.archiveChange(change).then(() => {
+      setPendingArchivedChange(change);
+      retryDocuments();
+      refreshTasks();
+      notify(`Изменение архивировано: ${change}`);
+    }).catch((error: unknown) => {
+      notify(error instanceof Error ? error.message : "Не удалось архивировать изменение");
+    });
+  }, [notify, openSpec, refreshTasks, retryDocuments]);
+
+  useEffect(() => {
+    if (!pendingArchivedChange || documents.status === "loading") return;
+    const archiveRootFragment = `-${pendingArchivedChange}/`;
+    const archivedFile = documents.items.find((item) =>
+      item.kind === "file" &&
+      item.path.startsWith("openspec/changes/archive/") &&
+      item.path.includes(archiveRootFragment) &&
+      item.path.endsWith("/proposal.md"),
+    ) ?? documents.items.find((item) =>
+      item.kind === "file" &&
+      item.path.startsWith("openspec/changes/archive/") &&
+      item.path.includes(archiveRootFragment),
+    );
+    if (!archivedFile) return;
+    documents.select(archivedFile.path);
+    void Promise.resolve().then(() => setPendingArchivedChange(""));
+  }, [documents, pendingArchivedChange]);
 
   const persistFile = useCallback(async (announce: boolean): Promise<boolean> => {
     if (isUserReadOnlySpecPath(selectedDocumentPath)) return false;
@@ -313,10 +344,12 @@ export function OpenSpecWorkspace() {
           hideDocumentTree={openSpecCreationPageOpen}
           onClose={() => setLeftOpen(false)}
           repositories={repositories}
+          openSpec={openSpec}
           projectSelected={!!projects.activeProject}
           workspaceMode={activeWorkspaceMode}
           onWorkspaceModeChange={changeWorkspaceMode}
           onAddOpenSpecChange={addOpenSpecChange}
+          onArchiveOpenSpecChange={archiveOpenSpecChange}
         />
         {!leftOpen && <button className="open-panel left" onClick={() => setLeftOpen(true)}>›</button>}
 

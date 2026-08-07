@@ -269,8 +269,15 @@ button { color: inherit; }
 }
 .tree-section-items { padding: 3px 0 2px; }
 .tree-section-state { padding: 7px 10px; color: #929b98; font-size: 9.5px; }
-.tree-scope-row {
+.tree-scope-entry {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tree-scope-row {
+  min-width: 0;
+  flex: 1;
   height: 34px;
   padding: 0 9px 0 12px;
   display: flex;
@@ -286,7 +293,44 @@ button { color: inherit; }
 }
 .tree-scope-row:hover { background: #eef2f0; }
 .tree-scope-row.active { background: #e4eee9; color: #164f3c; font-weight: 650; }
-.tree-scope-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-scope-select {
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.tree-scope-select > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-scope-entry-actions {
+  width: 32px;
+  height: 34px;
+  flex: 0 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tree-scope-archive.icon-button {
+  min-width: 32px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border: 1px solid #cfe0d8;
+  background: #edf5f1;
+  color: var(--green);
+}
+.tree-scope-archive.icon-button:hover {
+  border-color: #aecbbd;
+  background: #e2efe9;
+}
+.tree-scope-archive svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
 .tree-scope-row > i { color: #8b9591; font-size: 16px; font-style: normal; }
 .document-tree-panel {
   position: relative;
