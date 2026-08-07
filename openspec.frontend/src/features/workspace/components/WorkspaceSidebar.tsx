@@ -174,6 +174,13 @@ export function WorkspaceSidebar({
         title={projectSelected ? "Подключённые Git-репозитории и контекст проекта" : "Сначала выберите проект"}
         onClick={() => onWorkspaceModeChange("context")}
       ><span>▱</span> Контекст <small>{repositories.repositories.length}</small></button>
+      <button
+        className={`nav-item ${projectSelected && workspaceMode === "git" ? "active" : ""}`}
+        type="button"
+        disabled={!projectSelected}
+        title={projectSelected ? "Git active Store и получение обновлений" : "Сначала выберите проект"}
+        onClick={() => onWorkspaceModeChange("git")}
+      ><span>⑂</span> Git</button>
       {projectSelected && (
         <>
           <div className="sidebar-heading files-heading">

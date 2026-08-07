@@ -19,12 +19,21 @@ data class GitStatus(
     val diffTruncated: Boolean,
 )
 
+data class GitBranchCommit(
+    val sha: String,
+    val shortSha: String,
+    val author: String,
+    val authoredAt: String,
+    val message: String,
+)
+
 data class GitPathsCommand(val paths: List<String>)
 data class GitCommitCommand(val paths: List<String>, val message: String, val expectedHead: String)
 data class GitCreateBranchCommand(val name: String)
 data class GitSwitchBranchCommand(val branch: String = "", val remoteBranch: String = "", val localBranch: String = "")
 data class GitFetchCommand(val remote: String)
 data class GitPushCommand(val remote: String = "", val targetBranch: String = "")
+data class GitCherryPickCommand(val branch: String, val commits: List<String>, val expectedHead: String)
 typealias GitOperation = CloneOperation
 
 /** Ошибка Git use case со стабильным кодом HTTP API. */

@@ -177,6 +177,40 @@ test("Git-аннотации и история выбранного файла �
   assert.match(css, /\.file-annotation-row > code \{[^}]*font:\s*11px\/17px var\(--font-code\)/s);
 });
 
+test("Task selector получает обновления из другой ветки в текущую задачу", async () => {
+  const [selector, panel, client, controller, types, operation, css] = await Promise.all([
+    readFile(new URL("../src/features/task-context/components/TaskContextSelector.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/components/GitPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/model/git-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/git/model/git-operation.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(types, /export interface GitBranchCommit/);
+  assert.match(types, /shortSha: string/);
+  assert.match(operation, /"cherry-pick"/);
+  assert.match(client, /getGitBranchCommits/);
+  assert.match(client, /branch-commits\?branch=\$\{encodeURIComponent\(branch\)\}/);
+  assert.match(client, /startGitCherryPick/);
+  assert.match(client, /"cherry-picks"/);
+  assert.match(controller, /loadBranchCommits:/);
+  assert.match(controller, /cherryPick:/);
+  assert.match(selector, /className="task-context-branch-menu"/);
+  assert.match(selector, /Получить обновления/);
+  assert.match(selector, /git\.loadBranchCommits\(sourceBranch\)/);
+  assert.match(selector, /git\.cherryPick\(sourceBranch, commits\.map\(\(commit\) => commit\.sha\)\)/);
+  assert.match(selector, /В выбранной ветке нет новых commits/);
+  assert.match(selector, /вернуть локальные изменения поверх/);
+  assert.doesNotMatch(selector, /Сначала закоммитьте или отмените локальные изменения/);
+  assert.doesNotMatch(panel, /TASK COMMITS|Получить обновления/);
+  assert.match(panel, /GIT_CHERRY_PICK_CONFLICT/);
+  assert.match(panel, /GIT_STASH_POP_CONFLICT/);
+  assert.match(css, /\.task-context-branch-menu/);
+  assert.doesNotMatch(css, /\.git-cherry-pick-panel|\.git-pick-list/);
+});
+
 test("Preview использует read-only Milkdown вместо сырого Markdown pre", async () => {
   const [editor, preview] = await Promise.all([
     readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),

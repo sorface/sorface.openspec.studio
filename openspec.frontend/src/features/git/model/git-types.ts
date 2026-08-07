@@ -18,3 +18,11 @@ export interface GitStatus {
   diff: string;
   diffTruncated: boolean;
 }
+
+export interface GitBranchCommit {
+  sha: string;
+  shortSha: string;
+  author: string;
+  authoredAt: string;
+  message: string;
+}

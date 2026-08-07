@@ -1,5 +1,5 @@
 import { apiRequest } from "@/features/api/api-client";
-import type { GitStatus } from "@/features/git/model/git-types";
+import type { GitBranchCommit, GitStatus } from "@/features/git/model/git-types";
 import type { GitOperation } from "@/features/git/model/git-operation";
 
 function projectGitPath(projectId: string, suffix: string): string {
@@ -8,6 +8,10 @@ function projectGitPath(projectId: string, suffix: string): string {
 
 export function getGitStatus(projectId: string, signal?: AbortSignal): Promise<GitStatus> {
   return apiRequest<GitStatus>(projectGitPath(projectId, "status"), { signal });
+}
+
+export function getGitBranchCommits(projectId: string, branch: string, signal?: AbortSignal): Promise<GitBranchCommit[]> {
+  return apiRequest<GitBranchCommit[]>(projectGitPath(projectId, `branch-commits?branch=${encodeURIComponent(branch)}`), { signal });
 }
 
 export function stageGitPaths(projectId: string, paths: string[]): Promise<GitStatus> {
@@ -42,6 +46,12 @@ export function startGitFetch(projectId: string, remote: string): Promise<GitOpe
 export function startGitPush(projectId: string, remote?: string, targetBranch?: string): Promise<GitOperation> {
   return apiRequest<GitOperation>(projectGitPath(projectId, "pushes"), {
     method: "POST", body: { remote, targetBranch },
+  });
+}
+
+export function startGitCherryPick(projectId: string, branch: string, commits: string[], expectedHead: string): Promise<GitOperation> {
+  return apiRequest<GitOperation>(projectGitPath(projectId, "cherry-picks"), {
+    method: "POST", body: { branch, commits, expectedHead },
   });
 }
 

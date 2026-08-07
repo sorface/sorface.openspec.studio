@@ -1,6 +1,7 @@
 package com.sorface.openspecstudio.application
 
 import com.sorface.openspecstudio.domain.git.GitCommitCommand
+import com.sorface.openspecstudio.domain.git.GitCherryPickCommand
 import com.sorface.openspecstudio.domain.git.GitCreateBranchCommand
 import com.sorface.openspecstudio.domain.git.GitException
 import com.sorface.openspecstudio.domain.git.GitFetchCommand
@@ -86,6 +87,62 @@ class GitServiceIT {
         val push = service.startPush(PROJECT_ID, GitPushCommand(), "push-correlation")
         assertThat(await(push.id).status).isEqualTo("completed")
         assertThat(gitOutput(root, "--git-dir", remote.toString(), "rev-parse", "refs/heads/main")).isEqualTo(service.status(PROJECT_ID).head)
+    }
+
+    @Test
+    @DisplayName("показывает commits другой ветки и подтягивает выбранные в текущую")
+    fun cherryPickBranchCommits() {
+        git(working, "switch", "-c", "feature/source")
+        Files.writeString(working.resolve("proposal.md"), "source change\n")
+        git(working, "add", "proposal.md")
+        git(working, "commit", "-m", "docs: source change")
+        val sourceCommit = gitOutput(working, "rev-parse", "HEAD")
+        git(working, "switch", "main")
+
+        val candidates = service.branchCommits(PROJECT_ID, "feature/source")
+        assertThat(candidates).singleElement().satisfies({
+            assertThat(it.sha).isEqualTo(sourceCommit)
+            assertThat(it.shortSha).isNotBlank()
+            assertThat(it.author).isEqualTo("Git Test")
+            assertThat(it.message).isEqualTo("docs: source change")
+        })
+
+        val baseHead = service.status(PROJECT_ID).head
+        assertThatThrownBy { service.startCherryPick(PROJECT_ID, GitCherryPickCommand("feature/source", emptyList(), baseHead), "empty") }
+            .isInstanceOf(GitException::class.java).extracting("code").isEqualTo("GIT_EMPTY_SELECTION")
+
+        val operation = service.startCherryPick(PROJECT_ID, GitCherryPickCommand("feature/source", listOf(sourceCommit), baseHead), "pick-correlation")
+        val completed = await(operation.id)
+        assertThat(completed.status).isEqualTo("completed")
+        assertThat(completed.gitAction).isEqualTo("cherry-pick")
+        assertThat(service.status(PROJECT_ID).head).isNotEqualTo(baseHead)
+        assertThat(Files.readString(working.resolve("proposal.md"))).isEqualTo("source change\n")
+    }
+
+    @Test
+    @DisplayName("подтягивает commits другой ветки под локальные изменения текущей")
+    fun cherryPickBranchCommitsWithDirtyWorktree() {
+        git(working, "switch", "-c", "feature/dirty-source")
+        Files.writeString(working.resolve("tasks.md"), "source task\n")
+        git(working, "add", "tasks.md")
+        git(working, "commit", "-m", "docs: source task")
+        val sourceCommit = gitOutput(working, "rev-parse", "HEAD")
+        git(working, "switch", "main")
+
+        Files.writeString(working.resolve("proposal.md"), "local staged\n")
+        git(working, "add", "proposal.md")
+        Files.writeString(working.resolve("local-note.md"), "local untracked\n")
+
+        val baseHead = service.status(PROJECT_ID).head
+        val operation = service.startCherryPick(PROJECT_ID, GitCherryPickCommand("feature/dirty-source", listOf(sourceCommit), baseHead), "dirty-pick")
+        val completed = await(operation.id)
+
+        assertThat(completed.status).isEqualTo("completed")
+        assertThat(Files.readString(working.resolve("tasks.md"))).isEqualTo("source task\n")
+        assertThat(Files.readString(working.resolve("proposal.md"))).isEqualTo("local staged\n")
+        assertThat(Files.readString(working.resolve("local-note.md"))).isEqualTo("local untracked\n")
+        assertThat(gitOutput(working, "stash", "list")).doesNotContain(operation.id)
+        assertThat(service.status(PROJECT_ID).changes.map { it.path }).contains("proposal.md", "local-note.md")
     }
 
     @Test

@@ -34,13 +34,14 @@ button { color: inherit; }
   display: grid;
   place-items: center;
   overflow: hidden;
+  pointer-events: none;
   background:
     radial-gradient(circle at 50% 46%, rgba(36, 130, 94, .09), transparent 30%),
     linear-gradient(145deg, #fbfdfc 0%, #f3f8f5 100%);
   opacity: 1;
   transition: opacity 320ms ease;
 }
-.project-loading-landing.exiting { pointer-events: none; opacity: 0; }
+.project-loading-landing.exiting { opacity: 0; }
 .project-loading-brand { position: relative; display: flex; align-items: center; gap: 14px; color: #15241e; }
 .project-loading-flight {
   position: absolute;
@@ -543,7 +544,7 @@ button { color: inherit; }
 .repository-connect-dialog > header > button { min-width: 34px; min-height: 34px; padding: 0; font-size: 20px; font-weight: 400; }
 .repository-connect-dialog > p { margin: 12px 0 18px; color: #6f7c76; font-size: 12px; line-height: 1.55; }
 
-.git-panel { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; background: #fff; }
+.git-panel { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto auto 1fr auto; overflow: hidden; background: #fff; }
 .git-panel-header { min-height: 84px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .git-panel-header h2 { margin: 4px 0 2px; font-size: 18px; }
 .git-panel-header code { color: #7d8884; font: 11px var(--font-code); }
@@ -750,6 +751,59 @@ button { color: inherit; }
 .rich-editor-shell .milkdown .ProseMirror blockquote { margin: 12px 0; padding-left: 24px; }
 .rich-editor-shell .milkdown .ProseMirror blockquote > p { margin: 0; }
 .rich-editor-shell .milkdown .ProseMirror code { border-radius: 4px; background: #eef3f1; color: #176249; font: 12px var(--font-code); }
+.rich-editor-shell .milkdown .milkdown-table-block,
+.markdown-preview .milkdown .milkdown-table-block {
+  --default-cell-min-width: 132px;
+  max-width: 100%;
+  margin: 18px 0;
+  padding: 0 0 4px;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+.rich-editor-shell .milkdown .milkdown-table-block .table-wrapper,
+.markdown-preview .milkdown .milkdown-table-block .table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+.rich-editor-shell .milkdown .milkdown-table-block table,
+.markdown-preview .milkdown .milkdown-table-block table {
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+}
+.rich-editor-shell .milkdown .milkdown-table-block th,
+.rich-editor-shell .milkdown .milkdown-table-block td,
+.markdown-preview .milkdown .milkdown-table-block th,
+.markdown-preview .milkdown .milkdown-table-block td {
+  min-width: 132px;
+  max-width: 360px;
+  padding: 10px 12px;
+  border-color: #dce5e1;
+  color: #2f3f38;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+  word-break: normal;
+  vertical-align: top;
+}
+.rich-editor-shell .milkdown .milkdown-table-block th,
+.markdown-preview .milkdown .milkdown-table-block th {
+  background: #f6faf8;
+  color: #1d2e27;
+  font-weight: 750;
+}
+.rich-editor-shell .milkdown .milkdown-table-block td > *,
+.rich-editor-shell .milkdown .milkdown-table-block th > *,
+.markdown-preview .milkdown .milkdown-table-block td > *,
+.markdown-preview .milkdown .milkdown-table-block th > * {
+  margin: 0;
+}
+.rich-editor-shell .milkdown .milkdown-table-block code,
+.markdown-preview .milkdown .milkdown-table-block code {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
 .rich-editor-shell .milkdown .milkdown-code-block {
   --crepe-color-surface: #f8faf9;
   --crepe-color-surface-low: #eef3f1;
@@ -1087,14 +1141,22 @@ button { color: inherit; }
 .task-context-open-form button:disabled { border-color: #cbd6d1; background: #dfe7e3; color: #87958f; cursor: default; }
 .task-context-error { margin: 6px 2px 0; padding: 8px 9px; display: grid; gap: 3px; border-radius: 7px; background: #fff1ef; color: #913f37; font-size: 10px; line-height: 1.4; }
 .task-context-error small { opacity: .75; }
+.task-context-update-state { margin: 6px 2px 0; padding: 7px 9px; border-radius: 7px; background: #f4f7f5; color: #5f6f68; font-size: 10px; line-height: 1.35; }
 .task-context-list { margin-top: 5px; padding: 5px 2px 0; display: grid; gap: 1px; border-top: 1px solid var(--soft-line); }
 .task-context-list > small { padding: 4px 7px 3px; color: #8a958f; font-size: 9px; font-weight: 650; }
-.task-context-list > button { width: 100%; min-height: 34px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 7px; background: transparent; color: #3d4d46; text-align: left; cursor: pointer; }
-.task-context-list > button:hover:not(:disabled) { background: #f3f6f5; }
-.task-context-list > button.active { background: #edf4f1; color: #155b40; }
-.task-context-list > button span { min-width: 0; flex: 1; overflow: hidden; font: 600 11px var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
-.task-context-list > button i { width: 6px; height: 6px; border-radius: 50%; background: #df932f; }
-.task-context-list > button svg { width: 15px; height: 15px; fill: none; stroke: var(--green); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.task-context-branch-row { position: relative; min-width: 0; }
+.task-context-branch-option { width: 100%; min-height: 34px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 7px; background: transparent; color: #3d4d46; text-align: left; cursor: pointer; }
+.task-context-branch-option:hover:not(:disabled), .task-context-branch-row:focus-within .task-context-branch-option { background: #f3f6f5; }
+.task-context-branch-option.active { background: #edf4f1; color: #155b40; }
+.task-context-branch-option span { min-width: 0; flex: 1; overflow: hidden; font: 600 11px var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
+.task-context-branch-option i { width: 6px; height: 6px; border-radius: 50%; background: #df932f; }
+.task-context-branch-option svg { width: 15px; height: 15px; fill: none; stroke: var(--green); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.task-context-branch-menu { position: absolute; z-index: 48; top: 50%; right: calc(100% + 6px); display: none; min-width: 166px; padding: 5px; border: 1px solid #d8e3dd; border-radius: 9px; background: #fff; box-shadow: 0 12px 30px rgba(24, 47, 37, .16); transform: translateY(-50%); }
+.task-context-branch-menu::after { content: ""; position: absolute; top: 0; right: -7px; width: 7px; height: 100%; }
+.task-context-branch-row:hover .task-context-branch-menu, .task-context-branch-row:focus-within .task-context-branch-menu { display: block; }
+.task-context-branch-menu button { width: 100%; min-height: 31px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: #155b40; text-align: left; font-size: 10px; font-weight: 650; cursor: pointer; }
+.task-context-branch-menu button:hover:not(:disabled), .task-context-branch-menu button:focus-visible { background: #edf5f1; outline: none; }
+.task-context-branch-menu button:disabled { color: #94a09b; cursor: not-allowed; }
 .task-context-actions { margin-top: 6px; padding: 6px 2px 0; display: grid; gap: 2px; border-top: 1px solid var(--soft-line); }
 .task-context-actions > button { width: 100%; min-height: 36px; padding: 0 9px; display: flex; align-items: center; gap: 9px; border: 0; border-radius: 7px; background: transparent; color: #285442; text-align: left; cursor: pointer; }
 .task-context-actions > button:hover:not(:disabled) { background: var(--green-soft); color: #0b6748; }

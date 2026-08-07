@@ -1,6 +1,8 @@
 package com.sorface.openspecstudio.application
 
 import com.sorface.openspecstudio.domain.git.GitChange
+import com.sorface.openspecstudio.domain.git.GitBranchCommit
+import com.sorface.openspecstudio.domain.git.GitCherryPickCommand
 import com.sorface.openspecstudio.domain.git.GitCommitCommand
 import com.sorface.openspecstudio.domain.git.GitCreateBranchCommand
 import com.sorface.openspecstudio.domain.git.GitException
@@ -34,6 +36,13 @@ internal class GitService(
     private val git = findExecutable("git")
 
     fun status(projectId: String): GitStatus = inspect(storePath(projectId))
+
+    fun branchCommits(projectId: String, branch: String): List<GitBranchCommit> {
+        val path = storePath(projectId)
+        val status = inspect(path)
+        val source = sourceBranch(path, branch, status)
+        return candidateCommits(path, source)
+    }
 
     fun stage(projectId: String, command: GitPathsCommand): GitStatus {
         val path = storePath(projectId)
@@ -115,6 +124,27 @@ internal class GitService(
         return start(projectId, "store_git", metadata, correlationId)
     }
 
+    fun startCherryPick(projectId: String, command: GitCherryPickCommand, correlationId: String): GitOperation {
+        val path = storePath(projectId)
+        val status = inspect(path)
+        if (command.expectedHead.isBlank() || output(path, "rev-parse", "HEAD") != command.expectedHead.trim())
+            fail("GIT_HEAD_CHANGED", "HEAD изменился")
+        val selected = command.commits.map(String::trim).filter(String::isNotBlank).distinct()
+        if (selected.isEmpty()) fail("GIT_EMPTY_SELECTION", "Не выбраны commits")
+        val source = sourceBranch(path, command.branch, status)
+        if (selected.any { !COMMIT_SHA.matches(it) }) fail("GIT_COMMIT_NOT_FOUND", "Commit не найден")
+        val candidates = candidateCommits(path, source)
+        val candidateShas = candidates.map { it.sha }.toSet()
+        selected.forEach { if (it !in candidateShas) fail("GIT_COMMIT_NOT_FOUND", "Commit не найден") }
+        val ordered = candidates.asReversed().map { it.sha }.filter { it in selected }
+        return start(projectId, "store_git", mapOf(
+            "action" to "cherry-pick",
+            "branch" to source,
+            "commits" to ordered.joinToString(","),
+            "storePath" to path.toString(),
+        ), correlationId)
+    }
+
     fun operation(projectId: String, operationId: String): GitOperation = store.getOperation(operationId)
         ?.takeIf { it.projectId == projectId && it.kind in GIT_KINDS }
         ?.let(::hydrate)
@@ -146,18 +176,67 @@ internal class GitService(
             val running = store.updateOperation(operation.copy(status = "running")) ?: return
             store.addEvent(running.id, "running")
             val path = Path.of(metadata.getValue("storePath"))
-            val arguments = if (metadata.getValue("action") == "fetch") {
-                listOf("fetch", "--prune", "--", metadata.getValue("remote"))
-            } else if (metadata["remote"].isNullOrBlank()) {
-                listOf("push")
-            } else {
-                listOf("push", "--set-upstream", "--", metadata.getValue("remote"), "HEAD:refs/heads/${metadata.getValue("targetBranch")}")
+            if (metadata.getValue("action") == "cherry-pick") {
+                executeCherryPick(running, metadata, path, scope.cancellation)
+                return
+            }
+            val arguments = when {
+                metadata.getValue("action") == "fetch" -> listOf("fetch", "--prune", "--", metadata.getValue("remote"))
+                metadata["remote"].isNullOrBlank() -> listOf("push")
+                else -> listOf("push", "--set-upstream", "--", metadata.getValue("remote"), "HEAD:refs/heads/${metadata.getValue("targetBranch")}")
             }
             val result = run(path, arguments, Duration.ofMinutes(5), scope.cancellation)
             if (result.stopReason == "cancelled") finish(running, "cancelled")
             else if (result.successful) finish(running, "completed")
             else finish(running, "failed", classify(result).code, classify(result).message)
         }
+    }
+
+    private fun executeCherryPick(operation: GitOperation, metadata: Map<String, String>, path: Path, cancellation: ProcessCancellation) {
+        val commits = metadata.getValue("commits").split(',').filter(String::isNotBlank)
+        val stashRef = "stash@{0}"
+        val stashCreated = if (inspect(path).changes.isEmpty()) false else {
+            val result = run(path, listOf("stash", "push", "--include-untracked", "--message", "openspec-studio:${operation.id}"), Duration.ofMinutes(2), cancellation)
+            when {
+                result.stopReason == "cancelled" -> { finish(operation, "cancelled"); return }
+                result.successful -> !"no local changes to save".equals(result.stdout.trim(), ignoreCase = true)
+                else -> {
+                    val error = classify(result)
+                    finish(operation, "failed", "GIT_STASH_FAILED", error.message)
+                    return
+                }
+            }
+        }
+        for ((index, commit) in commits.withIndex()) {
+            store.addEvent(operation.id, "progress", objectMapper.writeValueAsString(mapOf("commit" to commit, "current" to index + 1, "total" to commits.size)))
+            val result = run(path, listOf("cherry-pick", commit), Duration.ofMinutes(2), cancellation)
+            when {
+                result.stopReason == "cancelled" -> { finish(operation, "cancelled"); return }
+                result.successful -> Unit
+                isCherryPickConflict(result) -> {
+                    val suffix = if (stashCreated) ". Локальные изменения сохранены во временном Git stash." else ""
+                    finish(operation, "failed", "GIT_CHERRY_PICK_CONFLICT", "Cherry-pick остановлен из-за конфликта$suffix")
+                    return
+                }
+                else -> {
+                    val error = classify(result)
+                    finish(operation, "failed", error.code, error.message)
+                    return
+                }
+            }
+        }
+        if (stashCreated) {
+            val result = run(path, listOf("stash", "pop", "--index", stashRef), Duration.ofMinutes(2), cancellation)
+            when {
+                result.stopReason == "cancelled" -> { finish(operation, "cancelled"); return }
+                result.successful -> Unit
+                else -> {
+                    finish(operation, "failed", "GIT_STASH_POP_CONFLICT", "Обновления применены, но локальные изменения не удалось вернуть без конфликта")
+                    return
+                }
+            }
+        }
+        finish(operation, "completed")
     }
 
     private fun inspect(path: Path): GitStatus {
@@ -225,6 +304,26 @@ internal class GitService(
         return name
     }
 
+    private fun sourceBranch(path: Path, value: String, status: GitStatus): String {
+        val name = branch(path, value)
+        if (name == status.branch || name !in (status.localBranches + status.remoteBranches)) fail("GIT_BRANCH_NOT_FOUND", "Ветка не найдена")
+        return name
+    }
+
+    private fun candidateCommits(path: Path, branch: String): List<GitBranchCommit> {
+        val raw = outputOrEmpty(path, "log", "--max-count=50", "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1e", "HEAD..$branch", "--")
+        return raw.split('\u001e').mapNotNull { record ->
+            val fields = record.trim().split('\u001f')
+            if (fields.size < 5 || fields[0].isBlank()) null
+            else GitBranchCommit(fields[0], fields[1], fields[2], fields[3], fields.drop(4).joinToString("\u001f"))
+        }
+    }
+
+    private fun isCherryPickConflict(result: ProcessResult): Boolean {
+        val error = result.stderr.lowercase(Locale.ROOT)
+        return "conflict" in error || "after resolving the conflicts" in error || "fix conflicts" in error
+    }
+
     private fun requireClean(path: Path) { if (inspect(path).changes.isNotEmpty()) fail("WORKTREE_DIRTY", "Git worktree содержит изменения") }
     private fun output(path: Path, vararg args: String): String = git(path, args.toList()).also { it.requireSuccess() }.stdout.trim()
     private fun outputOrEmpty(path: Path, vararg args: String) = runCatching { output(path, *args) }.getOrDefault("")
@@ -266,6 +365,7 @@ internal class GitService(
 
     private companion object {
         val CONVENTIONAL = Regex("^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\([a-z0-9][a-z0-9._/-]*\\))?!?: .{1,200}$")
+        val COMMIT_SHA = Regex("^[0-9a-fA-F]{7,40}$")
         val GIT_KINDS = setOf("store_git")
     }
 }

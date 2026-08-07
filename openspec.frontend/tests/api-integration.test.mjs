@@ -351,7 +351,7 @@ test("projects client и controller покрывают CRUD, lifecycle и под
   assert.match(switcher, /lastContextImport\.imported/);
 });
 
-test("низкоуровневый Git feature остаётся доступен как внутренняя диагностика, но скрыт из основного workspace", async () => {
+test("Git feature доступен из workspace и сохраняет безопасные операции Store", async () => {
   const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, diffParser] = await Promise.all([
     readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
@@ -399,9 +399,11 @@ test("низкоуровневый Git feature остаётся доступен
   assert.match(panel, /event\.key === "Escape"/);
   assert.match(panel, /gitRecoveryHint/);
   assert.doesNotMatch(panel, /Только просмотр · commit/);
-  assert.doesNotMatch(workspace, /useGitStatusController/);
-  assert.doesNotMatch(workspace, /<GitPanel/);
-  assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("git"\)/);
+  assert.match(workspace, /useGitStatusController\(projects\.activeProject\?\.id, !!projects\.activeProject\)/);
+  assert.match(workspace, /git=\{git\}/);
+  assert.match(workspace, /<GitPanel controller=\{git\}/);
+  assert.match(sidebar, /onWorkspaceModeChange\("git"\)/);
+  assert.match(sidebar, /> Git<\/button>/);
   assert.doesNotMatch(sidebar, /Git-панель пока недоступна/);
   assert.doesNotMatch(workspace, /WorkspaceFooter|Commit & Push/);
 
@@ -460,6 +462,15 @@ test("task context связывает workspace с задачей и публи�
   assert.match(selector, /<form className="task-context-open-form" onSubmit=\{submit\}>/);
   assert.match(selector, /type="submit"[\s\S]*Открыть задачу/);
   assert.match(selector, /disabled=\{!branch\.trim\(\) \|\| controller\.switching\}/);
+  assert.match(selector, /onMouseEnter=\{openPopover\}/);
+  assert.match(selector, /onMouseLeave=\{scheduleClose\}/);
+  assert.doesNotMatch(selector, /onFocus=\{openPopover\}|onBlur=\{scheduleClose\}/);
+  assert.match(selector, /git\.loadBranchCommits\(sourceBranch\)/);
+  assert.match(selector, /git\.cherryPick\(sourceBranch, commits\.map\(\(commit\) => commit\.sha\)\)/);
+  assert.match(selector, /Получить обновления/);
+  assert.match(selector, /вернуть локальные изменения поверх/);
+  assert.doesNotMatch(selector, /Сначала закоммитьте или отмените локальные изменения/);
+  assert.match(selector, /className="task-context-branch-menu"/);
   assert.match(selector, /active\?\.branch/);
   assert.match(selector, /className="task-branch-icon"[\s\S]*aria-hidden="true"/);
   assert.match(selector, /className="task-context-branch"/);
@@ -481,6 +492,10 @@ test("task context связывает workspace с задачей и публи�
   assert.match(css, /\.task-branch-icon \{[^}]*width:\s*14px[^}]*stroke:\s*#718079/s);
   assert.match(css, /\.task-context-branch \{[^}]*font:\s*650 13px var\(--font-ui\)/s);
   assert.match(css, /\.task-context-popover \{[^}]*width:\s*312px/s);
+  assert.match(css, /\.task-context-branch-option:hover:not\(:disabled\), \.task-context-branch-row:focus-within \.task-context-branch-option \{[^}]*background:\s*#f3f6f5/s);
+  assert.match(css, /\.task-context-branch-menu \{[^}]*top:\s*50%[^}]*right:\s*calc\(100% \+ 6px\)[^}]*transform:\s*translateY\(-50%\)/s);
+  assert.match(css, /\.task-context-branch-menu::after \{[^}]*right:\s*-7px[^}]*width:\s*7px/s);
+  assert.match(css, /\.task-context-branch-row:hover \.task-context-branch-menu, \.task-context-branch-row:focus-within \.task-context-branch-menu \{[^}]*display:\s*block/s);
   assert.doesNotMatch(css, /\.task-context-popover form button/);
   assert.match(dialog, /Опубликовать артефакты/);
   assert.match(dialog, /предложено агентом/);
@@ -511,7 +526,7 @@ test("task context связывает workspace с задачей и публи�
   assert.match(css, /\.task-context-actions \{[^}]*display:\s*grid[^}]*border-top:\s*1px solid var\(--soft-line\)/s);
   assert.match(css, /\.task-context-actions > button \{[^}]*min-height:\s*36px[^}]*display:\s*flex[^}]*background:\s*transparent/s);
   assert.match(documents, /loadedWorkspaceContext/);
-  assert.doesNotMatch(types, /"git"/);
+  assert.match(types, /"git"/);
   assert.doesNotMatch(workspace, /WorkspaceFooter|Локально · изменения разделены по задачам/);
   assert.doesNotMatch(markdownEditor, /Файл сохранён/);
 });

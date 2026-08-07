@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { LogoMark } from "@/components/ui/LogoMark";
 import { ProjectSwitcher } from "@/features/projects/components/ProjectSwitcher";
+import type { GitStatusController } from "@/features/git/hooks/useGitStatusController";
 import type { ProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { TaskContextSelector } from "@/features/task-context/components/TaskContextSelector";
 import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
@@ -12,11 +13,12 @@ interface WorkspaceHeaderProps {
   onAgentSettingsToggle: () => void;
   onPublish: () => void;
   onReceive: () => void;
+  git: GitStatusController;
   projects: ProjectsController;
   tasks: TaskContextController;
 }
 
-export function WorkspaceHeader({ agentSettingsOpen, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
   const activeProject = projects.activeProject;
   const provider = activeProject?.defaultAiProvider;
   const model = activeProject?.defaultModel;
@@ -41,6 +43,7 @@ export function WorkspaceHeader({ agentSettingsOpen, onAgentSettingsToggle, onPu
         <div className="task-context-publish-group">
           <TaskContextSelector
             controller={tasks}
+            git={git}
             onPublish={onPublish}
             onReceive={onReceive}
             projectSelected={!!activeProject}

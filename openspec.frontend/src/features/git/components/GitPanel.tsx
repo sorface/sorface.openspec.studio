@@ -209,6 +209,10 @@ export function gitRecoveryHint(code: string): string {
     GIT_REMOTE_NOT_FOUND: "Обновите status и выберите существующий remote.",
     GIT_OPERATION_CONFLICT: "Дождитесь завершения активной Git-операции или отмените её.",
     GIT_DETACHED_HEAD: "Переключитесь на локальную ветку перед Push.",
+    GIT_CHERRY_PICK_CONFLICT: "Разрешите Git conflict в рабочей копии, затем обновите status.",
+    GIT_STASH_FAILED: "Не удалось временно сохранить локальные изменения. Обновите status и проверьте рабочую копию.",
+    GIT_STASH_POP_CONFLICT: "Обновления применены, но локальные изменения вернулись с конфликтом. Разрешите conflict в рабочей копии.",
+    GIT_COMMIT_NOT_FOUND: "Обновите список commits и повторите выбор.",
   };
   return hints[code] ?? "Обновите Git status и повторите безопасную операцию.";
 }

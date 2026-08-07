@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "@/features/api/api-client";
 import {
-  cancelGitOperation, createGitBranch, createGitCommit, getGitOperation, getGitStatus,
-  stageGitPaths, startGitFetch, startGitPush, switchGitBranch, unstageGitPaths,
+  cancelGitOperation, createGitBranch, createGitCommit, getGitBranchCommits, getGitOperation, getGitStatus,
+  stageGitPaths, startGitCherryPick, startGitFetch, startGitPush, switchGitBranch, unstageGitPaths,
 } from "@/features/git/api/git-client";
 import { isGitOperationTerminal, type GitOperation } from "@/features/git/model/git-operation";
-import type { GitStatus } from "@/features/git/model/git-types";
+import type { GitBranchCommit, GitStatus } from "@/features/git/model/git-types";
 
 export interface GitStatusController {
   status: GitStatus | null;
@@ -24,6 +24,8 @@ export interface GitStatusController {
   trackRemoteBranch: (remoteBranch: string, localBranch: string) => Promise<boolean>;
   fetch: (remote: string) => Promise<boolean>;
   push: (remote?: string, targetBranch?: string) => Promise<boolean>;
+  loadBranchCommits: (branch: string, signal?: AbortSignal) => Promise<GitBranchCommit[]>;
+  cherryPick: (branch: string, commits: string[]) => Promise<boolean>;
   cancelOperation: () => Promise<void>;
 }
 
@@ -120,6 +122,9 @@ export function useGitStatusController(projectId?: string, enabled = false): Git
     fetch: (remote) => projectId ? startOperation(() => startGitFetch(projectId, remote)) : Promise.resolve(false),
     push: (remote, targetBranch) => projectId
       ? startOperation(() => startGitPush(projectId, remote, targetBranch)) : Promise.resolve(false),
+    loadBranchCommits: (branch, signal) => projectId ? getGitBranchCommits(projectId, branch, signal) : Promise.resolve([]),
+    cherryPick: (branch, commits) => projectId && status
+      ? startOperation(() => startGitCherryPick(projectId, branch, commits, status.head)) : Promise.resolve(false),
     cancelOperation: async () => {
       if (projectId && operation && !isGitOperationTerminal(operation.status)) {
         setOperation(await cancelGitOperation(projectId, operation.id));

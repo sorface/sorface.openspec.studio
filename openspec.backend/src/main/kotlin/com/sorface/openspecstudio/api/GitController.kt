@@ -2,6 +2,8 @@ package com.sorface.openspecstudio.api
 
 import com.sorface.openspecstudio.application.GitService
 import com.sorface.openspecstudio.config.correlationId
+import com.sorface.openspecstudio.domain.git.GitBranchCommit
+import com.sorface.openspecstudio.domain.git.GitCherryPickCommand
 import com.sorface.openspecstudio.domain.git.GitCommitCommand
 import com.sorface.openspecstudio.domain.git.GitCreateBranchCommand
 import com.sorface.openspecstudio.domain.git.GitFetchCommand
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
@@ -29,6 +32,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 @RequestMapping("/api/v1/projects/{projectId}/git")
 internal class GitController(private val service: GitService) {
     @GetMapping("/status") fun status(@PathVariable projectId: String): GitStatus = service.status(projectId)
+    @GetMapping("/branch-commits")
+    fun branchCommits(@PathVariable projectId: String, @RequestParam branch: String): List<GitBranchCommit> =
+        service.branchCommits(projectId, branch)
     @PostMapping("/stage") fun stage(@PathVariable projectId: String, @RequestBody input: GitPathsCommand) = service.stage(projectId, input)
     @PostMapping("/unstage") fun unstage(@PathVariable projectId: String, @RequestBody input: GitPathsCommand) = service.unstage(projectId, input)
     @PostMapping("/commits") @ResponseStatus(HttpStatus.CREATED)
@@ -42,6 +48,9 @@ internal class GitController(private val service: GitService) {
     @PostMapping("/pushes") @ResponseStatus(HttpStatus.ACCEPTED)
     fun push(@PathVariable projectId: String, @RequestBody input: GitPushCommand, request: HttpServletRequest): GitOperation =
         service.startPush(projectId, input, correlationId(request))
+    @PostMapping("/cherry-picks") @ResponseStatus(HttpStatus.ACCEPTED)
+    fun cherryPick(@PathVariable projectId: String, @RequestBody input: GitCherryPickCommand, request: HttpServletRequest): GitOperation =
+        service.startCherryPick(projectId, input, correlationId(request))
     @GetMapping("/operations/{operationId}")
     fun operation(@PathVariable projectId: String, @PathVariable operationId: String) = service.operation(projectId, operationId)
     @DeleteMapping("/operations/{operationId}")

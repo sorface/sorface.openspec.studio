@@ -1,0 +1,1293 @@
+diff --git a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/api/GitController.kt b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/api/GitController.kt
+index 27b2e8c..1ff97e8 100644
+--- a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/api/GitController.kt
++++ b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/api/GitController.kt
+@@ -2,6 +2,8 @@ package com.sorface.openspecstudio.api
+ 
+ import com.sorface.openspecstudio.application.GitService
+ import com.sorface.openspecstudio.config.correlationId
++import com.sorface.openspecstudio.domain.git.GitBranchCommit
++import com.sorface.openspecstudio.domain.git.GitCherryPickCommand
+ import com.sorface.openspecstudio.domain.git.GitCommitCommand
+ import com.sorface.openspecstudio.domain.git.GitCreateBranchCommand
+ import com.sorface.openspecstudio.domain.git.GitFetchCommand
+@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.PathVariable
+ import org.springframework.web.bind.annotation.PostMapping
+ import org.springframework.web.bind.annotation.RequestBody
+ import org.springframework.web.bind.annotation.RequestHeader
++import org.springframework.web.bind.annotation.RequestParam
+ import org.springframework.web.bind.annotation.RequestMapping
+ import org.springframework.web.bind.annotation.ResponseStatus
+ import org.springframework.web.bind.annotation.RestController
+@@ -29,6 +32,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
+ @RequestMapping("/api/v1/projects/{projectId}/git")
+ internal class GitController(private val service: GitService) {
+     @GetMapping("/status") fun status(@PathVariable projectId: String): GitStatus = service.status(projectId)
++    @GetMapping("/branch-commits")
++    fun branchCommits(@PathVariable projectId: String, @RequestParam branch: String): List<GitBranchCommit> =
++        service.branchCommits(projectId, branch)
+     @PostMapping("/stage") fun stage(@PathVariable projectId: String, @RequestBody input: GitPathsCommand) = service.stage(projectId, input)
+     @PostMapping("/unstage") fun unstage(@PathVariable projectId: String, @RequestBody input: GitPathsCommand) = service.unstage(projectId, input)
+     @PostMapping("/commits") @ResponseStatus(HttpStatus.CREATED)
+@@ -42,6 +48,9 @@ internal class GitController(private val service: GitService) {
+     @PostMapping("/pushes") @ResponseStatus(HttpStatus.ACCEPTED)
+     fun push(@PathVariable projectId: String, @RequestBody input: GitPushCommand, request: HttpServletRequest): GitOperation =
+         service.startPush(projectId, input, correlationId(request))
++    @PostMapping("/cherry-picks") @ResponseStatus(HttpStatus.ACCEPTED)
++    fun cherryPick(@PathVariable projectId: String, @RequestBody input: GitCherryPickCommand, request: HttpServletRequest): GitOperation =
++        service.startCherryPick(projectId, input, correlationId(request))
+     @GetMapping("/operations/{operationId}")
+     fun operation(@PathVariable projectId: String, @PathVariable operationId: String) = service.operation(projectId, operationId)
+     @DeleteMapping("/operations/{operationId}")
+diff --git a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/GitService.kt b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/GitService.kt
+index 4f187d1..1ec73a2 100644
+--- a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/GitService.kt
++++ b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/application/GitService.kt
+@@ -1,6 +1,8 @@
+ package com.sorface.openspecstudio.application
+ 
+ import com.sorface.openspecstudio.domain.git.GitChange
++import com.sorface.openspecstudio.domain.git.GitBranchCommit
++import com.sorface.openspecstudio.domain.git.GitCherryPickCommand
+ import com.sorface.openspecstudio.domain.git.GitCommitCommand
+ import com.sorface.openspecstudio.domain.git.GitCreateBranchCommand
+ import com.sorface.openspecstudio.domain.git.GitException
+@@ -35,6 +37,13 @@ internal class GitService(
+ 
+     fun status(projectId: String): GitStatus = inspect(storePath(projectId))
+ 
++    fun branchCommits(projectId: String, branch: String): List<GitBranchCommit> {
++        val path = storePath(projectId)
++        val status = inspect(path)
++        val source = sourceBranch(path, branch, status)
++        return candidateCommits(path, source)
++    }
++
+     fun stage(projectId: String, command: GitPathsCommand): GitStatus {
+         val path = storePath(projectId)
+         git(path, listOf("add", "-A", "--") + paths(path, command.paths)).requireSuccess()
+@@ -115,6 +124,27 @@ internal class GitService(
+         return start(projectId, "store_git", metadata, correlationId)
+     }
+ 
++    fun startCherryPick(projectId: String, command: GitCherryPickCommand, correlationId: String): GitOperation {
++        val path = storePath(projectId)
++        val status = inspect(path)
++        if (command.expectedHead.isBlank() || output(path, "rev-parse", "HEAD") != command.expectedHead.trim())
++            fail("GIT_HEAD_CHANGED", "HEAD изменился")
++        val selected = command.commits.map(String::trim).filter(String::isNotBlank).distinct()
++        if (selected.isEmpty()) fail("GIT_EMPTY_SELECTION", "Не выбраны commits")
++        val source = sourceBranch(path, command.branch, status)
++        if (selected.any { !COMMIT_SHA.matches(it) }) fail("GIT_COMMIT_NOT_FOUND", "Commit не найден")
++        val candidates = candidateCommits(path, source)
++        val candidateShas = candidates.map { it.sha }.toSet()
++        selected.forEach { if (it !in candidateShas) fail("GIT_COMMIT_NOT_FOUND", "Commit не найден") }
++        val ordered = candidates.asReversed().map { it.sha }.filter { it in selected }
++        return start(projectId, "store_git", mapOf(
++            "action" to "cherry-pick",
++            "branch" to source,
++            "commits" to ordered.joinToString(","),
++            "storePath" to path.toString(),
++        ), correlationId)
++    }
++
+     fun operation(projectId: String, operationId: String): GitOperation = store.getOperation(operationId)
+         ?.takeIf { it.projectId == projectId && it.kind in GIT_KINDS }
+         ?.let(::hydrate)
+@@ -146,12 +176,14 @@ internal class GitService(
+             val running = store.updateOperation(operation.copy(status = "running")) ?: return
+             store.addEvent(running.id, "running")
+             val path = Path.of(metadata.getValue("storePath"))
+-            val arguments = if (metadata.getValue("action") == "fetch") {
+-                listOf("fetch", "--prune", "--", metadata.getValue("remote"))
+-            } else if (metadata["remote"].isNullOrBlank()) {
+-                listOf("push")
+-            } else {
+-                listOf("push", "--set-upstream", "--", metadata.getValue("remote"), "HEAD:refs/heads/${metadata.getValue("targetBranch")}")
++            if (metadata.getValue("action") == "cherry-pick") {
++                executeCherryPick(running, metadata, path, scope.cancellation)
++                return
++            }
++            val arguments = when {
++                metadata.getValue("action") == "fetch" -> listOf("fetch", "--prune", "--", metadata.getValue("remote"))
++                metadata["remote"].isNullOrBlank() -> listOf("push")
++                else -> listOf("push", "--set-upstream", "--", metadata.getValue("remote"), "HEAD:refs/heads/${metadata.getValue("targetBranch")}")
+             }
+             val result = run(path, arguments, Duration.ofMinutes(5), scope.cancellation)
+             if (result.stopReason == "cancelled") finish(running, "cancelled")
+@@ -160,6 +192,53 @@ internal class GitService(
+         }
+     }
+ 
++    private fun executeCherryPick(operation: GitOperation, metadata: Map<String, String>, path: Path, cancellation: ProcessCancellation) {
++        val commits = metadata.getValue("commits").split(',').filter(String::isNotBlank)
++        val stashRef = "stash@{0}"
++        val stashCreated = if (inspect(path).changes.isEmpty()) false else {
++            val result = run(path, listOf("stash", "push", "--include-untracked", "--message", "openspec-studio:${operation.id}"), Duration.ofMinutes(2), cancellation)
++            when {
++                result.stopReason == "cancelled" -> { finish(operation, "cancelled"); return }
++                result.successful -> !"no local changes to save".equals(result.stdout.trim(), ignoreCase = true)
++                else -> {
++                    val error = classify(result)
++                    finish(operation, "failed", "GIT_STASH_FAILED", error.message)
++                    return
++                }
++            }
++        }
++        for ((index, commit) in commits.withIndex()) {
++            store.addEvent(operation.id, "progress", objectMapper.writeValueAsString(mapOf("commit" to commit, "current" to index + 1, "total" to commits.size)))
++            val result = run(path, listOf("cherry-pick", commit), Duration.ofMinutes(2), cancellation)
++            when {
++                result.stopReason == "cancelled" -> { finish(operation, "cancelled"); return }
++                result.successful -> Unit
++                isCherryPickConflict(result) -> {
++                    val suffix = if (stashCreated) ". Локальные изменения сохранены во временном Git stash." else ""
++                    finish(operation, "failed", "GIT_CHERRY_PICK_CONFLICT", "Cherry-pick остановлен из-за конфликта$suffix")
++                    return
++                }
++                else -> {
++                    val error = classify(result)
++                    finish(operation, "failed", error.code, error.message)
++                    return
++                }
++            }
++        }
++        if (stashCreated) {
++            val result = run(path, listOf("stash", "pop", "--index", stashRef), Duration.ofMinutes(2), cancellation)
++            when {
++                result.stopReason == "cancelled" -> { finish(operation, "cancelled"); return }
++                result.successful -> Unit
++                else -> {
++                    finish(operation, "failed", "GIT_STASH_POP_CONFLICT", "Обновления применены, но локальные изменения не удалось вернуть без конфликта")
++                    return
++                }
++            }
++        }
++        finish(operation, "completed")
++    }
++
+     private fun inspect(path: Path): GitStatus {
+         val head = output(path, "rev-parse", "HEAD")
+         val currentBranch = outputOrEmpty(path, "symbolic-ref", "--quiet", "--short", "HEAD")
+@@ -225,6 +304,26 @@ internal class GitService(
+         return name
+     }
+ 
++    private fun sourceBranch(path: Path, value: String, status: GitStatus): String {
++        val name = branch(path, value)
++        if (name == status.branch || name !in (status.localBranches + status.remoteBranches)) fail("GIT_BRANCH_NOT_FOUND", "Ветка не найдена")
++        return name
++    }
++
++    private fun candidateCommits(path: Path, branch: String): List<GitBranchCommit> {
++        val raw = outputOrEmpty(path, "log", "--max-count=50", "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1e", "HEAD..$branch", "--")
++        return raw.split('\u001e').mapNotNull { record ->
++            val fields = record.trim().split('\u001f')
++            if (fields.size < 5 || fields[0].isBlank()) null
++            else GitBranchCommit(fields[0], fields[1], fields[2], fields[3], fields.drop(4).joinToString("\u001f"))
++        }
++    }
++
++    private fun isCherryPickConflict(result: ProcessResult): Boolean {
++        val error = result.stderr.lowercase(Locale.ROOT)
++        return "conflict" in error || "after resolving the conflicts" in error || "fix conflicts" in error
++    }
++
+     private fun requireClean(path: Path) { if (inspect(path).changes.isNotEmpty()) fail("WORKTREE_DIRTY", "Git worktree содержит изменения") }
+     private fun output(path: Path, vararg args: String): String = git(path, args.toList()).also { it.requireSuccess() }.stdout.trim()
+     private fun outputOrEmpty(path: Path, vararg args: String) = runCatching { output(path, *args) }.getOrDefault("")
+@@ -266,6 +365,7 @@ internal class GitService(
+ 
+     private companion object {
+         val CONVENTIONAL = Regex("^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\([a-z0-9][a-z0-9._/-]*\\))?!?: .{1,200}$")
++        val COMMIT_SHA = Regex("^[0-9a-fA-F]{7,40}$")
+         val GIT_KINDS = setOf("store_git")
+     }
+ }
+diff --git a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/git/Git.kt b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/git/Git.kt
+index 8a99539..ce41685 100644
+--- a/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/git/Git.kt
++++ b/openspec.backend/src/main/kotlin/com/sorface/openspecstudio/domain/git/Git.kt
+@@ -19,12 +19,21 @@ data class GitStatus(
+     val diffTruncated: Boolean,
+ )
+ 
++data class GitBranchCommit(
++    val sha: String,
++    val shortSha: String,
++    val author: String,
++    val authoredAt: String,
++    val message: String,
++)
++
+ data class GitPathsCommand(val paths: List<String>)
+ data class GitCommitCommand(val paths: List<String>, val message: String, val expectedHead: String)
+ data class GitCreateBranchCommand(val name: String)
+ data class GitSwitchBranchCommand(val branch: String = "", val remoteBranch: String = "", val localBranch: String = "")
+ data class GitFetchCommand(val remote: String)
+ data class GitPushCommand(val remote: String = "", val targetBranch: String = "")
++data class GitCherryPickCommand(val branch: String, val commits: List<String>, val expectedHead: String)
+ typealias GitOperation = CloneOperation
+ 
+ /** Ошибка Git use case со стабильным кодом HTTP API. */
+diff --git a/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/api/GitApiIT.kt b/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/api/GitApiIT.kt
+index e970e1d..9cb3d44 100644
+--- a/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/api/GitApiIT.kt
++++ b/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/api/GitApiIT.kt
+@@ -87,6 +87,39 @@ class GitApiIT {
+         assertThat(json(traversal)["error"]["code"].asText()).isEqualTo("INVALID_STORE_PATH")
+     }
+ 
++    @Test
++    fun `показывает commits ветки и запускает cherry-pick operation`() {
++        val csrf = sessionToken()
++        git(STORE, "reset", "--hard")
++        git(STORE, "clean", "-fd")
++        git(STORE, "switch", "main")
++        val branch = "feature/pick-api-${System.nanoTime()}"
++        git(STORE, "switch", "-c", branch)
++        Files.writeString(STORE.resolve("PICK.md"), "picked\n")
++        git(STORE, "add", "PICK.md")
++        git(STORE, "commit", "-m", "docs: pick api")
++        val sourceCommit = gitOutput(STORE, "rev-parse", "HEAD")
++        git(STORE, "switch", "main")
++
++        val created = send("POST", "/api/v1/projects", """{"name":"Pick","storePath":"$STORE"}""", csrf)
++        val projectId = json(created)["id"].asText()
++        val status = json(send("GET", "/api/v1/projects/$projectId/git/status"))
++        val commits = json(send("GET", "/api/v1/projects/$projectId/git/branch-commits?branch=$branch"))
++        assertThat(commits).hasSize(1)
++        assertThat(commits[0]["sha"].asText()).isEqualTo(sourceCommit)
++        assertThat(commits[0]["message"].asText()).isEqualTo("docs: pick api")
++
++        val operation = send(
++            "POST", "/api/v1/projects/$projectId/git/cherry-picks",
++            objectMapper.writeValueAsString(mapOf("branch" to branch, "commits" to listOf(sourceCommit), "expectedHead" to status["head"].asText())),
++            csrf,
++        )
++        assertThat(operation.statusCode()).isEqualTo(202)
++        val completed = awaitTerminal(projectId, json(operation)["id"].asText())
++        assertThat(completed["status"].asText()).isEqualTo("completed")
++        assertThat(completed["gitAction"].asText()).isEqualTo("cherry-pick")
++    }
++
+     private fun awaitTerminal(projectId: String, operationId: String): JsonNode {
+         repeat(300) {
+             val result = json(send("GET", "/api/v1/projects/$projectId/git/operations/$operationId"))
+@@ -138,5 +171,12 @@ class GitApiIT {
+             val output = process.inputStream.bufferedReader().readText()
+             check(process.waitFor() == 0) { output }
+         }
++
++        private fun gitOutput(directory: Path, vararg arguments: String): String {
++            val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + arguments).redirectErrorStream(true).start()
++            val output = process.inputStream.bufferedReader().readText().trim()
++            check(process.waitFor() == 0) { output }
++            return output
++        }
+     }
+ }
+diff --git a/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/GitServiceIT.kt b/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/GitServiceIT.kt
+index 8101c88..8995ca1 100644
+--- a/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/GitServiceIT.kt
++++ b/openspec.backend/src/test/kotlin/com/sorface/openspecstudio/application/GitServiceIT.kt
+@@ -1,6 +1,7 @@
+ package com.sorface.openspecstudio.application
+ 
+ import com.sorface.openspecstudio.domain.git.GitCommitCommand
++import com.sorface.openspecstudio.domain.git.GitCherryPickCommand
+ import com.sorface.openspecstudio.domain.git.GitCreateBranchCommand
+ import com.sorface.openspecstudio.domain.git.GitException
+ import com.sorface.openspecstudio.domain.git.GitFetchCommand
+@@ -88,6 +89,62 @@ class GitServiceIT {
+         assertThat(gitOutput(root, "--git-dir", remote.toString(), "rev-parse", "refs/heads/main")).isEqualTo(service.status(PROJECT_ID).head)
+     }
+ 
++    @Test
++    @DisplayName("показывает commits другой ветки и подтягивает выбранные в текущую")
++    fun cherryPickBranchCommits() {
++        git(working, "switch", "-c", "feature/source")
++        Files.writeString(working.resolve("proposal.md"), "source change\n")
++        git(working, "add", "proposal.md")
++        git(working, "commit", "-m", "docs: source change")
++        val sourceCommit = gitOutput(working, "rev-parse", "HEAD")
++        git(working, "switch", "main")
++
++        val candidates = service.branchCommits(PROJECT_ID, "feature/source")
++        assertThat(candidates).singleElement().satisfies({
++            assertThat(it.sha).isEqualTo(sourceCommit)
++            assertThat(it.shortSha).isNotBlank()
++            assertThat(it.author).isEqualTo("Git Test")
++            assertThat(it.message).isEqualTo("docs: source change")
++        })
++
++        val baseHead = service.status(PROJECT_ID).head
++        assertThatThrownBy { service.startCherryPick(PROJECT_ID, GitCherryPickCommand("feature/source", emptyList(), baseHead), "empty") }
++            .isInstanceOf(GitException::class.java).extracting("code").isEqualTo("GIT_EMPTY_SELECTION")
++
++        val operation = service.startCherryPick(PROJECT_ID, GitCherryPickCommand("feature/source", listOf(sourceCommit), baseHead), "pick-correlation")
++        val completed = await(operation.id)
++        assertThat(completed.status).isEqualTo("completed")
++        assertThat(completed.gitAction).isEqualTo("cherry-pick")
++        assertThat(service.status(PROJECT_ID).head).isNotEqualTo(baseHead)
++        assertThat(Files.readString(working.resolve("proposal.md"))).isEqualTo("source change\n")
++    }
++
++    @Test
++    @DisplayName("подтягивает commits другой ветки под локальные изменения текущей")
++    fun cherryPickBranchCommitsWithDirtyWorktree() {
++        git(working, "switch", "-c", "feature/dirty-source")
++        Files.writeString(working.resolve("tasks.md"), "source task\n")
++        git(working, "add", "tasks.md")
++        git(working, "commit", "-m", "docs: source task")
++        val sourceCommit = gitOutput(working, "rev-parse", "HEAD")
++        git(working, "switch", "main")
++
++        Files.writeString(working.resolve("proposal.md"), "local staged\n")
++        git(working, "add", "proposal.md")
++        Files.writeString(working.resolve("local-note.md"), "local untracked\n")
++
++        val baseHead = service.status(PROJECT_ID).head
++        val operation = service.startCherryPick(PROJECT_ID, GitCherryPickCommand("feature/dirty-source", listOf(sourceCommit), baseHead), "dirty-pick")
++        val completed = await(operation.id)
++
++        assertThat(completed.status).isEqualTo("completed")
++        assertThat(Files.readString(working.resolve("tasks.md"))).isEqualTo("source task\n")
++        assertThat(Files.readString(working.resolve("proposal.md"))).isEqualTo("local staged\n")
++        assertThat(Files.readString(working.resolve("local-note.md"))).isEqualTo("local untracked\n")
++        assertThat(gitOutput(working, "stash", "list")).doesNotContain(operation.id)
++        assertThat(service.status(PROJECT_ID).changes.map { it.path }).contains("proposal.md", "local-note.md")
++    }
++
+     @Test
+     @DisplayName("отклоняет небезопасные пути, сообщения и dirty branch switch")
+     fun rejectsUnsafeInputs() {
+diff --git a/openspec.frontend/src/features/git/api/git-client.ts b/openspec.frontend/src/features/git/api/git-client.ts
+index b3fab75..cb816f0 100644
+--- a/openspec.frontend/src/features/git/api/git-client.ts
++++ b/openspec.frontend/src/features/git/api/git-client.ts
+@@ -1,5 +1,5 @@
+ import { apiRequest } from "@/features/api/api-client";
+-import type { GitStatus } from "@/features/git/model/git-types";
++import type { GitBranchCommit, GitStatus } from "@/features/git/model/git-types";
+ import type { GitOperation } from "@/features/git/model/git-operation";
+ 
+ function projectGitPath(projectId: string, suffix: string): string {
+@@ -10,6 +10,10 @@ export function getGitStatus(projectId: string, signal?: AbortSignal): Promise<G
+   return apiRequest<GitStatus>(projectGitPath(projectId, "status"), { signal });
+ }
+ 
++export function getGitBranchCommits(projectId: string, branch: string, signal?: AbortSignal): Promise<GitBranchCommit[]> {
++  return apiRequest<GitBranchCommit[]>(projectGitPath(projectId, `branch-commits?branch=${encodeURIComponent(branch)}`), { signal });
++}
++
+ export function stageGitPaths(projectId: string, paths: string[]): Promise<GitStatus> {
+   return apiRequest<GitStatus>(projectGitPath(projectId, "stage"), { method: "POST", body: { paths } });
+ }
+@@ -45,6 +49,12 @@ export function startGitPush(projectId: string, remote?: string, targetBranch?:
+   });
+ }
+ 
++export function startGitCherryPick(projectId: string, branch: string, commits: string[], expectedHead: string): Promise<GitOperation> {
++  return apiRequest<GitOperation>(projectGitPath(projectId, "cherry-picks"), {
++    method: "POST", body: { branch, commits, expectedHead },
++  });
++}
++
+ export function getGitOperation(projectId: string, operationId: string, signal?: AbortSignal): Promise<GitOperation> {
+   return apiRequest<GitOperation>(projectGitPath(projectId, `operations/${encodeURIComponent(operationId)}`), { signal });
+ }
+diff --git a/openspec.frontend/src/features/git/components/GitPanel.tsx b/openspec.frontend/src/features/git/components/GitPanel.tsx
+index 4078f52..333a448 100644
+--- a/openspec.frontend/src/features/git/components/GitPanel.tsx
++++ b/openspec.frontend/src/features/git/components/GitPanel.tsx
+@@ -209,6 +209,10 @@ export function gitRecoveryHint(code: string): string {
+     GIT_REMOTE_NOT_FOUND: "Обновите status и выберите существующий remote.",
+     GIT_OPERATION_CONFLICT: "Дождитесь завершения активной Git-операции или отмените её.",
+     GIT_DETACHED_HEAD: "Переключитесь на локальную ветку перед Push.",
++    GIT_CHERRY_PICK_CONFLICT: "Разрешите Git conflict в рабочей копии, затем обновите status.",
++    GIT_STASH_FAILED: "Не удалось временно сохранить локальные изменения. Обновите status и проверьте рабочую копию.",
++    GIT_STASH_POP_CONFLICT: "Обновления применены, но локальные изменения вернулись с конфликтом. Разрешите conflict в рабочей копии.",
++    GIT_COMMIT_NOT_FOUND: "Обновите список commits и повторите выбор.",
+   };
+   return hints[code] ?? "Обновите Git status и повторите безопасную операцию.";
+ }
+diff --git a/openspec.frontend/src/features/git/hooks/useGitStatusController.ts b/openspec.frontend/src/features/git/hooks/useGitStatusController.ts
+index 1c9adc0..4effe61 100644
+--- a/openspec.frontend/src/features/git/hooks/useGitStatusController.ts
++++ b/openspec.frontend/src/features/git/hooks/useGitStatusController.ts
+@@ -3,11 +3,11 @@
+ import { useCallback, useEffect, useState } from "react";
+ import { ApiError } from "@/features/api/api-client";
+ import {
+-  cancelGitOperation, createGitBranch, createGitCommit, getGitOperation, getGitStatus,
+-  stageGitPaths, startGitFetch, startGitPush, switchGitBranch, unstageGitPaths,
++  cancelGitOperation, createGitBranch, createGitCommit, getGitBranchCommits, getGitOperation, getGitStatus,
++  stageGitPaths, startGitCherryPick, startGitFetch, startGitPush, switchGitBranch, unstageGitPaths,
+ } from "@/features/git/api/git-client";
+ import { isGitOperationTerminal, type GitOperation } from "@/features/git/model/git-operation";
+-import type { GitStatus } from "@/features/git/model/git-types";
++import type { GitBranchCommit, GitStatus } from "@/features/git/model/git-types";
+ 
+ export interface GitStatusController {
+   status: GitStatus | null;
+@@ -24,6 +24,8 @@ export interface GitStatusController {
+   trackRemoteBranch: (remoteBranch: string, localBranch: string) => Promise<boolean>;
+   fetch: (remote: string) => Promise<boolean>;
+   push: (remote?: string, targetBranch?: string) => Promise<boolean>;
++  loadBranchCommits: (branch: string, signal?: AbortSignal) => Promise<GitBranchCommit[]>;
++  cherryPick: (branch: string, commits: string[]) => Promise<boolean>;
+   cancelOperation: () => Promise<void>;
+ }
+ 
+@@ -120,6 +122,9 @@ export function useGitStatusController(projectId?: string, enabled = false): Git
+     fetch: (remote) => projectId ? startOperation(() => startGitFetch(projectId, remote)) : Promise.resolve(false),
+     push: (remote, targetBranch) => projectId
+       ? startOperation(() => startGitPush(projectId, remote, targetBranch)) : Promise.resolve(false),
++    loadBranchCommits: (branch, signal) => projectId ? getGitBranchCommits(projectId, branch, signal) : Promise.resolve([]),
++    cherryPick: (branch, commits) => projectId && status
++      ? startOperation(() => startGitCherryPick(projectId, branch, commits, status.head)) : Promise.resolve(false),
+     cancelOperation: async () => {
+       if (projectId && operation && !isGitOperationTerminal(operation.status)) {
+         setOperation(await cancelGitOperation(projectId, operation.id));
+diff --git a/openspec.frontend/src/features/git/model/git-operation.ts b/openspec.frontend/src/features/git/model/git-operation.ts
+index 4758387..f3c4c03 100644
+--- a/openspec.frontend/src/features/git/model/git-operation.ts
++++ b/openspec.frontend/src/features/git/model/git-operation.ts
+@@ -14,7 +14,7 @@ export interface GitOperation {
+   errorCode?: string;
+   errorMessage?: string;
+   correlationId?: string;
+-  gitAction: "fetch" | "push";
++  gitAction: "fetch" | "push" | "cherry-pick";
+   gitRemote?: string;
+   gitBranch?: string;
+   createdAt: string;
+diff --git a/openspec.frontend/src/features/git/model/git-types.ts b/openspec.frontend/src/features/git/model/git-types.ts
+index 88a8268..0d40bd2 100644
+--- a/openspec.frontend/src/features/git/model/git-types.ts
++++ b/openspec.frontend/src/features/git/model/git-types.ts
+@@ -18,3 +18,11 @@ export interface GitStatus {
+   diff: string;
+   diffTruncated: boolean;
+ }
++
++export interface GitBranchCommit {
++  sha: string;
++  shortSha: string;
++  author: string;
++  authoredAt: string;
++  message: string;
++}
+diff --git a/openspec.frontend/src/features/task-context/components/TaskContextSelector.tsx b/openspec.frontend/src/features/task-context/components/TaskContextSelector.tsx
+index eec16d2..1411e43 100644
+--- a/openspec.frontend/src/features/task-context/components/TaskContextSelector.tsx
++++ b/openspec.frontend/src/features/task-context/components/TaskContextSelector.tsx
+@@ -1,24 +1,32 @@
+ "use client";
+ 
+-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
++import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
++import type { GitStatusController } from "@/features/git/hooks/useGitStatusController";
++import { isGitOperationTerminal } from "@/features/git/model/git-operation";
+ import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
+ 
+ interface TaskContextSelectorProps {
+   controller: TaskContextController;
++  git?: GitStatusController;
+   onPublish: () => void;
+   onReceive: () => void;
+   projectSelected: boolean;
+ }
+ 
+-export function TaskContextSelector({ controller, onPublish, onReceive, projectSelected }: TaskContextSelectorProps) {
++export function TaskContextSelector({ controller, git, onPublish, onReceive, projectSelected }: TaskContextSelectorProps) {
+   const [open, setOpen] = useState(false);
+   const [branch, setBranch] = useState("");
++  const [branchUpdateMessage, setBranchUpdateMessage] = useState("");
++  const [updatingBranch, setUpdatingBranch] = useState("");
+   const root = useRef<HTMLDivElement>(null);
++  const closeTimer = useRef<number | null>(null);
+   const active = controller.overview?.active;
+   const triggerLabel = active
+     ? `Задача: ${active.branch}${active.dirty ? ", есть локальные изменения" : ""}`
+     : "Задача: выбрать";
+   const actionDisabled = !active || controller.switching || controller.syncing || controller.preparing || controller.publishing;
++  const gitOperationActive = Boolean(git?.operation && !isGitOperationTerminal(git.operation.status));
++  const gitBusy = Boolean(git?.loading || git?.mutationPending || gitOperationActive || updatingBranch);
+   const { localChoices, remoteChoices } = useMemo(() => {
+     const existing = new Map(controller.overview?.items.map((item) => [item.branch, item]) ?? []);
+     const localNames = Array.from(new Set([
+@@ -50,6 +58,33 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
+     };
+   }, [open]);
+ 
++  useEffect(() => () => {
++    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
++  }, []);
++
++  const cancelClose = useCallback(() => {
++    if (closeTimer.current === null) return;
++    window.clearTimeout(closeTimer.current);
++    closeTimer.current = null;
++  }, []);
++
++  const openPopover = useCallback(() => {
++    if (!projectSelected) return;
++    cancelClose();
++    controller.clearError();
++    setOpen(true);
++  }, [cancelClose, controller, projectSelected]);
++
++  const scheduleClose = useCallback(() => {
++    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
++    closeTimer.current = window.setTimeout(() => {
++      if (!root.current?.matches(":hover") && !root.current?.contains(document.activeElement)) {
++        setOpen(false);
++      }
++      closeTimer.current = null;
++    }, 180);
++  }, []);
++
+   const submit = async (event: FormEvent) => {
+     event.preventDefault();
+     if (!branch.trim()) return;
+@@ -84,8 +119,42 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
+     }
+   };
+ 
++  const updateFromBranch = async (sourceBranch: string) => {
++    if (!git || sourceBranch === active?.branch || gitBusy) return;
++    setBranchUpdateMessage("");
++    setUpdatingBranch(sourceBranch);
++    try {
++      const commits = await git.loadBranchCommits(sourceBranch);
++      if (commits.length === 0) {
++        setBranchUpdateMessage("В выбранной ветке нет новых commits.");
++        return;
++      }
++      const ok = await git.cherryPick(sourceBranch, commits.map((commit) => commit.sha));
++      setBranchUpdateMessage(ok ? "Получение обновлений запущено." : "Не удалось запустить получение обновлений.");
++    } catch (cause) {
++      setBranchUpdateMessage(cause instanceof Error ? cause.message : "Не удалось получить обновления из ветки.");
++    } finally {
++      setUpdatingBranch("");
++    }
++  };
++
++  const branchUpdateDisabled = (name: string) => !git || name === active?.branch || gitBusy;
++  const branchUpdateTitle = (name: string) => {
++    if (!git) return "Git status ещё не загружен";
++    if (name === active?.branch) return "Это текущая ветка";
++    if (updatingBranch === name) return "Получаем обновления…";
++    if (gitBusy) return "Git-операция уже выполняется";
++    if (git.status?.changes.length) return `Получить обновления из ${name} и вернуть локальные изменения поверх`;
++    return `Получить обновления из ${name}`;
++  };
++
+   return (
+-    <div className="task-context" ref={root}>
++    <div
++      className="task-context"
++      ref={root}
++      onMouseEnter={openPopover}
++      onMouseLeave={scheduleClose}
++    >
+       <button
+         className={`task-context-trigger ${active?.dirty ? "dirty" : ""}`}
+         type="button"
+@@ -94,6 +163,7 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
+         aria-expanded={open}
+         aria-haspopup="dialog"
+         onClick={() => {
++          cancelClose();
+           controller.clearError();
+           setOpen((current) => !current);
+         }}
+@@ -116,7 +186,6 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
+             <div>
+               <input
+                 id="task-branch"
+-                autoFocus
+                 autoComplete="off"
+                 placeholder="Номер задачи или ветка"
+                 value={branch}
+@@ -133,6 +202,9 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
+               {controller.error.correlationId && <small>Код: {controller.error.correlationId}</small>}
+             </div>
+           )}
++          {branchUpdateMessage && (
++            <div className="task-context-update-state" role="status">{branchUpdateMessage}</div>
++          )}
+           <div className="task-context-actions" aria-label="Действия текущей ветки">
+             <button
+               type="button"
+@@ -163,30 +235,63 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
+             <div className="task-context-list">
+               {localChoices.length > 0 && <small>Локальные ветки</small>}
+               {localChoices.map(({ name, workspace }) => (
+-                <button
+-                  key={name}
+-                  type="button"
+-                  className={name === active?.branch ? "active" : ""}
+-                  onClick={() => void select(name)}
+-                  disabled={controller.switching}
+-                >
+-                  <span>{name}</span>
+-                  {workspace?.dirty && <i title="Есть неопубликованные изменения" />}
+-                  {name === active?.branch && (
+-                    <svg viewBox="0 0 16 16" aria-label="Текущая задача"><path d="m3.5 8 3 3 6-6" /></svg>
++                <div className="task-context-branch-row" key={name}>
++                  <button
++                    type="button"
++                    className={`task-context-branch-option ${name === active?.branch ? "active" : ""}`}
++                    onClick={() => void select(name)}
++                    disabled={controller.switching}
++                  >
++                    <span>{name}</span>
++                    {workspace?.dirty && <i title="Есть неопубликованные изменения" />}
++                    {name === active?.branch && (
++                      <svg viewBox="0 0 16 16" aria-label="Текущая задача"><path d="m3.5 8 3 3 6-6" /></svg>
++                    )}
++                  </button>
++                  {name !== active?.branch && (
++                    <div className="task-context-branch-menu" role="menu" aria-label={`Действия ветки ${name}`}>
++                      <button
++                        type="button"
++                        role="menuitem"
++                        disabled={branchUpdateDisabled(name)}
++                        title={branchUpdateTitle(name)}
++                        onClick={(event) => {
++                          event.stopPropagation();
++                          void updateFromBranch(name);
++                        }}
++                      >
++                        {updatingBranch === name ? "Получаем…" : "Получить обновления"}
++                      </button>
++                    </div>
+                   )}
+-                </button>
++                </div>
+               ))}
+               {remoteChoices.length > 0 && <small>Удалённые ветки</small>}
+               {remoteChoices.map((name) => (
+-                <button
+-                  key={name}
+-                  type="button"
+-                  onClick={() => void selectRemote(name)}
+-                  disabled={controller.switching}
+-                >
+-                  <span>{name}</span>
+-                </button>
++                <div className="task-context-branch-row" key={name}>
++                  <button
++                    type="button"
++                    className="task-context-branch-option"
++                    onClick={() => void selectRemote(name)}
++                    disabled={controller.switching}
++                  >
++                    <span>{name}</span>
++                  </button>
++                  <div className="task-context-branch-menu" role="menu" aria-label={`Действия ветки ${name}`}>
++                    <button
++                      type="button"
++                      role="menuitem"
++                      disabled={branchUpdateDisabled(name)}
++                      title={branchUpdateTitle(name)}
++                      onClick={(event) => {
++                        event.stopPropagation();
++                        void updateFromBranch(name);
++                      }}
++                    >
++                      {updatingBranch === name ? "Получаем…" : "Получить обновления"}
++                    </button>
++                  </div>
++                </div>
+               ))}
+             </div>
+           )}
+diff --git a/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx b/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
+index 26803a0..5523113 100644
+--- a/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
++++ b/openspec.frontend/src/features/workspace/components/OpenSpecWorkspace.tsx
+@@ -5,6 +5,8 @@ import { useDocumentsController } from "@/features/documents/hooks/useDocumentsC
+ import { useDocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
+ import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
+ import { proposalCommentsStorageKey } from "@/features/editor/model/fragment-comment";
++import { GitPanel } from "@/features/git/components/GitPanel";
++import { useGitStatusController } from "@/features/git/hooks/useGitStatusController";
+ import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
+ import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
+ import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
+@@ -115,6 +117,7 @@ export function OpenSpecWorkspace() {
+   ) ?? false);
+   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("documents");
+   const activeWorkspaceMode = projects.activeProject ? workspaceMode : "documents";
++  const git = useGitStatusController(projects.activeProject?.id, !!projects.activeProject);
+   const openSpec = useOpenSpecWorkflowController(
+     projects.activeProject?.id,
+     configuredProvider,
+@@ -298,6 +301,7 @@ export function OpenSpecWorkspace() {
+         onAgentSettingsToggle={() => setAgentSettingsOpen((open) => !open)}
+         onPublish={preparePublication}
+         onReceive={receiveRemoteChanges}
++        git={git}
+         projects={projects}
+         tasks={tasks}
+       />
+@@ -318,6 +322,8 @@ export function OpenSpecWorkspace() {
+ 
+         {activeWorkspaceMode === "context" ? (
+           <RepositoriesPanel controller={repositories} enabled={!!projects.activeProject} />
++        ) : activeWorkspaceMode === "git" ? (
++          <GitPanel controller={git} />
+         ) : openSpecCreationPageOpen ? (
+           <OpenSpecChangeCreationPage
+             controller={openSpec}
+diff --git a/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx b/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx
+index 64698fb..413029d 100644
+--- a/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx
++++ b/openspec.frontend/src/features/workspace/components/WorkspaceHeader.tsx
+@@ -3,6 +3,7 @@
+ import { useMemo } from "react";
+ import { LogoMark } from "@/components/ui/LogoMark";
+ import { ProjectSwitcher } from "@/features/projects/components/ProjectSwitcher";
++import type { GitStatusController } from "@/features/git/hooks/useGitStatusController";
+ import type { ProjectsController } from "@/features/projects/hooks/useProjectsController";
+ import { TaskContextSelector } from "@/features/task-context/components/TaskContextSelector";
+ import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
+@@ -12,11 +13,12 @@ interface WorkspaceHeaderProps {
+   onAgentSettingsToggle: () => void;
+   onPublish: () => void;
+   onReceive: () => void;
++  git: GitStatusController;
+   projects: ProjectsController;
+   tasks: TaskContextController;
+ }
+ 
+-export function WorkspaceHeader({ agentSettingsOpen, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
++export function WorkspaceHeader({ agentSettingsOpen, git, onAgentSettingsToggle, onPublish, onReceive, projects, tasks }: WorkspaceHeaderProps) {
+   const activeProject = projects.activeProject;
+   const provider = activeProject?.defaultAiProvider;
+   const model = activeProject?.defaultModel;
+@@ -41,6 +43,7 @@ export function WorkspaceHeader({ agentSettingsOpen, onAgentSettingsToggle, onPu
+         <div className="task-context-publish-group">
+           <TaskContextSelector
+             controller={tasks}
++            git={git}
+             onPublish={onPublish}
+             onReceive={onReceive}
+             projectSelected={!!activeProject}
+diff --git a/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx b/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
+index 3d0ae4a..f2c7b2e 100644
+--- a/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
++++ b/openspec.frontend/src/features/workspace/components/WorkspaceSidebar.tsx
+@@ -174,6 +174,13 @@ export function WorkspaceSidebar({
+         title={projectSelected ? "Подключённые Git-репозитории и контекст проекта" : "Сначала выберите проект"}
+         onClick={() => onWorkspaceModeChange("context")}
+       ><span>▱</span> Контекст <small>{repositories.repositories.length}</small></button>
++      <button
++        className={`nav-item ${projectSelected && workspaceMode === "git" ? "active" : ""}`}
++        type="button"
++        disabled={!projectSelected}
++        title={projectSelected ? "Git active Store и получение обновлений" : "Сначала выберите проект"}
++        onClick={() => onWorkspaceModeChange("git")}
++      ><span>⑂</span> Git</button>
+       {projectSelected && (
+         <>
+           <div className="sidebar-heading files-heading">
+diff --git a/openspec.frontend/src/features/workspace/model/workspace-types.ts b/openspec.frontend/src/features/workspace/model/workspace-types.ts
+index 8cc7158..99beb96 100644
+--- a/openspec.frontend/src/features/workspace/model/workspace-types.ts
++++ b/openspec.frontend/src/features/workspace/model/workspace-types.ts
+@@ -1,7 +1,7 @@
+ export type ViewMode = "edit" | "preview" | "split";
+ 
+ 
+-export type WorkspaceMode = "documents" | "context";
++export type WorkspaceMode = "documents" | "context" | "git";
+ 
+ export interface WorkspaceFile {
+   id: string;
+diff --git a/openspec.frontend/src/features/workspace/styles/workspace.css b/openspec.frontend/src/features/workspace/styles/workspace.css
+index 1e42ce5..af7f056 100644
+--- a/openspec.frontend/src/features/workspace/styles/workspace.css
++++ b/openspec.frontend/src/features/workspace/styles/workspace.css
+@@ -34,13 +34,14 @@ button { color: inherit; }
+   display: grid;
+   place-items: center;
+   overflow: hidden;
++  pointer-events: none;
+   background:
+     radial-gradient(circle at 50% 46%, rgba(36, 130, 94, .09), transparent 30%),
+     linear-gradient(145deg, #fbfdfc 0%, #f3f8f5 100%);
+   opacity: 1;
+   transition: opacity 320ms ease;
+ }
+-.project-loading-landing.exiting { pointer-events: none; opacity: 0; }
++.project-loading-landing.exiting { opacity: 0; }
+ .project-loading-brand { position: relative; display: flex; align-items: center; gap: 14px; color: #15241e; }
+ .project-loading-flight {
+   position: absolute;
+@@ -543,7 +544,7 @@ button { color: inherit; }
+ .repository-connect-dialog > header > button { min-width: 34px; min-height: 34px; padding: 0; font-size: 20px; font-weight: 400; }
+ .repository-connect-dialog > p { margin: 12px 0 18px; color: #6f7c76; font-size: 12px; line-height: 1.55; }
+ 
+-.git-panel { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; background: #fff; }
++.git-panel { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: auto auto 1fr auto; overflow: hidden; background: #fff; }
+ .git-panel-header { min-height: 84px; padding: 16px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+ .git-panel-header h2 { margin: 4px 0 2px; font-size: 18px; }
+ .git-panel-header code { color: #7d8884; font: 11px var(--font-code); }
+@@ -750,6 +751,59 @@ button { color: inherit; }
+ .rich-editor-shell .milkdown .ProseMirror blockquote { margin: 12px 0; padding-left: 24px; }
+ .rich-editor-shell .milkdown .ProseMirror blockquote > p { margin: 0; }
+ .rich-editor-shell .milkdown .ProseMirror code { border-radius: 4px; background: #eef3f1; color: #176249; font: 12px var(--font-code); }
++.rich-editor-shell .milkdown .milkdown-table-block,
++.markdown-preview .milkdown .milkdown-table-block {
++  --default-cell-min-width: 132px;
++  max-width: 100%;
++  margin: 18px 0;
++  padding: 0 0 4px;
++  overflow-x: auto;
++  scrollbar-gutter: stable;
++}
++.rich-editor-shell .milkdown .milkdown-table-block .table-wrapper,
++.markdown-preview .milkdown .milkdown-table-block .table-wrapper {
++  width: 100%;
++  overflow-x: auto;
++}
++.rich-editor-shell .milkdown .milkdown-table-block table,
++.markdown-preview .milkdown .milkdown-table-block table {
++  width: max-content;
++  min-width: 100%;
++  table-layout: auto;
++  border-collapse: collapse;
++}
++.rich-editor-shell .milkdown .milkdown-table-block th,
++.rich-editor-shell .milkdown .milkdown-table-block td,
++.markdown-preview .milkdown .milkdown-table-block th,
++.markdown-preview .milkdown .milkdown-table-block td {
++  min-width: 132px;
++  max-width: 360px;
++  padding: 10px 12px;
++  border-color: #dce5e1;
++  color: #2f3f38;
++  font-size: 13px;
++  line-height: 1.45;
++  overflow-wrap: break-word;
++  word-break: normal;
++  vertical-align: top;
++}
++.rich-editor-shell .milkdown .milkdown-table-block th,
++.markdown-preview .milkdown .milkdown-table-block th {
++  background: #f6faf8;
++  color: #1d2e27;
++  font-weight: 750;
++}
++.rich-editor-shell .milkdown .milkdown-table-block td > *,
++.rich-editor-shell .milkdown .milkdown-table-block th > *,
++.markdown-preview .milkdown .milkdown-table-block td > *,
++.markdown-preview .milkdown .milkdown-table-block th > * {
++  margin: 0;
++}
++.rich-editor-shell .milkdown .milkdown-table-block code,
++.markdown-preview .milkdown .milkdown-table-block code {
++  white-space: nowrap;
++  overflow-wrap: normal;
++}
+ .rich-editor-shell .milkdown .milkdown-code-block {
+   --crepe-color-surface: #f8faf9;
+   --crepe-color-surface-low: #eef3f1;
+@@ -1087,14 +1141,22 @@ button { color: inherit; }
+ .task-context-open-form button:disabled { border-color: #cbd6d1; background: #dfe7e3; color: #87958f; cursor: default; }
+ .task-context-error { margin: 6px 2px 0; padding: 8px 9px; display: grid; gap: 3px; border-radius: 7px; background: #fff1ef; color: #913f37; font-size: 10px; line-height: 1.4; }
+ .task-context-error small { opacity: .75; }
++.task-context-update-state { margin: 6px 2px 0; padding: 7px 9px; border-radius: 7px; background: #f4f7f5; color: #5f6f68; font-size: 10px; line-height: 1.35; }
+ .task-context-list { margin-top: 5px; padding: 5px 2px 0; display: grid; gap: 1px; border-top: 1px solid var(--soft-line); }
+ .task-context-list > small { padding: 4px 7px 3px; color: #8a958f; font-size: 9px; font-weight: 650; }
+-.task-context-list > button { width: 100%; min-height: 34px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 7px; background: transparent; color: #3d4d46; text-align: left; cursor: pointer; }
+-.task-context-list > button:hover:not(:disabled) { background: #f3f6f5; }
+-.task-context-list > button.active { background: #edf4f1; color: #155b40; }
+-.task-context-list > button span { min-width: 0; flex: 1; overflow: hidden; font: 600 11px var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
+-.task-context-list > button i { width: 6px; height: 6px; border-radius: 50%; background: #df932f; }
+-.task-context-list > button svg { width: 15px; height: 15px; fill: none; stroke: var(--green); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
++.task-context-branch-row { position: relative; min-width: 0; }
++.task-context-branch-option { width: 100%; min-height: 34px; padding: 0 8px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 7px; background: transparent; color: #3d4d46; text-align: left; cursor: pointer; }
++.task-context-branch-option:hover:not(:disabled), .task-context-branch-row:focus-within .task-context-branch-option { background: #f3f6f5; }
++.task-context-branch-option.active { background: #edf4f1; color: #155b40; }
++.task-context-branch-option span { min-width: 0; flex: 1; overflow: hidden; font: 600 11px var(--font-code); text-overflow: ellipsis; white-space: nowrap; }
++.task-context-branch-option i { width: 6px; height: 6px; border-radius: 50%; background: #df932f; }
++.task-context-branch-option svg { width: 15px; height: 15px; fill: none; stroke: var(--green); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
++.task-context-branch-menu { position: absolute; z-index: 48; top: 50%; right: calc(100% + 6px); display: none; min-width: 166px; padding: 5px; border: 1px solid #d8e3dd; border-radius: 9px; background: #fff; box-shadow: 0 12px 30px rgba(24, 47, 37, .16); transform: translateY(-50%); }
++.task-context-branch-menu::after { content: ""; position: absolute; top: 0; right: -7px; width: 7px; height: 100%; }
++.task-context-branch-row:hover .task-context-branch-menu, .task-context-branch-row:focus-within .task-context-branch-menu { display: block; }
++.task-context-branch-menu button { width: 100%; min-height: 31px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: #155b40; text-align: left; font-size: 10px; font-weight: 650; cursor: pointer; }
++.task-context-branch-menu button:hover:not(:disabled), .task-context-branch-menu button:focus-visible { background: #edf5f1; outline: none; }
++.task-context-branch-menu button:disabled { color: #94a09b; cursor: not-allowed; }
+ .task-context-actions { margin-top: 6px; padding: 6px 2px 0; display: grid; gap: 2px; border-top: 1px solid var(--soft-line); }
+ .task-context-actions > button { width: 100%; min-height: 36px; padding: 0 9px; display: flex; align-items: center; gap: 9px; border: 0; border-radius: 7px; background: transparent; color: #285442; text-align: left; cursor: pointer; }
+ .task-context-actions > button:hover:not(:disabled) { background: var(--green-soft); color: #0b6748; }
+diff --git a/openspec.frontend/tests/api-integration.test.mjs b/openspec.frontend/tests/api-integration.test.mjs
+index aff78c8..09fc44f 100644
+--- a/openspec.frontend/tests/api-integration.test.mjs
++++ b/openspec.frontend/tests/api-integration.test.mjs
+@@ -351,7 +351,7 @@ test("projects client и controller покрывают CRUD, lifecycle и под
+   assert.match(switcher, /lastContextImport\.imported/);
+ });
+ 
+-test("низкоуровневый Git feature остаётся доступен как внутренняя диагностика, но скрыт из основного workspace", async () => {
++test("Git feature доступен из workspace и сохраняет безопасные операции Store", async () => {
+   const [client, controller, panel, changesPanel, operationModel, workspace, sidebar, diffParser] = await Promise.all([
+     readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
+     readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
+@@ -399,9 +399,11 @@ test("низкоуровневый Git feature остаётся доступен
+   assert.match(panel, /event\.key === "Escape"/);
+   assert.match(panel, /gitRecoveryHint/);
+   assert.doesNotMatch(panel, /Только просмотр · commit/);
+-  assert.doesNotMatch(workspace, /useGitStatusController/);
+-  assert.doesNotMatch(workspace, /<GitPanel/);
+-  assert.doesNotMatch(sidebar, /onWorkspaceModeChange\("git"\)/);
++  assert.match(workspace, /useGitStatusController\(projects\.activeProject\?\.id, !!projects\.activeProject\)/);
++  assert.match(workspace, /git=\{git\}/);
++  assert.match(workspace, /<GitPanel controller=\{git\}/);
++  assert.match(sidebar, /onWorkspaceModeChange\("git"\)/);
++  assert.match(sidebar, /> Git<\/button>/);
+   assert.doesNotMatch(sidebar, /Git-панель пока недоступна/);
+   assert.doesNotMatch(workspace, /WorkspaceFooter|Commit & Push/);
+ 
+@@ -460,6 +462,15 @@ test("task context связывает workspace с задачей и публи
+   assert.match(selector, /<form className="task-context-open-form" onSubmit=\{submit\}>/);
+   assert.match(selector, /type="submit"[\s\S]*Открыть задачу/);
+   assert.match(selector, /disabled=\{!branch\.trim\(\) \|\| controller\.switching\}/);
++  assert.match(selector, /onMouseEnter=\{openPopover\}/);
++  assert.match(selector, /onMouseLeave=\{scheduleClose\}/);
++  assert.doesNotMatch(selector, /onFocus=\{openPopover\}|onBlur=\{scheduleClose\}/);
++  assert.match(selector, /git\.loadBranchCommits\(sourceBranch\)/);
++  assert.match(selector, /git\.cherryPick\(sourceBranch, commits\.map\(\(commit\) => commit\.sha\)\)/);
++  assert.match(selector, /Получить обновления/);
++  assert.match(selector, /вернуть локальные изменения поверх/);
++  assert.doesNotMatch(selector, /Сначала закоммитьте или отмените локальные изменения/);
++  assert.match(selector, /className="task-context-branch-menu"/);
+   assert.match(selector, /active\?\.branch/);
+   assert.match(selector, /className="task-branch-icon"[\s\S]*aria-hidden="true"/);
+   assert.match(selector, /className="task-context-branch"/);
+@@ -481,6 +492,10 @@ test("task context связывает workspace с задачей и публи
+   assert.match(css, /\.task-branch-icon \{[^}]*width:\s*14px[^}]*stroke:\s*#718079/s);
+   assert.match(css, /\.task-context-branch \{[^}]*font:\s*650 13px var\(--font-ui\)/s);
+   assert.match(css, /\.task-context-popover \{[^}]*width:\s*312px/s);
++  assert.match(css, /\.task-context-branch-option:hover:not\(:disabled\), \.task-context-branch-row:focus-within \.task-context-branch-option \{[^}]*background:\s*#f3f6f5/s);
++  assert.match(css, /\.task-context-branch-menu \{[^}]*top:\s*50%[^}]*right:\s*calc\(100% \+ 6px\)[^}]*transform:\s*translateY\(-50%\)/s);
++  assert.match(css, /\.task-context-branch-menu::after \{[^}]*right:\s*-7px[^}]*width:\s*7px/s);
++  assert.match(css, /\.task-context-branch-row:hover \.task-context-branch-menu, \.task-context-branch-row:focus-within \.task-context-branch-menu \{[^}]*display:\s*block/s);
+   assert.doesNotMatch(css, /\.task-context-popover form button/);
+   assert.match(dialog, /Опубликовать артефакты/);
+   assert.match(dialog, /предложено агентом/);
+@@ -511,7 +526,7 @@ test("task context связывает workspace с задачей и публи
+   assert.match(css, /\.task-context-actions \{[^}]*display:\s*grid[^}]*border-top:\s*1px solid var\(--soft-line\)/s);
+   assert.match(css, /\.task-context-actions > button \{[^}]*min-height:\s*36px[^}]*display:\s*flex[^}]*background:\s*transparent/s);
+   assert.match(documents, /loadedWorkspaceContext/);
+-  assert.doesNotMatch(types, /"git"/);
++  assert.match(types, /"git"/);
+   assert.doesNotMatch(workspace, /WorkspaceFooter|Локально · изменения разделены по задачам/);
+   assert.doesNotMatch(markdownEditor, /Файл сохранён/);
+ });
+diff --git a/openspec.frontend/tests/rendered-html.test.mjs b/openspec.frontend/tests/rendered-html.test.mjs
+index 40f8bac..1a25897 100644
+--- a/openspec.frontend/tests/rendered-html.test.mjs
++++ b/openspec.frontend/tests/rendered-html.test.mjs
+@@ -177,6 +177,40 @@ test("Git-аннотации и история выбранного файла 
+   assert.match(css, /\.file-annotation-row > code \{[^}]*font:\s*11px\/17px var\(--font-code\)/s);
+ });
+ 
++test("Task selector получает обновления из другой ветки в текущую задачу", async () => {
++  const [selector, panel, client, controller, types, operation, css] = await Promise.all([
++    readFile(new URL("../src/features/task-context/components/TaskContextSelector.tsx", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/git/components/GitPanel.tsx", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/git/api/git-client.ts", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/git/hooks/useGitStatusController.ts", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/git/model/git-types.ts", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/git/model/git-operation.ts", import.meta.url), "utf8"),
++    readFile(new URL("../src/features/workspace/styles/workspace.css", import.meta.url), "utf8"),
++  ]);
++
++  assert.match(types, /export interface GitBranchCommit/);
++  assert.match(types, /shortSha: string/);
++  assert.match(operation, /"cherry-pick"/);
++  assert.match(client, /getGitBranchCommits/);
++  assert.match(client, /branch-commits\?branch=\$\{encodeURIComponent\(branch\)\}/);
++  assert.match(client, /startGitCherryPick/);
++  assert.match(client, /"cherry-picks"/);
++  assert.match(controller, /loadBranchCommits:/);
++  assert.match(controller, /cherryPick:/);
++  assert.match(selector, /className="task-context-branch-menu"/);
++  assert.match(selector, /Получить обновления/);
++  assert.match(selector, /git\.loadBranchCommits\(sourceBranch\)/);
++  assert.match(selector, /git\.cherryPick\(sourceBranch, commits\.map\(\(commit\) => commit\.sha\)\)/);
++  assert.match(selector, /В выбранной ветке нет новых commits/);
++  assert.match(selector, /вернуть локальные изменения поверх/);
++  assert.doesNotMatch(selector, /Сначала закоммитьте или отмените локальные изменения/);
++  assert.doesNotMatch(panel, /TASK COMMITS|Получить обновления/);
++  assert.match(panel, /GIT_CHERRY_PICK_CONFLICT/);
++  assert.match(panel, /GIT_STASH_POP_CONFLICT/);
++  assert.match(css, /\.task-context-branch-menu/);
++  assert.doesNotMatch(css, /\.git-cherry-pick-panel|\.git-pick-list/);
++});
++
+ test("Preview использует read-only Milkdown вместо сырого Markdown pre", async () => {
+   const [editor, preview] = await Promise.all([
+     readFile(new URL("../src/features/workspace/components/MarkdownEditor.tsx", import.meta.url), "utf8"),
+diff --git a/openspec/changes/pull-commits-from-branches/.openspec.yaml b/openspec/changes/pull-commits-from-branches/.openspec.yaml
+new file mode 100644
+index 0000000..878dc31
+--- /dev/null
++++ b/openspec/changes/pull-commits-from-branches/.openspec.yaml
+@@ -0,0 +1,2 @@
++schema: spec-driven
++created: 2026-08-07
+diff --git a/openspec/changes/pull-commits-from-branches/design.md b/openspec/changes/pull-commits-from-branches/design.md
+new file mode 100644
+index 0000000..a206a43
+--- /dev/null
++++ b/openspec/changes/pull-commits-from-branches/design.md
+@@ -0,0 +1,85 @@
++## Context
++
++См. `proposal.md` для мотивации. Фактическая кодовая база использует Kotlin/Spring backend и React/Vite frontend. Git Store операции уже сосредоточены в `GitService`, публикуются через `/api/v1/projects/{projectId}/git/*`, а длительные fetch/push представлены как `GitOperation` поверх общего хранилища operations и `ProcessSupervisor`.
++
++Текущий `GitStatus` уже возвращает локальные ветки, remote-tracking ветки, текущий HEAD и dirty state. UI Git-панели использует `useGitStatusController`, polling operation и общий error state.
++
++## Goals / Non-Goals
++
++**Goals:**
++
++- Добавить read-only endpoint для candidate commits из другой ветки относительно текущей.
++- Добавить async operation для применения выбранных commits через `cherry-pick`.
++- Переиспользовать существующие ограничения активного Store path, cancellation, operation conflict и Git error envelope.
++- Дать UI компактный workflow внутри существующей Git-панели без новой навигационной области.
++
++**Non-Goals:**
++
++- Не добавлять merge/rebase branch workflow.
++- Не добавлять автоматическое разрешение конфликтов.
++- Не выполнять операции над context repositories.
++- Не менять модель хранения projects/repositories.
++
++## Decisions
++
++### Candidate commits считаются backend-ом
++
++Endpoint:
++
++- `GET /api/v1/projects/{projectId}/git/branch-commits?branch=<ref>`
++
++Backend валидирует `branch` как существующий local или remote-tracking ref из `GitStatus`, затем выполняет ограниченный `git log --format=... --max-count=50 HEAD..<branch>`. Ответ возвращает typed records: `sha`, `shortSha`, `author`, `authoredAt`, `message`.
++
++Причина: UI не должен формировать Git range и не должен знать CLI-правила quoting/refs. Альтернатива с локальной фильтрацией из истории файла не подходит, потому что нужны commits всей ветки, а не одного документа.
++
++### Применение commits выполняется async operation
++
++Endpoint:
++
++- `POST /api/v1/projects/{projectId}/git/cherry-picks`
++- Body: `{ "branch": "...", "commits": ["<sha>", ...], "expectedHead": "..." }`
++
++`expectedHead` защищает от применения устаревшего выбора после внешнего изменения текущей ветки. Перед созданием operation backend проверяет:
++
++- active Store валиден через существующий `storePath(projectId)`;
++- worktree clean;
++- исходная ветка существует;
++- commits непустые, имеют hex-like форму, входят в candidate set для выбранной ветки;
++- текущий `HEAD` совпадает с `expectedHead`.
++
++Operation metadata хранит action `cherry-pick`, branch, commits и storePath. Выполнение применяет commits в обратном порядке candidate list: от старых к новым, одним `git cherry-pick -- <sha>` на commit, чтобы корректно остановиться на конфликте.
++
++Альтернатива с одним `git cherry-pick sha1 sha2 ...` проще, но хуже для событий прогресса и явной классификации конфликтного commit.
++
++### Ошибки классифицируются в GitService
++
++Новые стабильные коды:
++
++- `GIT_CHERRY_PICK_CONFLICT` для conflict/merge state.
++- `GIT_COMMIT_NOT_FOUND` для SHA, которого нет в candidate set.
++- `GIT_HEAD_CHANGED` уже существует для stale выбора.
++
++При конфликте backend не вызывает `cherry-pick --abort`: пользователь должен видеть реальное Git conflict state и решать его вручную. После failed operation polling status покажет изменённые файлы.
++
++### UI живёт внутри GitPanel
++
++`GitPanel` добавляет секцию "Подтянуть commits" рядом с branch controls:
++
++- select с `status.localBranches` и `status.remoteBranches`, исключая текущую ветку;
++- загрузка commits при выборе branch;
++- checkbox list commits с коротким SHA, сообщением, автором и датой;
++- кнопка запуска активна только при clean status и непустом выборе;
++- operation polling уже обновляет status после terminal результата.
++
++Компонент не создаёт отдельный modal, потому что действие связано с текущим Git state и должно быть видно вместе с dirty/ahead/behind indicators.
++
++## Risks / Trade-offs
++
++- Конфликт оставляет worktree в промежуточном состоянии → UI показывает failed operation и обновляет status, чтобы пользователь видел конфликтующие файлы.
++- Long-lived branch может иметь много commits → backend ограничивает список первыми 50 и UI показывает только этот bounded набор.
++- Remote branch может устареть без fetch → пользователь использует существующий Fetch; новый workflow не запускает fetch автоматически.
++- Выбранные commits могут устареть между загрузкой и запуском → `expectedHead` и membership check предотвращают скрытое применение к другой базе.
++
++## Migration Plan
++
++Миграция данных не требуется. Изменение добавляет новые API endpoints и frontend controls; rollback сводится к удалению этих endpoints и UI-секции без изменения существующих Git status/commit/push контрактов.
+diff --git a/openspec/changes/pull-commits-from-branches/proposal.md b/openspec/changes/pull-commits-from-branches/proposal.md
+new file mode 100644
+index 0000000..d540af2
+--- /dev/null
++++ b/openspec/changes/pull-commits-from-branches/proposal.md
+@@ -0,0 +1,52 @@
++## Why
++
++Аналитику и разработчику нужно переносить уже готовые изменения из другой ветки в текущую задачу без ручного выхода в терминал. Сейчас Git-панель умеет commit/push/fetch/switch, но не даёт безопасно применить отдельные commits к активному task worktree.
++
++## Цель
++
++Добавить управляемый сценарий подтягивания commits из другой ветки в текущую задачу с предварительным выбором источника и явной обработкой конфликтов.
++
++## Scope
++
++- UI показывает действие импорта commits в активную задачу из Git-панели или контекста задачи.
++- Пользователь выбирает исходную ветку и один или несколько commits, отсутствующих в текущей ветке.
++- Backend выполняет безопасный `git cherry-pick` выбранных commits только в активном Store worktree.
++- Длительная операция отображается через существующую модель Git operations с прогрессом, результатом и ошибками.
++- При конфликте система останавливает операцию, сообщает понятное состояние и оставляет разрешение конфликта пользователю.
++
++## Вне scope
++
++- Автоматическое разрешение merge conflicts.
++- Merge/rebase целых веток вместо выборочного применения commits.
++- Изменения в подключённых read-only кодовых репозиториях.
++- Force push, автоматический push после подтягивания commits или изменение remote configuration.
++
++## What Changes
++
++- Добавляется API для списка candidate commits из выбранной ветки относительно текущей.
++- Добавляется API для запуска операции применения выбранных commits в активный task worktree.
++- Git-панель получает компактный workflow: выбрать ветку, увидеть commits, применить выбранные.
++- Ошибки dirty worktree, неизвестной ветки, пустого выбора и конфликтов получают стабильные коды и безопасные сообщения.
++
++## Capabilities
++
++### New Capabilities
++
++- _Нет._
++
++### Modified Capabilities
++
++- `git-delivery`: добавляется безопасное подтягивание выбранных commits из другой ветки в текущую задачу активного Store.
++- `workspace-experience`: добавляется пользовательский workflow выбора ветки и commits в Git/task UI.
++
++## Impact
++
++- Backend: доменная модель Git, `GitController`, `GitService`, async Git operations и integration tests.
++- Frontend: Git API client, controller hook, Git panel components, типы операций и UI states.
++- Specs: delta для `git-delivery` и `workspace-experience`.
++
++## Риски
++
++- `cherry-pick` может оставить repository в конфликтном состоянии; API должен явно обнаруживать это и не маскировать как общий сбой.
++- Применение commits в dirty worktree повышает риск смешивания изменений, поэтому операция должна требовать чистый worktree до запуска.
++- Список commits должен быть ограничен и отсортирован предсказуемо, чтобы UI не перегружался на длинных ветках.
+diff --git a/openspec/changes/pull-commits-from-branches/specs/git-delivery/spec.md b/openspec/changes/pull-commits-from-branches/specs/git-delivery/spec.md
+new file mode 100644
+index 0000000..ad8e707
+--- /dev/null
++++ b/openspec/changes/pull-commits-from-branches/specs/git-delivery/spec.md
+@@ -0,0 +1,39 @@
++## ADDED Requirements
++
++### Requirement: Подтягивание commits из другой ветки
++Система SHALL позволять применить явно выбранные commits из доступной локальной или remote-tracking ветки к текущей ветке активного Store worktree.
++
++#### Scenario: Список commits для подтягивания
++- **WHEN** пользователь выбирает исходную ветку, отличную от текущей
++- **THEN** система возвращает ограниченный список commits, которые есть в исходной ветке и отсутствуют в текущей ветке, от новых к старым с hash, датой, автором и сообщением
++
++#### Scenario: Успешное применение commits
++- **WHEN** пользователь выбирает один или несколько commits из списка и запускает подтягивание
++- **THEN** система применяет commits к текущей ветке в порядке от старых к новым и возвращает завершённую Git operation
++
++#### Scenario: Пустой выбор commits
++- **WHEN** пользователь запускает подтягивание без выбранных commits
++- **THEN** система отклоняет запрос с `GIT_EMPTY_SELECTION`, а HEAD и working tree не изменяются
++
++#### Scenario: Недоступная исходная ветка
++- **WHEN** выбранная исходная ветка отсутствует среди локальных и remote-tracking refs активного Store
++- **THEN** система отклоняет запрос с `GIT_BRANCH_NOT_FOUND` до запуска изменяющей Git operation
++
++#### Scenario: Dirty worktree
++- **WHEN** активный Store содержит staged или unstaged изменения
++- **THEN** система отклоняет подтягивание с `WORKTREE_DIRTY`, а HEAD, index и working tree не изменяются
++
++#### Scenario: Конфликт cherry-pick
++- **WHEN** применение выбранного commit приводит к конфликту
++- **THEN** система останавливает operation со статусом `failed`, возвращает `GIT_CHERRY_PICK_CONFLICT` и оставляет репозиторий в состоянии Git conflict для ручного разрешения пользователем
++
++### Requirement: Ограничение подтягивания commits
++Система MUST выполнять подтягивание commits только для активного Store проекта и MUST NOT выполнять эту операцию для подключённых read-only кодовых репозиториев.
++
++#### Scenario: Активный Store
++- **WHEN** запрос подтягивания commits относится к Git API активного Store проекта
++- **THEN** система валидирует Store path через существующие ограничения локального проекта и запускает операцию только в этом worktree
++
++#### Scenario: Кодовый репозиторий
++- **WHEN** пользователь работает с подключённым кодовым репозиторием контекста
++- **THEN** UI не предоставляет действие подтягивания commits, а backend Git API не принимает path или repository id для обхода активного Store
+diff --git a/openspec/changes/pull-commits-from-branches/specs/workspace-experience/spec.md b/openspec/changes/pull-commits-from-branches/specs/workspace-experience/spec.md
+new file mode 100644
+index 0000000..3e791f7
+--- /dev/null
++++ b/openspec/changes/pull-commits-from-branches/specs/workspace-experience/spec.md
+@@ -0,0 +1,24 @@
++## ADDED Requirements
++
++### Requirement: UI подтягивания commits в текущую задачу
++Workspace SHALL предоставлять в Git/task интерфейсе сценарий выбора исходной ветки и commits для подтягивания в текущую задачу.
++
++#### Scenario: Открытие сценария
++- **WHEN** выбран проект с активным Store worktree и доступной Git-панелью
++- **THEN** UI показывает действие подтягивания commits и список доступных локальных и remote веток кроме текущей
++
++#### Scenario: Выбор исходной ветки
++- **WHEN** пользователь выбирает исходную ветку
++- **THEN** UI загружает candidate commits из backend и показывает hash, автора, дату и сообщение каждого commit
++
++#### Scenario: Применение выбранных commits
++- **WHEN** пользователь выбирает commits и подтверждает действие
++- **THEN** UI запускает Git operation, показывает состояние выполнения и обновляет Git status после terminal результата
++
++#### Scenario: Нет candidate commits
++- **WHEN** backend возвращает пустой список commits для выбранной ветки
++- **THEN** UI показывает empty state без кнопки запуска изменяющей операции
++
++#### Scenario: Ошибка подтягивания
++- **WHEN** backend возвращает ошибку валидации или failed operation для подтягивания commits
++- **THEN** UI показывает безопасное сообщение, correlation ID при наличии и доступное действие обновления Git status
+diff --git a/openspec/changes/pull-commits-from-branches/tasks.md b/openspec/changes/pull-commits-from-branches/tasks.md
+new file mode 100644
+index 0000000..71d047f
+--- /dev/null
++++ b/openspec/changes/pull-commits-from-branches/tasks.md
+@@ -0,0 +1,17 @@
++## 1. Backend API
++
++- [x] 1.1 Extend Git domain types with branch commit records and cherry-pick command input.
++- [x] 1.2 Add `GET /git/branch-commits` endpoint with branch validation, bounded commit listing and integration tests.
++- [x] 1.3 Add `POST /git/cherry-picks` endpoint that validates clean worktree, expected HEAD, branch and selected commits.
++- [x] 1.4 Execute cherry-pick as an async Git operation with cancellation, progress events and conflict/error classification.
++
++## 2. Frontend Workflow
++
++- [x] 2.1 Extend Git API client, types and controller with branch commit loading and cherry-pick operation start.
++- [x] 2.2 Add a compact "Подтянуть commits" section to GitPanel with branch select, commit checklist, empty/loading/error states and disabled unsafe actions.
++- [x] 2.3 Update operation display copy so cherry-pick progress and failed conflict state are understandable.
++
++## 3. Verification
++
++- [x] 3.1 Add focused frontend tests for branch commit selection and operation trigger behavior.
++- [x] 3.2 Run `npm --prefix openspec.frontend run check` and fix regressions.

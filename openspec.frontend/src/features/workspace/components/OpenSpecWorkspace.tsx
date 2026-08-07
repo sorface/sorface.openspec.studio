@@ -5,6 +5,8 @@ import { useDocumentsController } from "@/features/documents/hooks/useDocumentsC
 import { useDocumentHistoryController } from "@/features/documents/hooks/useDocumentHistoryController";
 import type { EditorFragmentComment, EditorTextSelection } from "@/features/editor/model/fragment-comment";
 import { proposalCommentsStorageKey } from "@/features/editor/model/fragment-comment";
+import { GitPanel } from "@/features/git/components/GitPanel";
+import { useGitStatusController } from "@/features/git/hooks/useGitStatusController";
 import { useProjectsController } from "@/features/projects/hooks/useProjectsController";
 import { useRepositoriesController } from "@/features/repositories/hooks/useRepositoriesController";
 import { useOpenSpecWorkflowController } from "@/features/openspec-workflow/hooks/useOpenSpecWorkflowController";
@@ -115,6 +117,7 @@ export function OpenSpecWorkspace() {
   ) ?? false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("documents");
   const activeWorkspaceMode = projects.activeProject ? workspaceMode : "documents";
+  const git = useGitStatusController(projects.activeProject?.id, !!projects.activeProject);
   const openSpec = useOpenSpecWorkflowController(
     projects.activeProject?.id,
     configuredProvider,
@@ -298,6 +301,7 @@ export function OpenSpecWorkspace() {
         onAgentSettingsToggle={() => setAgentSettingsOpen((open) => !open)}
         onPublish={preparePublication}
         onReceive={receiveRemoteChanges}
+        git={git}
         projects={projects}
         tasks={tasks}
       />
@@ -318,6 +322,8 @@ export function OpenSpecWorkspace() {
 
         {activeWorkspaceMode === "context" ? (
           <RepositoriesPanel controller={repositories} enabled={!!projects.activeProject} />
+        ) : activeWorkspaceMode === "git" ? (
+          <GitPanel controller={git} />
         ) : openSpecCreationPageOpen ? (
           <OpenSpecChangeCreationPage
             controller={openSpec}

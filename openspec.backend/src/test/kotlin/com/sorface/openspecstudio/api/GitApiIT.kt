@@ -87,6 +87,39 @@ class GitApiIT {
         assertThat(json(traversal)["error"]["code"].asText()).isEqualTo("INVALID_STORE_PATH")
     }
 
+    @Test
+    fun `показывает commits ветки и запускает cherry-pick operation`() {
+        val csrf = sessionToken()
+        git(STORE, "reset", "--hard")
+        git(STORE, "clean", "-fd")
+        git(STORE, "switch", "main")
+        val branch = "feature/pick-api-${System.nanoTime()}"
+        git(STORE, "switch", "-c", branch)
+        Files.writeString(STORE.resolve("PICK.md"), "picked\n")
+        git(STORE, "add", "PICK.md")
+        git(STORE, "commit", "-m", "docs: pick api")
+        val sourceCommit = gitOutput(STORE, "rev-parse", "HEAD")
+        git(STORE, "switch", "main")
+
+        val created = send("POST", "/api/v1/projects", """{"name":"Pick","storePath":"$STORE"}""", csrf)
+        val projectId = json(created)["id"].asText()
+        val status = json(send("GET", "/api/v1/projects/$projectId/git/status"))
+        val commits = json(send("GET", "/api/v1/projects/$projectId/git/branch-commits?branch=$branch"))
+        assertThat(commits).hasSize(1)
+        assertThat(commits[0]["sha"].asText()).isEqualTo(sourceCommit)
+        assertThat(commits[0]["message"].asText()).isEqualTo("docs: pick api")
+
+        val operation = send(
+            "POST", "/api/v1/projects/$projectId/git/cherry-picks",
+            objectMapper.writeValueAsString(mapOf("branch" to branch, "commits" to listOf(sourceCommit), "expectedHead" to status["head"].asText())),
+            csrf,
+        )
+        assertThat(operation.statusCode()).isEqualTo(202)
+        val completed = awaitTerminal(projectId, json(operation)["id"].asText())
+        assertThat(completed["status"].asText()).isEqualTo("completed")
+        assertThat(completed["gitAction"].asText()).isEqualTo("cherry-pick")
+    }
+
     private fun awaitTerminal(projectId: String, operationId: String): JsonNode {
         repeat(300) {
             val result = json(send("GET", "/api/v1/projects/$projectId/git/operations/$operationId"))
@@ -137,6 +170,13 @@ class GitApiIT {
             val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + arguments).redirectErrorStream(true).start()
             val output = process.inputStream.bufferedReader().readText()
             check(process.waitFor() == 0) { output }
+        }
+
+        private fun gitOutput(directory: Path, vararg arguments: String): String {
+            val process = ProcessBuilder(listOf("git", "-C", directory.toString()) + arguments).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText().trim()
+            check(process.waitFor() == 0) { output }
+            return output
         }
     }
 }

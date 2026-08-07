@@ -1,24 +1,32 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { GitStatusController } from "@/features/git/hooks/useGitStatusController";
+import { isGitOperationTerminal } from "@/features/git/model/git-operation";
 import type { TaskContextController } from "@/features/task-context/hooks/useTaskContextController";
 
 interface TaskContextSelectorProps {
   controller: TaskContextController;
+  git?: GitStatusController;
   onPublish: () => void;
   onReceive: () => void;
   projectSelected: boolean;
 }
 
-export function TaskContextSelector({ controller, onPublish, onReceive, projectSelected }: TaskContextSelectorProps) {
+export function TaskContextSelector({ controller, git, onPublish, onReceive, projectSelected }: TaskContextSelectorProps) {
   const [open, setOpen] = useState(false);
   const [branch, setBranch] = useState("");
+  const [branchUpdateMessage, setBranchUpdateMessage] = useState("");
+  const [updatingBranch, setUpdatingBranch] = useState("");
   const root = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | null>(null);
   const active = controller.overview?.active;
   const triggerLabel = active
     ? `Задача: ${active.branch}${active.dirty ? ", есть локальные изменения" : ""}`
     : "Задача: выбрать";
   const actionDisabled = !active || controller.switching || controller.syncing || controller.preparing || controller.publishing;
+  const gitOperationActive = Boolean(git?.operation && !isGitOperationTerminal(git.operation.status));
+  const gitBusy = Boolean(git?.loading || git?.mutationPending || gitOperationActive || updatingBranch);
   const { localChoices, remoteChoices } = useMemo(() => {
     const existing = new Map(controller.overview?.items.map((item) => [item.branch, item]) ?? []);
     const localNames = Array.from(new Set([
@@ -49,6 +57,33 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
+
+  useEffect(() => () => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+  }, []);
+
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current === null) return;
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }, []);
+
+  const openPopover = useCallback(() => {
+    if (!projectSelected) return;
+    cancelClose();
+    controller.clearError();
+    setOpen(true);
+  }, [cancelClose, controller, projectSelected]);
+
+  const scheduleClose = useCallback(() => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => {
+      if (!root.current?.matches(":hover") && !root.current?.contains(document.activeElement)) {
+        setOpen(false);
+      }
+      closeTimer.current = null;
+    }, 180);
+  }, []);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -84,8 +119,42 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
     }
   };
 
+  const updateFromBranch = async (sourceBranch: string) => {
+    if (!git || sourceBranch === active?.branch || gitBusy) return;
+    setBranchUpdateMessage("");
+    setUpdatingBranch(sourceBranch);
+    try {
+      const commits = await git.loadBranchCommits(sourceBranch);
+      if (commits.length === 0) {
+        setBranchUpdateMessage("В выбранной ветке нет новых commits.");
+        return;
+      }
+      const ok = await git.cherryPick(sourceBranch, commits.map((commit) => commit.sha));
+      setBranchUpdateMessage(ok ? "Получение обновлений запущено." : "Не удалось запустить получение обновлений.");
+    } catch (cause) {
+      setBranchUpdateMessage(cause instanceof Error ? cause.message : "Не удалось получить обновления из ветки.");
+    } finally {
+      setUpdatingBranch("");
+    }
+  };
+
+  const branchUpdateDisabled = (name: string) => !git || name === active?.branch || gitBusy;
+  const branchUpdateTitle = (name: string) => {
+    if (!git) return "Git status ещё не загружен";
+    if (name === active?.branch) return "Это текущая ветка";
+    if (updatingBranch === name) return "Получаем обновления…";
+    if (gitBusy) return "Git-операция уже выполняется";
+    if (git.status?.changes.length) return `Получить обновления из ${name} и вернуть локальные изменения поверх`;
+    return `Получить обновления из ${name}`;
+  };
+
   return (
-    <div className="task-context" ref={root}>
+    <div
+      className="task-context"
+      ref={root}
+      onMouseEnter={openPopover}
+      onMouseLeave={scheduleClose}
+    >
       <button
         className={`task-context-trigger ${active?.dirty ? "dirty" : ""}`}
         type="button"
@@ -94,6 +163,7 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
         aria-expanded={open}
         aria-haspopup="dialog"
         onClick={() => {
+          cancelClose();
           controller.clearError();
           setOpen((current) => !current);
         }}
@@ -116,7 +186,6 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
             <div>
               <input
                 id="task-branch"
-                autoFocus
                 autoComplete="off"
                 placeholder="Номер задачи или ветка"
                 value={branch}
@@ -132,6 +201,9 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
               {controller.error.message}
               {controller.error.correlationId && <small>Код: {controller.error.correlationId}</small>}
             </div>
+          )}
+          {branchUpdateMessage && (
+            <div className="task-context-update-state" role="status">{branchUpdateMessage}</div>
           )}
           <div className="task-context-actions" aria-label="Действия текущей ветки">
             <button
@@ -163,30 +235,63 @@ export function TaskContextSelector({ controller, onPublish, onReceive, projectS
             <div className="task-context-list">
               {localChoices.length > 0 && <small>Локальные ветки</small>}
               {localChoices.map(({ name, workspace }) => (
-                <button
-                  key={name}
-                  type="button"
-                  className={name === active?.branch ? "active" : ""}
-                  onClick={() => void select(name)}
-                  disabled={controller.switching}
-                >
-                  <span>{name}</span>
-                  {workspace?.dirty && <i title="Есть неопубликованные изменения" />}
-                  {name === active?.branch && (
-                    <svg viewBox="0 0 16 16" aria-label="Текущая задача"><path d="m3.5 8 3 3 6-6" /></svg>
+                <div className="task-context-branch-row" key={name}>
+                  <button
+                    type="button"
+                    className={`task-context-branch-option ${name === active?.branch ? "active" : ""}`}
+                    onClick={() => void select(name)}
+                    disabled={controller.switching}
+                  >
+                    <span>{name}</span>
+                    {workspace?.dirty && <i title="Есть неопубликованные изменения" />}
+                    {name === active?.branch && (
+                      <svg viewBox="0 0 16 16" aria-label="Текущая задача"><path d="m3.5 8 3 3 6-6" /></svg>
+                    )}
+                  </button>
+                  {name !== active?.branch && (
+                    <div className="task-context-branch-menu" role="menu" aria-label={`Действия ветки ${name}`}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        disabled={branchUpdateDisabled(name)}
+                        title={branchUpdateTitle(name)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void updateFromBranch(name);
+                        }}
+                      >
+                        {updatingBranch === name ? "Получаем…" : "Получить обновления"}
+                      </button>
+                    </div>
                   )}
-                </button>
+                </div>
               ))}
               {remoteChoices.length > 0 && <small>Удалённые ветки</small>}
               {remoteChoices.map((name) => (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => void selectRemote(name)}
-                  disabled={controller.switching}
-                >
-                  <span>{name}</span>
-                </button>
+                <div className="task-context-branch-row" key={name}>
+                  <button
+                    type="button"
+                    className="task-context-branch-option"
+                    onClick={() => void selectRemote(name)}
+                    disabled={controller.switching}
+                  >
+                    <span>{name}</span>
+                  </button>
+                  <div className="task-context-branch-menu" role="menu" aria-label={`Действия ветки ${name}`}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={branchUpdateDisabled(name)}
+                      title={branchUpdateTitle(name)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void updateFromBranch(name);
+                      }}
+                    >
+                      {updatingBranch === name ? "Получаем…" : "Получить обновления"}
+                    </button>
+                  </div>
+                </div>
               ))}
             </div>
           )}

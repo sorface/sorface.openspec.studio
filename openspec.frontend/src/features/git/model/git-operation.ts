@@ -14,7 +14,7 @@ export interface GitOperation {
   errorCode?: string;
   errorMessage?: string;
   correlationId?: string;
-  gitAction: "fetch" | "push";
+  gitAction: "fetch" | "push" | "cherry-pick";
   gitRemote?: string;
   gitBranch?: string;
   createdAt: string;
